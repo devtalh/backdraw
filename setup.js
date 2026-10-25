@@ -83,9 +83,9 @@ function addToFileClient(c, id, server) {
   } catch (e) { return ['fail', e.message]; }
 }
 
-// Polls the bridge until the extension is connected. Resolves to its status, or null on a timeout
-// or when skipped (Ctrl+C, or deps.skip).
-function waitForExtension(call, { timeoutMs = WAIT_MS, intervalMs = 2000, onSigint = true } = {}) {
+// Polls the bridge until the extension is connected (and, with `version`, runs that version).
+// Resolves to its status, or null on a timeout or when skipped (Ctrl+C).
+function waitForExtension(call, { timeoutMs = WAIT_MS, intervalMs = 2000, onSigint = true, version = null } = {}) {
   return new Promise(resolve => {
     let done = false;
     let timer = null;
@@ -104,7 +104,7 @@ function waitForExtension(call, { timeoutMs = WAIT_MS, intervalMs = 2000, onSigi
       if (done) return;
       try {
         const status = await call('status', {}, 3000);
-        if (status && status.extension) return finish(status);
+        if (status && status.extension && (!version || status.extension.version === version)) return finish(status);
       } catch {}
       if (done) return;
       if (Date.now() >= deadline) return finish(null);
@@ -163,11 +163,15 @@ async function setup(opts = {}, deps = {}) {
   }
   if (!chosen.length) say('warn', 'MCP clients', `none chosen; add one later with: npx backdraw@latest setup --clients=${CLIENT_IDS[0]}`);
 
-  // A reloaded extension needs a few seconds to start the host again.
+  // A reloaded extension needs a few seconds to start the new host; until then the old one may
+  // still answer with the old version.
   let status = r.reloaded
-    ? await waitForExtension(call, { timeoutMs: deps.reloadWaitMs || 20000, intervalMs: deps.intervalMs || 1000, onSigint: false })
+    ? await waitForExtension(call, { timeoutMs: deps.reloadWaitMs || 20000, intervalMs: deps.intervalMs || 1000, onSigint: false, version: r.version })
+      || await connectedStatus(call)
     : await connectedStatus(call);
-  if (status) say('ok', 'Extension', `${status.extension.version} connected${r.reloaded ? ' (reloaded with the new files)' : ''}`);
+  if (status && status.extension.version !== r.version) {
+    say('warn', 'Extension', `${status.extension.version} is still running; reload Backdraw at chrome://extensions to start ${r.version}`);
+  } else if (status) say('ok', 'Extension', `${status.extension.version} connected${r.reloaded ? ' (reloaded with the new files)' : ''}`);
 
   if (!status) {
     // The one named with --browser, else the first one installed (Chrome comes first).

@@ -161,3 +161,16 @@ test('waitForExtension: after Ctrl+C nothing polls again, even with a call still
   assert.equal(calls, 1);
   assert.equal(process.listenerCount('SIGINT'), 0);
 });
+
+test('after a reload, setup waits for the new version, not the old host that still answers', async () => {
+  const version = require('../package.json').version;
+  const s = system({ reloaded: true, cli: false });
+  let polls = 0;
+  const call = async () => ({ hostVersion: 'x', extension: { version: ++polls < 4 ? '2.0.1' : version }, project: { id: 'p' } });
+  await setup({ clients: 'cursor' }, { ...s.deps, call });
+  assert.ok(s.text().includes(`✓ Extension            ${version} connected (reloaded with the new files)`), s.text());
+  assert.ok(polls >= 4);
+  const stuck = system({ reloaded: true, cli: false });
+  await setup({ clients: 'cursor' }, { ...stuck.deps, call: async () => ({ extension: { version: '2.0.1' }, project: null }) });
+  assert.match(stuck.text(), /⚠ Extension {12}2\.0\.1 is still running; reload Backdraw at chrome:\/\/extensions/);
+});
