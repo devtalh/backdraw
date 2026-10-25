@@ -61,9 +61,9 @@ async function gather(c, call) {
 
   let reg = null;
   try { reg = p.parseBrowserRegistry(p.readBrowserRegistry(identity.HOST_NAME)); } catch (e) { facts.registryError = e.message.split('\n')[0]; }
-  const installed = p.detectBrowsers();
+  const targets = installer.targetBrowsers(p); // Chrome, and every other browser that is installed
   facts.browsers = browsers.BROWSERS.map(b => ({
-    id: b.id, name: b.name, installed: installed.includes(b.id),
+    id: b.id, name: b.name, target: targets.includes(b.id),
     registration: reg ? browsers.effectiveHost(b, reg.hosts) : null, policies: reg ? reg.policies[b.id] : null,
   }));
 
@@ -116,9 +116,12 @@ function fix(c, facts) {
     return { fixed, failed: [`The install folder is incomplete; run: ${report.SETUP}`] };
   }
   const server = path.join(dest, 'mcp-server.js');
-  const hostBad = !facts.hostManifest.exists || facts.hostManifest.problem || facts.browsers.some(b => b.installed && (!b.registration
+  // The manifest can be rewritten even when the registry couldn't be read; registering again
+  // doesn't need that read either.
+  const manifestBad = !facts.hostManifest.exists || !!facts.hostManifest.problem;
+  const registryBad = !facts.registryError && facts.browsers.some(b => b.target && (!b.registration
     || path.resolve(b.registration.path).toLowerCase() !== path.resolve(facts.hostManifest.file).toLowerCase()));
-  if (hostBad && !facts.registryError) {
+  if (manifestBad || registryBad) {
     try {
       const r = installer.registerHost(c, dest);
       fixed.push(`Rewrote the host manifest and registered it for ${r.browsers.map(b => browsers.byId(b).name).join(', ')}.`);

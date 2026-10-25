@@ -23,8 +23,8 @@ function healthy() {
     install: { dir: `${HOME}\\.backdraw`, exists: true, missing: [], version: '2.1.0', extensionVersion: '2.1.0' },
     hostManifest: { file: MANIFEST, exists: true, problem: null },
     browsers: [
-      { id: 'chrome', name: 'Google Chrome', installed: true, registration: { key: 'chrome', path: MANIFEST }, policies: { blocklist: [], allowlist: [] } },
-      { id: 'edge', name: 'Microsoft Edge', installed: false, registration: { key: 'chrome', path: MANIFEST }, policies: {} },
+      { id: 'chrome', name: 'Google Chrome', target: true, registration: { key: 'chrome', path: MANIFEST }, policies: { blocklist: [], allowlist: [] } },
+      { id: 'edge', name: 'Microsoft Edge', target: false, registration: { key: 'chrome', path: MANIFEST }, policies: {} },
     ],
     bridge: { ok: true, status: { hostVersion: '2.1.0', extension: { version: '2.1.0' }, project: { id: 'g-p-1', name: 'Private name' } } },
     chatgpt: { loggedIn: true, challenge: null },
@@ -54,7 +54,7 @@ test('problems: one line each with its fix, and the summary counts what --fix ca
   f.node = 'v18.19.0';
   f.self.version = '2.2.0';
   f.browsers[0].registration = null;
-  f.browsers[1] = { id: 'edge', name: 'Microsoft Edge', installed: true, registration: { key: 'edge', path: 'C:\\old\\host.json' }, policies: { userLevelHosts: false } };
+  f.browsers[1] = { id: 'edge', name: 'Microsoft Edge', target: true, registration: { key: 'edge', path: 'C:\\old\\host.json' }, policies: { userLevelHosts: false } };
   f.clients[0].problem = 'points to C:\\old\\mcp-server.js, not x';
   f.clients[1].detected = true;
   f.chatgpt = { loggedIn: false };
@@ -158,4 +158,19 @@ test('doctor prints masked text; --fix says what it did; nothing to fix on a mis
   assert.ok(!text.includes(s.home), 'the home folder is masked');
   assert.match(text, /✗ Install folder +~\\\.backdraw is missing/);
   assert.ok(checks.some(x => x.status === 'fail'));
+});
+
+test('--fix rewrites a broken host manifest even when the registry can\'t be read', async () => {
+  const s = fakeSystem();
+  await install(s.ctx);
+  fs.writeFileSync(path.join(s.home, '.backdraw', `${identity.HOST_NAME}.json`), '{ broken');
+  s.ctx.platform.readBrowserRegistry = () => { throw new Error('WMI is off'); };
+  const c = require('../install').context({ ...s.ctx, report: false });
+  const facts = await gather(c, s.call);
+  assert.equal(facts.registryError, 'WMI is off');
+  assert.equal(facts.hostManifest.problem, 'unreadable');
+  const { fixed, failed } = fix(c, facts);
+  assert.deepEqual(failed, []);
+  assert.match(fixed[0], /Rewrote the host manifest/);
+  assert.equal((await gather(c, s.call)).hostManifest.problem, null);
 });

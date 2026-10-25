@@ -186,12 +186,13 @@ function programRoots() {
     env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')];
 }
 
-// The executable of a browser, or null when it isn't installed.
+// The executable of a browser (its first channel that is there), or null when it isn't installed.
 function browserExe(browser) {
-  const b = browsers.byId(browser);
-  for (const root of programRoots()) {
-    const exe = path.join(root, b.exe);
-    if (fs.existsSync(exe)) return exe;
+  for (const rel of browsers.byId(browser).exe) {
+    for (const root of programRoots()) {
+      const exe = path.join(root, rel);
+      if (fs.existsSync(exe)) return exe;
+    }
   }
   return null;
 }

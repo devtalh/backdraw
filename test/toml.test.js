@@ -73,3 +73,37 @@ test('readTable: literal strings, comments, and null without the table', () => {
     { command: 'node', args: ['C:\\x\\mcp-server.js'] });
   assert.equal(readTable('[mcp_servers.other]\ncommand = "x"\n', P), null);
 });
+
+test('triple quotes in a comment or a one-line string don\'t start a multi-line string', () => {
+  for (const first of ['# use """ for long text', 'x = "it\'\'\'s"', "y = 'say \"\"\"'"]) {
+    const before = `${first}\n\n[mcp_servers.backdraw]\ncommand = "x"\n`;
+    const after = setTable(before, P, V);
+    assert.equal(after, `${first}\n\n${BLOCK}`);
+    assert.deepEqual(readTable(after, P), V);
+    assert.equal(removeTable(after, P), `${first}\n`);
+  }
+});
+
+test('lines inside a multi-line array or string are never headers or keys', () => {
+  const nested = '[mcp_servers.backdraw]\ncommand = "x"\nm = [\n  ["a"],\n  [1]\n]\nlast = 1\n\n[z]\nq = 1\n';
+  assert.equal(removeTable(nested, P), '[z]\nq = 1\n');
+  const other = '[other]\nmatrix = [\n  ["a"]\n]\nk = 1\n';
+  assert.equal(setTable(other, P, V), `${other}\n${BLOCK}`);
+  const literal = "[mcp_servers.backdraw]\ncommand = \"x\"\ndesc = '''\n[foo]\ncommand = 1\n'''\n\n[bar]\nz = 1\n";
+  assert.equal(removeTable(literal, P), '[bar]\nz = 1\n');
+  assert.equal(setTable(literal, P, V), `${BLOCK}desc = '''\n[foo]\ncommand = 1\n'''\n\n[bar]\nz = 1\n`);
+});
+
+test('a multi-line string value is replaced whole', () => {
+  assert.equal(setTable('[mcp_servers.backdraw]\ncommand = """\nnode\n"""\nargs = []\n', P, V), BLOCK);
+});
+
+test('removeTable keeps the comment that belongs to the next table', () => {
+  assert.equal(removeTable(`${BLOCK}\n# my settings for foo\n[foo]\na = 1\n`, P), '# my settings for foo\n[foo]\na = 1\n');
+});
+
+test('comments with brackets in a multi-line array, and TOML-only escapes, are read right', () => {
+  const text = `[mcp_servers.backdraw]\nargs = [ # list\n  "a", # one ]\n  "b"\n]\ncommand = "${String.raw`\U0001F600\u00e9`}" # c\nkeep = 1\n`;
+  assert.deepEqual(readTable(text, P), { args: ['a', 'b'], command: '😀é', keep: '1' });
+  assert.equal(setTable(text, P, V), `${BLOCK}keep = 1\n`);
+});

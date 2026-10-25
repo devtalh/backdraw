@@ -456,3 +456,12 @@ test('uninstall: the Backdraw entries of Codex, Cursor, VS Code and Gemini go to
   assert.match(t.text(), /Cursor: removed "backdraw" from .*\(backup: .*\.bak\)/);
   assert.match(t.text(), /VS Code: left alone/);
 });
+
+test('install: Chrome\'s key is written even when only Edge is found (Chrome Beta/Canary or a portable copy read it)', async () => {
+  const t = setup({ browsers: ['edge'] });
+  await install(t.ctx);
+  assert.deepEqual(t.calls.filter(c => c[0] === 'register').map(c => c[3]), ['chrome', 'edge']);
+  const named = setup({ browsers: [] });
+  await install({ ...named.ctx, browsers: ['brave'] });
+  assert.deepEqual(named.calls.filter(c => c[0] === 'register').map(c => c[3]), ['chrome', 'chromium']);
+});

@@ -99,11 +99,14 @@ function waitForExtension(call, { timeoutMs = WAIT_MS, intervalMs = 2000, onSigi
     const skip = () => finish(null);
     if (onSigint) process.on('SIGINT', skip);
     const deadline = Date.now() + timeoutMs;
+    // A Ctrl+C can arrive while a call is still out: then nothing may poll again.
     const poll = async () => {
+      if (done) return;
       try {
         const status = await call('status', {}, 3000);
         if (status && status.extension) return finish(status);
       } catch {}
+      if (done) return;
       if (Date.now() >= deadline) return finish(null);
       timer = setTimeout(poll, intervalMs);
     };
@@ -129,6 +132,12 @@ async function setup(opts = {}, deps = {}) {
   const c = installer.context(base);
   const p = c.platform;
 
+  let browser = null;
+  if (opts.browser !== undefined) {
+    browser = browsers.byId(String(opts.browser).toLowerCase());
+    if (!browser) throw new Error(`--browser takes one of: ${browsers.BROWSERS.map(b => b.id).join(', ')}.`);
+  }
+
   log(paint('bold', `Backdraw ${SELF} setup`));
   log('');
   const found = detectClients(c);
@@ -137,7 +146,7 @@ async function setup(opts = {}, deps = {}) {
   else if (opts.yes || !deps.ask) chosen = found.filter(f => f.detected).map(f => f.id);
   else { chosen = await chooseClients(found, deps.ask, log); log(''); }
 
-  const r = await installer.install({ ...base, clients: chosen });
+  const r = await installer.install({ ...base, clients: chosen, browsers: browser ? [browser.id] : [] });
   say('ok', 'Installed', `${r.dest} (${r.version})`);
   for (const m of r.migration.filter(x => x.startsWith('copied '))) say('ok', 'Migrated', m.replace(/^copied /, ''));
   if (r.hasLegacy) say('info', 'Old folder', `${r.legacyDir} is no longer used; delete it by hand once Backdraw works`);
@@ -161,8 +170,8 @@ async function setup(opts = {}, deps = {}) {
   if (status) say('ok', 'Extension', `${status.extension.version} connected${r.reloaded ? ' (reloaded with the new files)' : ''}`);
 
   if (!status) {
-    const browserId = opts.browser && opts.browser !== true ? String(opts.browser).toLowerCase() : r.registered[0];
-    const browser = browsers.byId(browserId) || browsers.byId('chrome');
+    // The one named with --browser, else the first one installed (Chrome comes first).
+    if (!browser) browser = browsers.byId(p.detectBrowsers()[0] || 'chrome');
     const folder = path.join(r.dest, 'extension');
     try { p.openFolder(folder); } catch {}
     const copied = p.copyToClipboard(folder);

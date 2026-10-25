@@ -138,3 +138,26 @@ test('an extension that never connects: setup stops waiting and points to doctor
   assert.match(s.text(), /⚠ Extension {12}not connected yet; once it is loaded, check with: npx backdraw@latest doctor/);
   assert.doesNotMatch(s.text(), /Ready/);
 });
+
+test('--browser: registered even when not found, its page is opened; an unknown one is refused', async () => {
+  const s = system({ connectAfter: Infinity });
+  await setup({ clients: 'cursor', browser: 'Brave', wait: false }, s.deps);
+  assert.deepEqual(s.events.filter(e => e[0] === 'register').map(e => e[1]), ['chrome', 'chromium']);
+  assert.deepEqual(s.events.find(e => e[0] === 'open'), ['open', 'brave', 'brave://extensions']);
+  await assert.rejects(setup({ browser: 'opera' }, system().deps), /--browser takes one of: chrome, edge, brave, chromium/);
+  await assert.rejects(setup({ browser: true }, system().deps), /--browser takes one of/);
+});
+
+test('waitForExtension: after Ctrl+C nothing polls again, even with a call still out', async () => {
+  const { waitForExtension } = require('../setup');
+  let calls = 0;
+  let release;
+  const call = () => { calls++; return new Promise((resolve, reject) => { release = () => reject(new Error('down')); }); };
+  const waiting = waitForExtension(call, { timeoutMs: 5000, intervalMs: 5 });
+  process.emit('SIGINT');
+  assert.equal(await waiting, null);
+  release();
+  await new Promise(r => setTimeout(r, 50));
+  assert.equal(calls, 1);
+  assert.equal(process.listenerCount('SIGINT'), 0);
+});

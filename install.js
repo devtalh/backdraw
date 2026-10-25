@@ -43,6 +43,7 @@ function extensionId(manifest) {
 //   reload     asks a running extension to reload itself (resolves to true when it did)
 //   clients    (setup) the MCP clients to register in; without it, Claude Code only, as before
 //   report     false: install() returns its result without printing the report (setup prints its own)
+//   browsers   (setup --browser) browser ids to register for even when they aren't found
 function context(ctx = {}) {
   const p = ctx.platform || platform;
   let claudeCli = ctx.claudeCli;
@@ -54,16 +55,16 @@ function context(ctx = {}) {
   return {
     platform: p, home, src: ctx.src || SRC, log: ctx.log || (text => console.log(text)),
     claudeCli, reload: ctx.reload || reloadRunningExtension, dryRun: !!ctx.dryRun,
-    clients: ctx.clients || null, report: ctx.report !== false,
+    clients: ctx.clients || null, report: ctx.report !== false, browsers: ctx.browsers || [],
     clientEnv: { home, appData: p.appDataDir(home), which: cmd => p.which(cmd) },
   };
 }
 
-// The browsers to register the native host for: the installed ones, or Chrome when none is found
-// (e.g. a portable install the check can't see).
-function targetBrowsers(p) {
-  const found = p.detectBrowsers();
-  return found.length ? found : ['chrome'];
+// The browsers to register the native host for: Chrome always (every Chrome channel and a copy the
+// check can't see read its key, and the others fall back to it), the installed ones, and any the
+// user named (setup --browser).
+function targetBrowsers(p, extra = []) {
+  return [...new Set(['chrome', ...p.detectBrowsers(), ...extra])];
 }
 
 // Copies the settings and job history of an older install. Never overwrites; returns a report.
@@ -319,7 +320,7 @@ function registerHost(c, dest) {
     allowed_origins: [`chrome-extension://${id}/`],
   }, null, 2));
   p.unregisterNativeHost(LEGACY.HOST_NAME, 'chrome');
-  const targets = targetBrowsers(p);
+  const targets = targetBrowsers(p, c.browsers);
   const keys = browsers.keysFor(targets).map(key => p.registerNativeHost(identity.HOST_NAME, manifest, key));
   return { id, manifest, browsers: targets, keys };
 }

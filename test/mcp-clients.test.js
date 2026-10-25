@@ -158,3 +158,7 @@ test('a JSON file with comments is read (doctor sees the entry) but never rewrit
   assert.throws(() => clients.removeEntry(client, e), /has comments/);
   assert.equal(fs.readFileSync(client.file(e), 'utf8'), text);
 });
+
+test('stripJsonc: a comma before } or ] inside a string stays', () => {
+  assert.deepEqual(JSON.parse(clients.stripJsonc('{ "a": "x,}", "b": "y, ]", }')), { a: 'x,}', b: 'y, ]' });
+});
