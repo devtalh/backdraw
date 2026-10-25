@@ -27,6 +27,46 @@ and the link to the chat.
 - Browse everything you made in a gallery side panel.
 - Pure Node.js with zero npm dependencies. Everything runs on your computer.
 
+> **Personal use, with your own ChatGPT account and at your own risk.** Automating the ChatGPT web
+> page may conflict with OpenAI's terms; read
+> [Disclaimer and responsible use](#disclaimer-and-responsible-use) before you start.
+
+## Why Backdraw?
+
+- **Your everyday Chrome.** No separate browser profile, no second login, no automation browser:
+  Backdraw works in the Chrome you already use, where you are signed in to ChatGPT.
+- **Out of your way.** The work happens in a muted background tab that never takes focus, so you
+  keep working while the image is made.
+- **No open ports.** The pieces talk over Chrome native messaging and a named pipe that only your
+  Windows user can open. There is no DevTools port (such as 9222) and no local web server.
+- **No API key.** It uses your ChatGPT plan; each image counts toward your normal ChatGPT limits.
+- **References from the web.** Right-click images on any site to collect them, then generate in
+  their style.
+- **A gallery** of everything you made, in Chrome's side panel.
+
+### How it compares
+
+Other open-source projects take different approaches, and several of them do things Backdraw
+doesn't (macOS or Linux support, an API mode, running on a server). Each row was checked against
+the project's README and source on 2026-10-25; **?** means we couldn't tell. Spotted a mistake?
+Please [open an issue](../../issues).
+
+| Project | Uses your everyday Chrome (no separate profile or login) | Background tab (doesn't take focus) | Open port | API key needed | Right-click reference collections | Gallery | Platforms |
+|---|---|---|---|---|---|---|---|
+| **Backdraw** | Yes | Yes | No (native messaging + named pipe) | No | Yes | Yes | Windows |
+| [lownamlee/gpt-image-2-mcp](https://github.com/lownamlee/gpt-image-2-mcp) | No (own browser profile) | Partly¹ | No | Optional (API mode) | No | No | ? |
+| [nothariharan/image-gen](https://github.com/nothariharan/image-gen) | No (own Edge profile) | No | Yes (CDP 9222) | No | No | No | Windows; macOS/Linux by hand |
+| [goofyshwetank/mcp-chatgpt-gemini-image](https://github.com/goofyshwetank/mcp-chatgpt-gemini-image) | No (own Chromium profile) | No | No | No | No | No | ? |
+| [Dasemu/chatgpt-imagegen-mcp](https://github.com/Dasemu/chatgpt-imagegen-mcp) | No (own profile, on a server) | Partly² | Yes (HTTP 8088, remote server) | No (own server token) | No | No | Linux server |
+| [Codex built-in `$imagegen`](https://learn.chatgpt.com/codex/image-generation) | – (no browser) | – | No | No (Codex sign-in) | No | ? | ? |
+| [Sateezg/codex-bridge](https://github.com/Sateezg/codex-bridge) | – (no browser, runs Codex) | – | No | No (Codex sign-in) | No | No | macOS, Linux |
+
+¹ Its own browser window, moved off screen or minimized once ChatGPT is ready.
+² A browser on a virtual display (Xvfb) on the server, or headless.
+
+Codex users already have built-in image generation; Backdraw is mainly for Claude Code, the
+Claude desktop app and VS Code.
+
 ## How it works
 
 ```
@@ -74,7 +114,12 @@ welcome. Everything OS-specific (named pipe, native host registration, user fold
 ## Installation
 
 1. **Get the code.** Clone the repository with git, or download it as a ZIP (**Code** →
-   **Download ZIP**) and unzip it.
+   **Download ZIP**) and unzip it:
+
+   ```
+   git clone https://github.com/devtalh/backdraw.git
+   cd backdraw
+   ```
 2. **Run the installer** in that folder (no admin rights needed):
 
    ```
@@ -85,6 +130,8 @@ welcome. Everything OS-specific (named pipe, native host registration, user fold
    your Windows user, adds the `backdraw` MCP server to Claude Code (user scope) and sets up the
    images folder `Pictures\Backdraw` (reference collections go to `Pictures\Backdraw\References`).
    An upgraded install keeps the folders it already had; `node cli.js status` shows them.
+   The native host is still named `io.github.muhammedtalha04.backdraw`, after the project's old
+   GitHub user name: renaming it would break existing installs.
 3. **Load the extension** once: open `chrome://extensions`, turn on **Developer mode**, click
    **Load unpacked** and select `%USERPROFILE%\.backdraw\extension`.
 4. **Open the popup.** Click the Backdraw icon in the toolbar (pin it from the puzzle-piece menu).
@@ -127,8 +174,81 @@ The desktop app keeps its own MCP config for chats. Add Backdraw to it once:
 
 ### From other MCP clients
 
-Backdraw is a plain stdio MCP server. Point your client at
-`node %USERPROFILE%\.backdraw\mcp-server.js` (with the full path written out).
+Backdraw is a plain stdio MCP server: `node %USERPROFILE%\.backdraw\mcp-server.js`. For now the
+installer registers it automatically only in Claude Code and the Claude desktop app; automatic
+setup for other clients is planned for v2.1. Until then, add it by hand as shown below, then
+restart the client or start a new session.
+
+In the config files, replace `C:/Users/you` with your home folder (`echo %USERPROFILE%` in cmd
+prints it). Forward slashes work on Windows and need no escaping in JSON. `~` below is your home
+folder. The PowerShell commands fill in the path themselves.
+
+**Codex** (the CLI, the IDE extension and the app share `~\.codex\config.toml`;
+[docs](https://learn.chatgpt.com/docs/extend/mcp)). From PowerShell:
+
+```powershell
+codex mcp add backdraw -- node "$env:USERPROFILE\.backdraw\mcp-server.js"
+```
+
+or in `config.toml`:
+
+```toml
+[mcp_servers.backdraw]
+command = "node"
+args = ["C:/Users/you/.backdraw/mcp-server.js"]
+```
+
+**Cursor** (`~\.cursor\mcp.json` for all projects, or `.cursor\mcp.json` in a project;
+[docs](https://cursor.com/docs/context/mcp)). Cursor fills in `${userHome}` itself:
+
+```json
+{
+  "mcpServers": {
+    "backdraw": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${userHome}/.backdraw/mcp-server.js"]
+    }
+  }
+}
+```
+
+**VS Code** (GitHub Copilot agent mode: run **MCP: Open User Configuration** for every workspace,
+or create `.vscode\mcp.json` in one; [docs](https://code.visualstudio.com/docs/copilot/customization/mcp-servers)).
+Here the key is `servers` and `type` is required:
+
+```json
+{
+  "servers": {
+    "backdraw": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["C:/Users/you/.backdraw/mcp-server.js"]
+    }
+  }
+}
+```
+
+**Gemini CLI** (`~\.gemini\settings.json`;
+[docs](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md)). `-s user`
+adds it for all projects (the default is the current project only). From PowerShell:
+
+```powershell
+gemini mcp add -s user backdraw node "$env:USERPROFILE\.backdraw\mcp-server.js"
+```
+
+or in `settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "backdraw": {
+      "command": "node",
+      "args": ["C:/Users/you/.backdraw/mcp-server.js"]
+    }
+  }
+}
+```
 
 ## Example prompts
 
@@ -312,7 +432,7 @@ node cli.js collect https://chatgpt.com/c/<chat id> --aspect 16:9
 |---|---|
 | `BRIDGE NOT RUNNING` | Chrome is closed, or the extension is not loaded or turned off. Open Chrome (the extension connects by itself) or turn Backdraw on at `chrome://extensions`. Check with `node cli.js status`. |
 | Red **!** on the Backdraw icon | The extension can't reach the local host. The popup shows the error and the fix. Run `node install.js` again, then reload Backdraw at `chrome://extensions`. |
-| `NEEDS USER ACTION` | ChatGPT shows a login or a human verification (CAPTCHA). Open the ChatGPT tab in Chrome and finish it yourself; Backdraw never tries to bypass it. The job waits up to 10 minutes for you; as soon as you finish, it continues by itself. After 10 minutes it fails and leaves the ChatGPT tab open. |
+| `NEEDS USER ACTION` | ChatGPT shows a login or a human verification (CAPTCHA). Open the ChatGPT tab in Chrome and finish it yourself; Backdraw never tries to get around it. The job waits up to 10 minutes for you; as soon as you finish, it continues by itself. After 10 minutes it fails and leaves the ChatGPT tab open. |
 | `⚠ EDIT CHECK (edited: false)` | ChatGPT drew a new picture instead of editing (a real edit keeps ~95-100% of the image). Ask again with the original in `reference_images` and without `conversation_url`, i.e. in a fresh chat. |
 | `NEEDS REFERENCE IMAGE` | ChatGPT lost track of the image in a long chat. Attach it with `reference_images` (best in a fresh chat) or use `auto_reattach`. |
 | `FAILED — ChatGPT did not finish in time` | A job gives up after about 10 minutes. If the result has a chat link, `fetch_images` (or `node cli.js collect <link>`) downloads the image once ChatGPT has finished; pass the same `aspect_ratio` again to crop it the same way. |
@@ -378,7 +498,7 @@ Delete these folders by hand if you want them gone. Coming from 1.x? Delete
 ## Privacy & security
 
 - Everything runs on your PC: no Backdraw server, no telemetry, no API key.
-- Backdraw never reads cookies, tokens or passwords, and never bypasses logins or CAPTCHAs.
+- Backdraw never reads cookies, tokens or passwords, and never automates logins or CAPTCHAs: you complete them yourself.
 - The local bridge is a named pipe, not a network port, and the native host only accepts the
   Backdraw extension.
 - Prompts, job history, previews and logs stay in `%USERPROFILE%\.backdraw` (`data\` and `logs\`).
@@ -396,11 +516,24 @@ Details, the threat model and how to report a vulnerability: [SECURITY.md](SECUR
 - Tool titles and annotations, progress notifications, `notifications/cancelled` and JSON-RPC
   batches. An unsupported version gets error `-32022` with the list of supported ones.
 
-## Disclaimer
+## Disclaimer and responsible use
 
-Not affiliated with OpenAI or Anthropic. Automating the ChatGPT web UI may conflict with OpenAI's terms; use at your own risk.
-
-Every image counts toward your own ChatGPT usage limits.
+- **Personal use, your own account.** Backdraw is made for one person generating images with
+  their own ChatGPT account in their own Chrome. Don't use it to share an account, to generate
+  images for other people as a service, or as the backend of a product.
+- **OpenAI's terms.** OpenAI's [Terms of Use](https://openai.com/policies/row-terms-of-use/) say
+  you may not "automatically or programmatically extract data or Output", nor get around rate
+  limits or protective measures. Backdraw drives the ChatGPT web page for you, so using it may
+  conflict with these terms. Read them and decide for yourself.
+- **The risk to your account is yours.** OpenAI may limit, suspend or close an account it finds
+  in breach of its terms. Backdraw comes without any warranty ([MIT license](LICENSE)), and its
+  authors are not responsible for what happens to your account.
+- **One job at a time, at a human pace.** There is a single queue: one prompt in one background
+  tab, and the next job starts only after the image is saved. Backdraw doesn't open parallel
+  chats, doesn't resend prompts on its own (apart from the single re-ask of `auto_reattach`) and
+  stops at every login or human-verification page until you finish it yourself.
+- **Your normal limits apply.** Every image counts toward your own ChatGPT usage limits.
+- Not affiliated with, endorsed or sponsored by OpenAI or Anthropic.
 
 ## License
 

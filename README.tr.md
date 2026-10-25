@@ -27,6 +27,47 @@ yolu, bir önizleme ve sohbetin bağlantısı döner.
 - Ürettiğin her şeye galeri yan panelinden göz at.
 - Saf Node.js, sıfır npm bağımlılığı. Her şey senin bilgisayarında çalışır.
 
+> **Kişisel kullanım içindir: kendi ChatGPT hesabınla ve riski sana ait olarak.** ChatGPT web
+> sayfasını otomatikleştirmek OpenAI'ın koşullarıyla çelişebilir; başlamadan önce
+> [Sorumluluk reddi ve sorumlu kullanım](#sorumluluk-reddi-ve-sorumlu-kullanım) bölümünü oku.
+
+## Neden Backdraw?
+
+- **Her gün kullandığın Chrome.** Ayrı bir tarayıcı profili, ikinci bir giriş ya da otomasyon
+  tarayıcısı yok: Backdraw, ChatGPT'ye zaten giriş yapmış olduğun Chrome'da çalışır.
+- **Seni rahatsız etmez.** İş, sessize alınmış ve hiç odak almayan bir arka plan sekmesinde yapılır;
+  görsel hazırlanırken sen çalışmaya devam edersin.
+- **Açık port yok.** Parçalar Chrome native messaging ve yalnızca senin Windows kullanıcının
+  açabildiği bir named pipe üzerinden konuşur. DevTools portu (9222 gibi) ya da yerel bir web
+  sunucusu yoktur.
+- **API anahtarı yok.** ChatGPT planını kullanır; her görsel normal ChatGPT limitlerinden düşer.
+- **Web'den referanslar.** Herhangi bir sitedeki görselleri sağ tıklayarak topla, sonra onların
+  tarzında üret.
+- Ürettiğin her şey için Chrome'un yan panelinde bir **galeri**.
+
+### Benzer projelerle karşılaştırma
+
+Diğer açık kaynak projeler farklı yollar izliyor ve birçoğu Backdraw'ın yapmadığı şeyleri yapıyor
+(macOS ya da Linux desteği, API modu, bir sunucuda çalışma). Her satır 25 Ekim 2026'da projenin
+README'si ve kaynak koduyla kontrol edildi; **?** emin olamadığımız yerler. Bir hata mı gördün?
+Lütfen bir [issue aç](../../issues).
+
+| Proje | Her gün kullandığın Chrome (ayrı profil ya da giriş yok) | Arka plan sekmesi (odak çalmaz) | Açık port | API anahtarı gerekir mi | Sağ tıkla referans koleksiyonu | Galeri | Platformlar |
+|---|---|---|---|---|---|---|---|
+| **Backdraw** | Evet | Evet | Yok (native messaging + named pipe) | Hayır | Evet | Evet | Windows |
+| [lownamlee/gpt-image-2-mcp](https://github.com/lownamlee/gpt-image-2-mcp) | Hayır (kendi tarayıcı profili) | Kısmen¹ | Yok | İsteğe bağlı (API modu) | Hayır | Hayır | ? |
+| [nothariharan/image-gen](https://github.com/nothariharan/image-gen) | Hayır (kendi Edge profili) | Hayır | Var (CDP 9222) | Hayır | Hayır | Hayır | Windows; macOS/Linux elle |
+| [goofyshwetank/mcp-chatgpt-gemini-image](https://github.com/goofyshwetank/mcp-chatgpt-gemini-image) | Hayır (kendi Chromium profili) | Hayır | Yok | Hayır | Hayır | Hayır | ? |
+| [Dasemu/chatgpt-imagegen-mcp](https://github.com/Dasemu/chatgpt-imagegen-mcp) | Hayır (kendi profili, bir sunucuda) | Kısmen² | Var (HTTP 8088, uzak sunucu) | Hayır (kendi sunucu token'ı) | Hayır | Hayır | Linux sunucu |
+| [Codex'in yerleşik `$imagegen`'i](https://learn.chatgpt.com/codex/image-generation) | – (tarayıcı yok) | – | Yok | Hayır (Codex girişi) | Hayır | ? | ? |
+| [Sateezg/codex-bridge](https://github.com/Sateezg/codex-bridge) | – (tarayıcı yok, Codex'i çalıştırır) | – | Yok | Hayır (Codex girişi) | Hayır | Hayır | macOS, Linux |
+
+¹ Kendi tarayıcı penceresi; ChatGPT hazır olunca ekran dışına taşınır ya da simge durumuna küçültülür.
+² Sunucuda sanal bir ekranda (Xvfb) ya da başsız (headless) çalışan bir tarayıcı.
+
+Codex kullanıcılarının zaten yerleşik bir görsel üretimi var; Backdraw esas olarak Claude Code,
+Claude masaüstü uygulaması ve VS Code içindir.
+
 ## Nasıl çalışır?
 
 ```
@@ -74,7 +115,12 @@ açığız. İşletim sistemine özgü her şey (named pipe, native host kaydı,
 ## Kurulum
 
 1. **Kodu indir.** Depoyu git ile klonla ya da ZIP olarak indir (**Code** → **Download ZIP**) ve
-   aç.
+   aç:
+
+   ```
+   git clone https://github.com/devtalh/backdraw.git
+   cd backdraw
+   ```
 2. **Kurulumu çalıştır.** O klasörde (yönetici izni gerekmez):
 
    ```
@@ -85,7 +131,9 @@ açığız. İşletim sistemine özgü her şey (named pipe, native host kaydı,
    Windows kullanıcın için kaydeder, `backdraw` MCP sunucusunu Claude Code'a ekler (kullanıcı
    düzeyinde) ve görsel klasörünü `Pictures\Backdraw` olarak ayarlar (referans koleksiyonları
    `Pictures\Backdraw\References` altına gider). Güncellenen bir kurulum mevcut klasörlerini korur;
-   `node cli.js status` hangi klasörlerin kullanıldığını gösterir.
+   `node cli.js status` hangi klasörlerin kullanıldığını gösterir. Native host'un adı, projenin
+   eski GitHub kullanıcı adından gelen `io.github.muhammedtalha04.backdraw` olarak kalıyor: adı
+   değiştirmek mevcut kurulumları bozardı.
 3. **Eklentiyi bir kez yükle.** `chrome://extensions` sayfasını aç, **Geliştirici modu**nu aç,
    **Paketlenmemiş öğe yükle**ye tıkla ve `%USERPROFILE%\.backdraw\extension` klasörünü seç.
 4. **Açılır pencereyi aç.** Araç çubuğundaki Backdraw simgesine tıkla (yapboz menüsünden
@@ -129,8 +177,82 @@ Masaüstü uygulaması sohbetler için kendi MCP ayarlarını tutar. Backdraw'ı
 
 ### Başka MCP istemcilerinden
 
-Backdraw sıradan bir stdio MCP sunucusudur. İstemcini
-`node %USERPROFILE%\.backdraw\mcp-server.js` komutuna yönlendir (yolu tam olarak yazarak).
+Backdraw sıradan bir stdio MCP sunucusudur: `node %USERPROFILE%\.backdraw\mcp-server.js`. Kurulum
+şimdilik onu yalnızca Claude Code'a ve Claude masaüstü uygulamasına otomatik olarak kaydediyor;
+diğer istemciler için otomatik kurulum v2.1'de geliyor. O zamana kadar aşağıdaki gibi elle ekle,
+sonra istemciyi yeniden başlat ya da yeni bir oturum aç.
+
+Ayar dosyalarında `C:/Users/you` yerine kendi kullanıcı klasörünü yaz (cmd'de
+`echo %USERPROFILE%` gösterir). Eğik çizgi (`/`) Windows'ta çalışır ve JSON'da kaçış gerektirmez.
+Aşağıdaki `~` senin kullanıcı klasörün. PowerShell komutları yolu kendileri doldurur.
+
+**Codex** (CLI, IDE eklentisi ve uygulama aynı `~\.codex\config.toml` dosyasını kullanır;
+[belgeler](https://learn.chatgpt.com/docs/extend/mcp)). PowerShell'den:
+
+```powershell
+codex mcp add backdraw -- node "$env:USERPROFILE\.backdraw\mcp-server.js"
+```
+
+ya da `config.toml` içinde:
+
+```toml
+[mcp_servers.backdraw]
+command = "node"
+args = ["C:/Users/you/.backdraw/mcp-server.js"]
+```
+
+**Cursor** (tüm projeler için `~\.cursor\mcp.json`, tek proje için o projede `.cursor\mcp.json`;
+[belgeler](https://cursor.com/docs/context/mcp)). Cursor `${userHome}` değişkenini kendisi doldurur:
+
+```json
+{
+  "mcpServers": {
+    "backdraw": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${userHome}/.backdraw/mcp-server.js"]
+    }
+  }
+}
+```
+
+**VS Code** (GitHub Copilot ajan modu: tüm çalışma alanları için **MCP: Open User Configuration**
+komutunu çalıştır ya da bir çalışma alanında `.vscode\mcp.json` oluştur;
+[belgeler](https://code.visualstudio.com/docs/copilot/customization/mcp-servers)). Burada anahtar
+`servers`'tır ve `type` zorunludur:
+
+```json
+{
+  "servers": {
+    "backdraw": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["C:/Users/you/.backdraw/mcp-server.js"]
+    }
+  }
+}
+```
+
+**Gemini CLI** (`~\.gemini\settings.json`;
+[belgeler](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md)).
+`-s user` onu tüm projeler için ekler (varsayılan yalnızca o anki projedir). PowerShell'den:
+
+```powershell
+gemini mcp add -s user backdraw node "$env:USERPROFILE\.backdraw\mcp-server.js"
+```
+
+ya da `settings.json` içinde:
+
+```json
+{
+  "mcpServers": {
+    "backdraw": {
+      "command": "node",
+      "args": ["C:/Users/you/.backdraw/mcp-server.js"]
+    }
+  }
+}
+```
 
 ## Örnek istemler
 
@@ -406,12 +528,26 @@ Ayrıntılar, tehdit modeli ve bir güvenlik açığını nasıl bildireceğin: 
   JSON-RPC toplu istekleri. Desteklenmeyen bir sürüm, desteklenenlerin listesiyle birlikte `-32022`
   hatası alır.
 
-## Sorumluluk reddi
+## Sorumluluk reddi ve sorumlu kullanım
 
-OpenAI ya da Anthropic ile bir bağlantısı yoktur. ChatGPT web arayüzünü otomatikleştirmek OpenAI'ın
-kullanım koşullarıyla çelişebilir; kullanım riski sana aittir.
-
-Her görsel, kendi ChatGPT kullanım limitlerinden düşer.
+- **Kişisel kullanım, kendi hesabın.** Backdraw, kendi Chrome'unda kendi ChatGPT hesabıyla görsel
+  üreten tek bir kişi için yapıldı. Bir hesabı paylaşmak, başkalarına hizmet olarak görsel üretmek
+  ya da bir ürünün arka ucu olarak kullanmak için kullanma.
+- **OpenAI'ın koşulları.** OpenAI'ın [Kullanım Koşulları](https://openai.com/policies/row-terms-of-use/),
+  verinin ya da çıktının otomatik veya programlı olarak çıkarılmasını ("automatically or
+  programmatically extract data or Output") ve hız sınırlarının ya da koruma önlemlerinin
+  aşılmasını yasaklar. Backdraw ChatGPT web sayfasını senin yerine kullandığı için bu koşullarla
+  çelişebilir. Koşulları oku ve kararını kendin ver.
+- **Hesabınla ilgili risk sana aittir.** OpenAI, koşullarını ihlal ettiğini düşündüğü bir hesabı
+  sınırlayabilir, askıya alabilir ya da kapatabilir. Backdraw hiçbir garanti olmadan sunulur
+  ([MIT lisansı](LICENSE)); geliştiricileri hesabına olacaklardan sorumlu değildir.
+- **Aynı anda tek iş, insan temposunda.** Tek bir kuyruk var: bir arka plan sekmesinde bir istem;
+  sıradaki iş ancak görsel kaydedildikten sonra başlar. Backdraw paralel sohbet açmaz, istemleri
+  kendiliğinden yeniden göndermez (`auto_reattach`'in tek seferlik yeniden sorması dışında) ve her
+  giriş ya da insan doğrulaması sayfasında, sen bitirene kadar bekler.
+- **Normal limitlerin geçerli.** Her görsel, kendi ChatGPT kullanım limitlerinden düşer.
+- OpenAI ya da Anthropic ile bir bağlantısı yoktur; onlar tarafından onaylanmamış ya da
+  desteklenmemiştir.
 
 ## Lisans
 
