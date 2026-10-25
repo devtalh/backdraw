@@ -152,6 +152,28 @@ Bu komut [npm'deki `backdraw` paketini](https://www.npmjs.com/package/backdraw) 
 Native host'un adı, projenin eski GitHub kullanıcı adından gelen
 `io.github.muhammedtalha04.backdraw` olarak kalıyor: adı değiştirmek mevcut kurulumları bozardı.
 
+### İstemcinden kur
+
+MCP istemcin Backdraw'ı kendisi de ekleyebilir; o zaman sunucuyu `npx backdraw@latest mcp` ile
+başlatır. Tarayıcı tarafı yine de bilgisayarda bir kerelik bir kurulum ister; bu kurulum istemcilere
+dokunmaz:
+
+```
+npx backdraw@latest setup --clients=none
+```
+
+| İstemci | Backdraw'ı ekle |
+|---|---|
+| Claude Code | `/plugin install backdraw --marketplace devtalh/backdraw` (Claude Code 2.1.275 ya da daha yeni; ya da önce `/plugin marketplace add devtalh/backdraw`, sonra `/plugin install backdraw@backdraw`). `/backdraw:setup` tarayıcı adımını anlatır. |
+| Cursor | [![Backdraw'ı Cursor'a ekle](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=backdraw&config=eyJjb21tYW5kIjoiY21kIiwiYXJncyI6WyIvYyIsIm5weCIsIi15IiwiYmFja2RyYXdAbGF0ZXN0IiwibWNwIl19) |
+| VS Code | [![Backdraw'ı VS Code'a kur](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=backdraw&config=%7B%22type%22%3A%22stdio%22%2C%22command%22%3A%22cmd%22%2C%22args%22%3A%5B%22%2Fc%22%2C%22npx%22%2C%22-y%22%2C%22backdraw%40latest%22%2C%22mcp%22%5D%7D) |
+| Codex | `codex mcp add backdraw -- cmd /c npx -y backdraw@latest mcp` |
+| Gemini CLI | `npx backdraw@latest setup --clients=gemini` |
+
+Windows'ta komut `cmd /c` üzerinden çalışır, çünkü istemciler `npx`'i kabuk olmadan başlatır. Her
+istemci için tek yol kullan: setup Backdraw'ı Claude Code'a zaten eklediyse, plugin aynı araçlarla
+ikinci bir sunucu başlatır.
+
 ### Elle kurulum
 
 1. **Kodu indir.** Depoyu git ile klonla ya da ZIP olarak indir (**Code** → **Download ZIP**) ve
@@ -452,7 +474,8 @@ beklemeyi durdurur; iş, `cancel_job` onu durdurana kadar sürer.
 
 Kurulum ve sorun giderme için bunları Backdraw klasöründe çalıştır (`%USERPROFILE%\.backdraw` ya da
 kurulumu yaptığın klasör). Her yerden `npx backdraw <komut>` aynı komutları çalıştırır, örneğin
-`npx backdraw status`. `npm run status`, `node cli.js status` ile aynıdır.
+`npx backdraw status`. `npm run status`, `node cli.js status` ile aynıdır. `backdraw mcp`, MCP
+sunucusunun kendisini stdio üzerinde çalıştırır; MCP istemcilerinin başlattığı budur.
 
 ```
 node cli.js status                          Köprünün durumu (Chrome bağlı mı, seçili proje, kuyruk)

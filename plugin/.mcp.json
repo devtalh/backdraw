@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "backdraw": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "backdraw@latest", "mcp"]
+    }
+  }
+}

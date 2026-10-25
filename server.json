@@ -1,0 +1,35 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.devtalh/backdraw",
+  "title": "Backdraw",
+  "description": "Generate images with your own ChatGPT account in a background Chrome tab. Needs Windows + Chrome.",
+  "websiteUrl": "https://github.com/devtalh/backdraw#readme",
+  "repository": {
+    "url": "https://github.com/devtalh/backdraw",
+    "source": "github"
+  },
+  "version": "2.1.1",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "backdraw",
+      "version": "2.1.1",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "requirements": "Windows 10/11, Google Chrome 116+, Node.js 20+, a ChatGPT account signed in in Chrome. Run \"npx backdraw@latest setup\" once to install the browser extension and native host.",
+      "notice": "Personal use with your own account. Automating the ChatGPT web page may conflict with OpenAI's terms; not affiliated with OpenAI or Anthropic."
+    }
+  }
+}

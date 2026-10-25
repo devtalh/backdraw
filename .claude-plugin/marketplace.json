@@ -1,0 +1,17 @@
+{
+  "name": "backdraw",
+  "owner": {
+    "name": "devtalh",
+    "url": "https://github.com/devtalh"
+  },
+  "description": "Backdraw: let Claude generate images with your own ChatGPT account in a background Chrome tab (Windows).",
+  "plugins": [
+    {
+      "name": "backdraw",
+      "source": "./plugin",
+      "description": "The Backdraw MCP server (runs npx backdraw) and /backdraw:setup for the one-time browser setup.",
+      "category": "productivity",
+      "tags": ["image-generation", "chatgpt", "chrome", "mcp", "windows"]
+    }
+  ]
+}
