@@ -5,6 +5,42 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-10-25
+
+### Added
+
+- **One-command install: `npx backdraw@latest setup`.** Backdraw is now an npm package (`backdraw`)
+  with a `backdraw` command. Setup copies the files to `%USERPROFILE%\.backdraw` (npx's copy is
+  temporary), keeps your settings, history and collections on an update, registers the browsers,
+  adds Backdraw to the MCP clients you pick, opens the extension folder and the extensions page,
+  copies the folder path, and waits (up to 3 minutes, Ctrl+C skips) until the extension connects.
+  Loading the extension is the only step left to you. `--yes`, `--clients=…`, `--browser=…`,
+  `--no-wait`.
+- **More MCP clients:** besides Claude Code and the Claude desktop app, setup adds Backdraw to
+  Codex (`~\.codex\config.toml`), Cursor (`~\.cursor\mcp.json`), VS Code (the user `mcp.json`) and
+  Gemini CLI (`~\.gemini\settings.json`), in the formats of their docs. Each file gets a timestamped
+  `.bak` copy first and only the `backdraw` entry changes; a JSON file with comments is left alone.
+  A small, tested TOML editor (no dependency) handles Codex's file.
+- **More browsers:** the native host is registered for Chrome, Edge, Brave and Chromium, under the
+  key each one reads first (Brave has no key of its own; it reads Chromium's, then Chrome's). Only
+  Chrome is tested.
+- **`backdraw doctor [--fix]`:** checks Node.js, the install folder and versions, the host manifest,
+  each browser's real registry entry (through WMI) and enterprise policies
+  (`NativeMessagingUserLevelHosts`, `NativeMessagingBlocklist`), the bridge, the extension, the
+  ChatGPT sign-in, the selected project and every client's entry; each line ✓ / ⚠ / ✗ with a fix.
+  `--fix` rewrites the registrations and client entries it can. The output masks the home folder
+  as `~` and can be pasted into an issue.
+- `backdraw uninstall [--dry-run]` also removes the new browser keys and client entries.
+- The host answers `chatgpt_state` (the sign-in state the extension last saw), for doctor.
+- CLI flags also take `--flag=value`.
+
+### Changed
+
+- `node install.js` keeps working as before (Claude Code only); `backdraw status` and the other
+  `cli.js` commands work through `npx backdraw <command>` too.
+- README (English and Turkish): the quick install first, the manual install below it, and a Doctor
+  section.
+
 ## [2.0.1] - 2026-10-25
 
 ### Changed

@@ -44,6 +44,7 @@ yolu, bir önizleme ve sohbetin bağlantısı döner.
 - **Web'den referanslar.** Herhangi bir sitedeki görselleri sağ tıklayarak topla, sonra onların
   tarzında üret.
 - Ürettiğin her şey için Chrome'un yan panelinde bir **galeri**.
+- **Tek komutla kurulum:** `npx backdraw@latest setup`. Sana kalan tek adım eklentiyi yüklemek.
 
 ### Benzer projelerle karşılaştırma
 
@@ -103,16 +104,49 @@ Görseller Resimler klasöründe `Backdraw` altına, saat ve istemden oluşan bi
 | | |
 |---|---|
 | İşletim sistemi | Windows 10 ya da 11 |
-| Tarayıcı | Google Chrome 116 ya da daha yeni |
+| Tarayıcı | Google Chrome 116 ya da daha yeni (Edge, Brave ve Chromium için de kayıt yapılır ama yalnızca Chrome'da denendi) |
 | Çalışma ortamı | Node.js 20 ya da daha yeni |
 | Hesap | Görsel üretebilen, Chrome'da giriş yapılmış bir ChatGPT hesabı |
-| İstemci | Claude Code ya da Claude masaüstü uygulaması (veya stdio sunucusu çalıştırabilen başka bir MCP istemcisi) |
+| İstemci | Claude Code, Claude masaüstü uygulaması, Codex, Cursor, VS Code ya da Gemini CLI (veya stdio sunucusu çalıştırabilen başka bir MCP istemcisi) |
 
 Şimdilik yalnızca Windows. Kod bir platform modülüne ayrılmış durumda; macOS/Linux katkılarına
 açığız. İşletim sistemine özgü her şey (named pipe, native host kaydı, kullanıcı klasörleri)
 `platform/win32.js` içinde.
 
 ## Kurulum
+
+### Hızlı kurulum
+
+Bunu PowerShell'de ya da cmd'de çalıştır (yönetici izni gerekmez):
+
+```
+npx backdraw@latest setup
+```
+
+`setup`, tarayıcıdaki tek bir tıklama dışında her şeyi yapar:
+
+1. Backdraw'ı `%USERPROFILE%\.backdraw` klasörüne kopyalar (npx'in kendi kopyası geçicidir) ve görsel
+   klasörünü `Pictures\Backdraw` olarak ayarlar (referans koleksiyonları `Pictures\Backdraw\References`
+   altına gider). Yeniden çalıştırınca Backdraw'ı günceller; ayarların, iş geçmişin ve
+   koleksiyonların korunur.
+2. Native messaging host'u senin Windows kullanıcın için, bulduğu her tarayıcıya (Chrome, Edge,
+   Brave, Chromium) kaydeder.
+3. Bulduğu MCP istemcilerini (Claude Code, Claude masaüstü uygulaması, Codex, Cursor, VS Code,
+   Gemini CLI) listeler ve Backdraw'ın hangilerine ekleneceğini sorar. Yalnızca `backdraw` girdisi
+   eklenir ya da güncellenir; her ayar dosyasının değişmeden önce zaman damgalı bir `.bak` yedeği
+   alınır. `--yes` bulduğu tüm istemcileri, `--clients=claude-code,cursor` tam olarak bunları seçer.
+4. Eklenti klasörünü ve tarayıcının eklentiler sayfasını açar, klasör yolunu panoya kopyalar ve
+   sana kalan tek adımı, **eklentiyi yüklemeni** bekler:
+   1. **Geliştirici modu**nu aç (sağ üstte),
+   2. **Paketlenmemiş öğe yükle**ye tıkla,
+   3. klasörü seç (yolu Ctrl+V ile yapıştırabilirsin).
+
+   Eklenti bağlandığı anda setup **✓ Ready** ve örnek bir istem yazar.
+
+Native host'un adı, projenin eski GitHub kullanıcı adından gelen
+`io.github.muhammedtalha04.backdraw` olarak kalıyor: adı değiştirmek mevcut kurulumları bozardı.
+
+### Elle kurulum
 
 1. **Kodu indir.** Depoyu git ile klonla ya da ZIP olarak indir (**Code** → **Download ZIP**) ve
    aç:
@@ -127,28 +161,28 @@ açığız. İşletim sistemine özgü her şey (named pipe, native host kaydı,
    node install.js
    ```
 
-   Backdraw'ı `%USERPROFILE%\.backdraw` klasörüne kopyalar, Chrome native messaging host'unu senin
-   Windows kullanıcın için kaydeder, `backdraw` MCP sunucusunu Claude Code'a ekler (kullanıcı
-   düzeyinde) ve görsel klasörünü `Pictures\Backdraw` olarak ayarlar (referans koleksiyonları
-   `Pictures\Backdraw\References` altına gider). Güncellenen bir kurulum mevcut klasörlerini korur;
-   `node cli.js status` hangi klasörlerin kullanıldığını gösterir. Native host'un adı, projenin
-   eski GitHub kullanıcı adından gelen `io.github.muhammedtalha04.backdraw` olarak kalıyor: adı
-   değiştirmek mevcut kurulumları bozardı.
+   Yukarıdaki 1. ve 2. adımları yapar ve Backdraw'ı Claude Code'a ekler (kullanıcı düzeyinde).
+   Diğer istemciler için bunun yerine `node bin/backdraw.js setup` çalıştır ya da
+   [Kullanım](#kullanım) bölümüne bak.
 3. **Eklentiyi bir kez yükle.** `chrome://extensions` sayfasını aç, **Geliştirici modu**nu aç,
    **Paketlenmemiş öğe yükle**ye tıkla ve `%USERPROFILE%\.backdraw\extension` klasörünü seç.
-4. **Açılır pencereyi aç.** Araç çubuğundaki Backdraw simgesine tıkla (yapboz menüsünden
+
+### Açılır pencerede bitir
+
+1. **Açılır pencereyi aç.** Araç çubuğundaki Backdraw simgesine tıkla (yapboz menüsünden
    sabitleyebilirsin). Her şey hazır olana kadar pencerede, her adımın çözümüyle birlikte bir kurulum
    listesi görünür:
    1. köprü bağlı,
    2. ChatGPT'de giriş yapılmış,
    3. bir ChatGPT Projesi seçili,
    4. hazır: Claude'a yapıştırabileceğin örnek bir istem.
-5. **Bir ChatGPT Projesi oluştur ve seç.** ChatGPT'de görsellerin için bir Proje oluştur (örneğin
+2. **Bir ChatGPT Projesi oluştur ve seç.** ChatGPT'de görsellerin için bir Proje oluştur (örneğin
    "Backdraw"), onu aç, Backdraw simgesine tıkla ve **“Backdraw” projesini kullan** düğmesine bas.
    Claude'a da söyleyebilirsin: *"ChatGPT'deki Backdraw projemi görseller için seç."* Her yeni
    görsel sohbeti o Projenin içinde açılır.
 
 Açılır pencerede dil (Otomatik / English / Türkçe) ve tema (Otomatik / Açık / Koyu) ayarları da var.
+Bir şey çalışmazsa [`npx backdraw@latest doctor`](#doktor) çalıştır.
 
 ## Kullanım
 
@@ -161,30 +195,37 @@ ve isteğini doğal dille, istediğin dilde yaz. `backdraw` sunucusu Claude'a ş
 
 ### Claude masaüstü uygulamasından (sohbet)
 
-Masaüstü uygulaması sohbetler için kendi MCP ayarlarını tutar. Backdraw'ı bir kez ekle:
+Masaüstü uygulaması sohbetler için kendi MCP ayarlarını tutar. Claude bu dosyayı kapanırken yeniden
+yazar; bu yüzden Backdraw onu yalnızca Claude kapalıyken değiştirir. Setup Claude'u açık bulduysa
+Backdraw'ı sonra ekle:
 
-1. Claude'u **tamamen** kapat, sistem tepsisinden de. Claude ayar dosyasını kapanırken yeniden
-   yazar; bu yüzden komut, Claude açıkken dosyayı değiştirmez.
+1. Claude'u **tamamen** kapat, sistem tepsisinden de.
 2. Şunu **PowerShell**'den çalıştır (bir Claude oturumundan değil):
 
    ```powershell
-   cd ~\.backdraw
-   node install.js --desktop
+   npx backdraw@latest setup --clients=claude-desktop
    ```
 
-   Her ayar dosyası değiştirilmeden önce zaman damgalı bir `.bak` yedeği alınır.
+   (Elle kurulumda: `~\.backdraw` içinde `node install.js --desktop`.) Her ayar dosyası
+   değiştirilmeden önce zaman damgalı bir `.bak` yedeği alınır.
 3. Claude'u yeniden başlat. Backdraw yeni sohbetlerde kullanılabilir.
 
 ### Başka MCP istemcilerinden
 
-Backdraw sıradan bir stdio MCP sunucusudur: `node %USERPROFILE%\.backdraw\mcp-server.js`. Kurulum
-şimdilik onu yalnızca Claude Code'a ve Claude masaüstü uygulamasına otomatik olarak kaydediyor;
-diğer istemciler için otomatik kurulum v2.1'de geliyor. O zamana kadar aşağıdaki gibi elle ekle,
-sonra istemciyi yeniden başlat ya da yeni bir oturum aç.
+`setup`, Backdraw'ı Codex, Cursor, VS Code ve Gemini CLI'ye de ekler: sorduğunda onları seç ya da
+`npx backdraw@latest setup --clients=codex,cursor,vscode,gemini` çalıştır. Komut olarak
+`node.exe`'nin tam yolunu yazar; böylece `PATH`'ini görmeyen bir istemci de onu bulur. Sonra
+istemciyi yeniden başlat ya da yeni bir oturum aç.
 
-Ayar dosyalarında `C:/Users/you` yerine kendi kullanıcı klasörünü yaz (cmd'de
-`echo %USERPROFILE%` gösterir). Eğik çizgi (`/`) Windows'ta çalışır ve JSON'da kaçış gerektirmez.
-Aşağıdaki `~` senin kullanıcı klasörün. PowerShell komutları yolu kendileri doldurur.
+VS Code ve Gemini CLI, ayar dosyalarında yoruma izin verir. Böyle bir dosyayı yeniden yazmak
+yorumları silerdi; bu yüzden setup yorum içeren bir dosyaya dokunmaz ve bunu söyler. O durumda
+girdiyi elle ekle.
+
+Backdraw sıradan bir stdio MCP sunucusudur: `node %USERPROFILE%\.backdraw\mcp-server.js`. Elle
+eklemek için aşağıdaki örnekleri kullan. Ayar dosyalarında `C:/Users/you` yerine kendi kullanıcı
+klasörünü yaz (cmd'de `echo %USERPROFILE%` gösterir). Eğik çizgi (`/`) Windows'ta çalışır ve JSON'da
+kaçış gerektirmez. Aşağıdaki `~` senin kullanıcı klasörün. PowerShell komutları yolu kendileri
+doldurur.
 
 **Codex** (CLI, IDE eklentisi ve uygulama aynı `~\.codex\config.toml` dosyasını kullanır;
 [belgeler](https://learn.chatgpt.com/docs/extend/mcp)). PowerShell'den:
@@ -404,7 +445,8 @@ beklemeyi durdurur; iş, `cancel_job` onu durdurana kadar sürer.
 ## Komut satırı (CLI)
 
 Kurulum ve sorun giderme için bunları Backdraw klasöründe çalıştır (`%USERPROFILE%\.backdraw` ya da
-kurulumu yaptığın klasör). `npm run status`, `node cli.js status` ile aynıdır.
+kurulumu yaptığın klasör). Her yerden `npx backdraw <komut>` aynı komutları çalıştırır, örneğin
+`npx backdraw status`. `npm run status`, `node cli.js status` ile aynıdır.
 
 ```
 node cli.js status                          Köprünün durumu (Chrome bağlı mı, seçili proje, kuyruk)
@@ -434,12 +476,38 @@ node cli.js generate "sadece gözleri kapat" --ref C:\yol\portre.png
 node cli.js collect https://chatgpt.com/c/<sohbet id> --aspect 16:9
 ```
 
+## Doktor
+
+```
+npx backdraw@latest doctor          her şeyi kontrol eder, hiçbir şeyi değiştirmez
+npx backdraw@latest doctor --fix    onarılması güvenli olanları onarır, sonra yeniden kontrol eder
+```
+
+`doctor` her kontrol için bir satır yazar: ✓ (sorun yok), ⚠ (bakmaya değer) ya da ✗ (bozuk); her
+birinin yanında tek satırlık bir çözüm:
+
+- Node.js sürümü, kurulum klasörü ve dosyalarının, eklentinin ve bu sürümün birbirini tutması.
+- Host manifesti ve kurulu her tarayıcı için gerçekten okuduğu registry kaydı (Claude masaüstü
+  uygulamasının MSIX korumalı alanının içinden de).
+- Kullanıcı düzeyindeki native host'ları kapatan (`NativeMessagingUserLevelHosts`) ya da engelleyen
+  (`NativeMessagingBlocklist`) tarayıcı politikaları. Bunları yalnızca bir yönetici değiştirebilir.
+- Köprü (named pipe), eklenti ve sürümü, eklentinin en son gördüğü ChatGPT oturumu ve bir Proje
+  seçili olup olmadığı.
+- Her MCP istemcisinin Backdraw girdisi: var mı, bu kuruluma mı bakıyor. Claude masaüstü
+  uygulamasının açık olup olmadığını da söyler.
+
+`--fix` host manifestini ve registry kayıtlarını yeniden yazar, istemci girdilerini yeniden bu
+kuruluma yönlendirir (yedek alarak; Claude masaüstü uygulamasınınkini yalnızca o kapalıyken).
+Onaramadıklarını da söyler. Çıktı bir issue'ya yapıştırılabilir: kullanıcı klasörün `~` olarak
+görünür; proje adları, istemler ve sohbet bağlantıları hiç yazılmaz.
+
 ## Sorun giderme
 
 | Sorun | Ne yapmalı |
 |---|---|
+| Herhangi bir sorun | Önce `npx backdraw@latest doctor` çalıştır. |
 | `BRIDGE NOT RUNNING` | Chrome kapalı ya da eklenti yüklü değil veya kapalı. Chrome'u aç (eklenti kendiliğinden bağlanır) ya da Backdraw'ı `chrome://extensions` sayfasından aç. `node cli.js status` ile kontrol et. |
-| Backdraw simgesinde kırmızı **!** | Eklenti yerel host'a ulaşamıyor. Açılır pencere hatayı ve çözümünü gösterir. `node install.js` komutunu yeniden çalıştır, ardından Backdraw'ı `chrome://extensions` sayfasından yeniden yükle. |
+| Backdraw simgesinde kırmızı **!** | Eklenti yerel host'a ulaşamıyor. Açılır pencere hatayı ve çözümünü gösterir. `npx backdraw@latest doctor --fix` (ya da yeniden `node install.js`) çalıştır, ardından Backdraw'ı `chrome://extensions` sayfasından yeniden yükle. |
 | `NEEDS USER ACTION` | ChatGPT bir giriş ekranı ya da insan doğrulaması (CAPTCHA) gösteriyor. Chrome'da ChatGPT sekmesini açıp işlemi kendin tamamla; Backdraw bunu asla atlatmaya çalışmaz. İş seni 10 dakikaya kadar bekler; işlemi bitirdiğin anda kendiliğinden devam eder. 10 dakika dolarsa iş başarısız olur ve ChatGPT sekmesi açık kalır. |
 | `⚠ EDIT CHECK (edited: false)` | ChatGPT düzenlemek yerine yeni bir resim çizdi (gerçek bir düzenleme görselin ~%95-100'ünü korur). Orijinali `reference_images` ile ve `conversation_url` olmadan, yani yeni bir sohbette tekrar iste. |
 | `NEEDS REFERENCE IMAGE` | ChatGPT uzun bir sohbette görseli gözden kaçırdı. Görseli `reference_images` ile ekle (tercihen yeni bir sohbette) ya da `auto_reattach` kullan. |
@@ -468,15 +536,16 @@ mesaj kutusunu artık bulamaz).
 ## Güncelleme
 
 ```
-git pull                      (ya da ZIP'i yeniden indirip aç)
-node install.js
+npx backdraw@latest setup
 ```
 
-`install.js` yeni dosyaları eskilerinin üzerine kopyalar, ayarlarını ve iş geçmişini korur, her şeyi
-yeniden kaydeder ve çalışan eklentiyi yeniden yükler. Chrome kapalıysa yeni sürüm Chrome açılınca
-yüklenir.
+Elle kurulumda: `git pull` (ya da ZIP'i yeniden indirip aç), ardından `node install.js`.
 
-**"ChatGPT görsel köprüsü"nden (1.x) mi geliyorsun?** `node install.js` onu taşır: ayarları ve iş
+İkisi de yeni dosyaları eskilerinin üzerine kopyalar, ayarlarını, iş geçmişini ve koleksiyonlarını
+korur, her şeyi yeniden kaydeder ve çalışan eklentiyi yeniden yükler. Chrome kapalıysa yeni sürüm
+Chrome açılınca yüklenir.
+
+**"ChatGPT görsel köprüsü"nden (1.x) mi geliyorsun?** Setup (ya da `node install.js`) onu taşır: ayarları ve iş
 geçmişini `%USERPROFILE%\.claude\chatgpt-image-bridge` klasöründen kopyalar (hiçbir şeyin üzerine
 yazmadan), eski native host'u ve eski `chatgpt-images` MCP kaydını kaldırır. Ardından
 `chrome://extensions` sayfasında eski "Claude ChatGPT Görsel Köprüsü" eklentisini kaldır ve yerine
@@ -486,13 +555,14 @@ eski klasörü elle sil.
 ## Kaldırma
 
 ```
-node install.js --uninstall --dry-run     neyin kaldırılacağını gösterir, hiçbir şeyi değiştirmez
-node install.js --uninstall
+npx backdraw@latest uninstall --dry-run     neyin kaldırılacağını gösterir, hiçbir şeyi değiştirmez
+npx backdraw@latest uninstall
 ```
 
-Bu komut Chrome native host kaydını ve `backdraw` MCP kaydını Claude Code'dan, Claude kapalıysa
-masaüstü uygulamasının ayarlarından da (yedek alarak) kaldırır; 1.x'in kullandığı adları da temizler.
-Ardından eklentiyi `chrome://extensions` sayfasından kaldır.
+(Elle kurulumda: `node install.js --uninstall [--dry-run]`.) Bu komut her tarayıcının native host
+kaydını ve `backdraw` MCP kaydını Claude Code, Codex, Cursor, VS Code ve Gemini CLI'den, Claude
+kapalıysa masaüstü uygulamasının ayarlarından da (her birinin yedeğini alarak) kaldırır; 1.x'in
+kullandığı adları da temizler. Ardından eklentiyi `chrome://extensions` sayfasından kaldır.
 
 Dosyaların korunur; iki yerde dururlar:
 

@@ -4,7 +4,8 @@
 
 | Version | Supported |
 |---|---|
-| 2.0.x | Yes |
+| 2.1.x | Yes |
+| 2.0.x | Yes, until 2.2 |
 | 1.x ("ChatGPT image bridge") | No, please update |
 
 ## Reporting a vulnerability
@@ -14,8 +15,10 @@ the repository's **Security** tab → **Report a vulnerability**
 ([direct link](../../security/advisories/new)). If that button is missing, open an issue that only
 asks for a private contact, with no details of the problem, and you will get one.
 
-Include what you found, how to reproduce it and the Backdraw version. If you paste output of
-`node cli.js status` or `diagnose`, remove your paths, project names and prompts first.
+Include what you found, how to reproduce it and the Backdraw version. The output of `backdraw
+doctor` is safe to paste (it shows your home folder as `~` and prints no project names, prompts or
+chat links). If you paste output of `node cli.js status` or `diagnose`, remove your paths, project
+names and prompts first.
 
 ## What Backdraw is
 
@@ -27,7 +30,7 @@ the user's own ChatGPT account. Four pieces, all on the user's PC:
 | `mcp-server.js` | a child process of the MCP client (stdio) | `host.js`, over a named pipe |
 | `host.js` | the native messaging host Chrome starts for the extension | the extension (native messaging) and the pipe |
 | Chrome extension | MV3 service worker plus a background tab on chatgpt.com | `host.js` and chatgpt.com |
-| `cli.js` | started by hand, for setup and troubleshooting | `host.js`, over the named pipe |
+| `cli.js`, `bin/backdraw.js` | started by hand (`npx backdraw …`), for setup and troubleshooting | `host.js`, over the named pipe |
 
 ## Threat model
 
@@ -57,7 +60,18 @@ Out of scope:
 - Chrome starts the host only for the extension listed in the host manifest's `allowed_origins`:
   exactly one extension ID, fixed by the `key` in `extension/manifest.json`. Web pages and other
   extensions cannot connect to it.
-- The registration is per user (HKCU); no admin rights are used.
+- The registration is per user (HKCU); no admin rights are used. Setup writes the key each
+  installed browser reads first (Chrome's, Edge's, Chromium's; Brave reads Chromium's and Chrome's),
+  all pointing to the same manifest. Browser policies that turn per-user hosts off are respected;
+  `backdraw doctor` reports them.
+
+### Setup and the MCP clients' config files
+
+- `backdraw setup` only adds or updates the `backdraw` entry in the config files of the clients
+  you pick, after a timestamped `.bak` copy of each file. Other entries are left as they are; a
+  JSON file with comments is not rewritten at all. `backdraw uninstall` removes only that entry.
+- The npm package holds the runtime files only (no tests, data or logs); `npm pack --dry-run`
+  lists them.
 
 ### Calls from the extension to the host
 

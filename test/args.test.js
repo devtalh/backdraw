@@ -89,3 +89,10 @@ test('parseArgs: a boolean flag never takes the next word', () => {
 test('parseArgs: a single dash is a value, not a flag', () => {
   assert.deepEqual(parseArgs(['--out', '-', '-x']), { pos: ['-x'], flags: { out: '-' } });
 });
+
+test('parseArgs: --flag=value, also for a boolean flag and a list flag', () => {
+  assert.deepEqual(parseArgs(['setup', '--clients=claude-code,cursor', '--yes'], { booleans: ['yes'] }),
+    { pos: ['setup'], flags: { clients: 'claude-code,cursor', yes: true } });
+  assert.deepEqual(parseArgs(['--ref=a.png', '--ref', 'b.png', '--aspect=16:9'], CLI).flags, { ref: ['a.png', 'b.png'], aspect: '16:9' });
+  assert.deepEqual(parseArgs(['--out=', 'x']).flags, { out: '' });
+});
