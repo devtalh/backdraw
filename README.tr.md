@@ -7,6 +7,10 @@
 </p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/backdraw"><img src="https://img.shields.io/npm/v/backdraw" alt="npm sürümü"></a>
+</p>
+
+<p align="center">
   <img src="branding/demo/backdraw-demo.gif" alt="Web'deki görseller sağ tıkla referans olarak kaydediliyor, sonra Claude Code Backdraw'dan o tarzda bir görsel istiyor; ChatGPT görseli arka plan sekmesinde çiziyor ve dosya bilgisayara kaydediliyor" width="100%">
 </p>
 
@@ -122,6 +126,8 @@ Bunu PowerShell'de ya da cmd'de çalıştır (yönetici izni gerekmez):
 ```
 npx backdraw@latest setup
 ```
+
+Bu komut [npm'deki `backdraw` paketini](https://www.npmjs.com/package/backdraw) çalıştırır.
 
 `setup`, tarayıcıdaki tek bir tıklama dışında her şeyi yapar:
 

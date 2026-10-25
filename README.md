@@ -7,6 +7,10 @@
 </p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/backdraw"><img src="https://img.shields.io/npm/v/backdraw" alt="npm version"></a>
+</p>
+
+<p align="center">
   <img src="branding/demo/backdraw-demo.gif" alt="Right-click images on the web to save them as references, then Claude Code asks Backdraw for an image in that style; ChatGPT draws it in a background tab and the file is saved on the PC" width="100%">
 </p>
 
@@ -122,6 +126,8 @@ Run this in PowerShell or cmd (no admin rights needed):
 ```
 npx backdraw@latest setup
 ```
+
+It runs the [`backdraw` package from npm](https://www.npmjs.com/package/backdraw).
 
 `setup` does everything except one click in the browser:
 
