@@ -11,6 +11,7 @@ const test = require('node:test');
 const identity = require('../identity');
 const { aspectOption } = require('../lib/aspect');
 const { MAX_REFS } = require('../lib/limits');
+const { LEGACY_VERSIONS } = require('../lib/protocol');
 
 const SERVER = path.join(__dirname, '..', 'mcp-server.js');
 const TAG = `backdraw-test-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
@@ -196,6 +197,18 @@ test('generate_image schema: one reference limit, collection options after the o
 test('instructions mention collections', async () => {
   const res = await request('initialize', { protocolVersion: '2025-06-18' });
   assert.match(res.result.instructions, /call list_collections if needed and pass reference_collection/);
+});
+
+// Directories such as Glama read the instructions through mcp-proxy with a 2025-11-25 initialize.
+test('instructions: the same text for every legacy initialize version and for modern server/discover', async () => {
+  const { result: discover } = await request('server/discover', { _meta: MODERN });
+  assert.match(discover.instructions, /^Generates images with the user's own ChatGPT account/);
+  assert.match(discover.instructions, /Report the saved file path\(s\) and the ChatGPT conversation link to the user\.$/);
+  for (const protocolVersion of LEGACY_VERSIONS) {
+    const res = await request('initialize', { protocolVersion, capabilities: {}, clientInfo: { name: 'mcp-proxy', version: '1' } });
+    assert.equal(res.result.protocolVersion, protocolVersion);
+    assert.equal(res.result.instructions, discover.instructions, protocolVersion);
+  }
 });
 
 test('generate_image refuses more reference images than the limit before calling the bridge', async () => {

@@ -8,6 +8,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/backdraw"><img src="https://img.shields.io/npm/v/backdraw" alt="npm sürümü"></a>
+  <a href="https://glama.ai/mcp/servers/devtalh/backdraw"><img src="https://glama.ai/mcp/servers/devtalh/backdraw/badges/score.svg" alt="devtalh/backdraw MCP sunucusu"></a>
 </p>
 
 <p align="center">
