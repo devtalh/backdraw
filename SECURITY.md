@@ -82,7 +82,7 @@ Out of scope:
 - The extension has no `cookies` permission and never reads cookies, tokens, passwords or ChatGPT's
   session endpoint. It reads the page in its own background tab and dispatches synthetic events
   there; it never moves your real mouse or keyboard.
-- **Logins and CAPTCHAs are never automated or bypassed.** When ChatGPT shows one, the job reports
+- **Logins and CAPTCHAs are never automated or worked around.** When ChatGPT shows one, the job reports
   `NEEDS USER ACTION` and waits up to 10 minutes for you to complete it yourself.
 - Jobs only open `https://chatgpt.com/` links: the host refuses any other `conversation_url`.
 

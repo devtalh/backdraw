@@ -22,7 +22,7 @@ const INSTRUCTIONS = `Generates images with the user's own ChatGPT account (alre
 - Read every result line: NEEDS REFERENCE IMAGE means ChatGPT could not reach the image to edit; CHATGPT REPLIED WITHOUT AN IMAGE shows ChatGPT's own text. Never resend the identical prompt in a loop; follow the next step given in the result.
 - An EDIT CHECK warning means ChatGPT drew a new picture instead of editing; tell the user and retry with reference_images in a fresh chat if an exact edit is needed.
 - The work happens in a background Chrome tab; never tell the user to switch tabs unless a result says NEEDS USER ACTION.
-- NEEDS USER ACTION means ChatGPT shows a login or human-verification (CAPTCHA) page: ask the user to open the ChatGPT tab in Chrome and finish it themselves. Never try to bypass it. The job continues automatically afterwards (check with job_status).
+- NEEDS USER ACTION means ChatGPT shows a login or human-verification (CAPTCHA) page: ask the user to open the ChatGPT tab in Chrome and finish it themselves. Never try to get around it. The job continues automatically afterwards (check with job_status).
 - If no project is selected, call list_projects, then select_project with the user's images project.
 - If a job timed out but has a conversation link, fetch_images can still download the result later; pass the job's aspect_ratio again so it is cropped the same way.
 - Report the saved file path(s) and the ChatGPT conversation link to the user.`;

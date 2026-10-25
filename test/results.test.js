@@ -140,7 +140,7 @@ test('resultLines: running (and any other unfinished status) says STILL RUNNING'
 test('resultLines: needs_human asks for the user and how to check again', () => {
   const lines = resultLines(job({ status: 'needs_human', message: 'ChatGPT shows a human-verification page' }));
   assert.equal(lines[0], 'NEEDS USER ACTION — ChatGPT shows a human-verification page (job img_1a2b3c4d)');
-  assert.match(lines[1], /open the ChatGPT tab in Chrome and complete it themselves; do not try to bypass it/);
+  assert.match(lines[1], /open the ChatGPT tab in Chrome and complete it themselves; do not try to get around it/);
   assert.match(lines[1], /job_status\(job_id="img_1a2b3c4d", wait_seconds=45\)/);
 });
 

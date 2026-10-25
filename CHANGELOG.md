@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-10-25
+
+### Changed
+
+- The repository moved to [github.com/devtalh/backdraw](https://github.com/devtalh/backdraw) (the
+  GitHub user was renamed). `package.json` now names the repository, homepage, issue tracker and
+  keywords, and the license and author name `devtalh`.
+- The native host keeps its name `io.github.muhammedtalha04.backdraw`, so existing installs keep
+  working without a re-install.
+- README (English and Turkish): a "Why Backdraw?" section with a comparison to similar projects,
+  manual setup examples for Codex, Cursor, VS Code and Gemini CLI, a `git clone` command, and a
+  longer disclaimer on personal use, OpenAI's terms and the risk to your account.
+- The demo video's closing card shows the new repository address.
+- The result for a login or human-verification page and the server instructions now say "don't try
+  to get around it" in plainer words; the behaviour is unchanged.
+
+### Added
+
+- `branding/social/backdraw-social-preview.png`, a 1280×640 image for the repository's social
+  preview.
+
 ## [2.0.0] - 2026-10-21
 
 The ChatGPT image bridge is now **Backdraw**.
