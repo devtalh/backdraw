@@ -177,7 +177,7 @@ const expectedId = () => [...crypto.createHash('sha256').update(Buffer.from(EXT_
 
 // A temporary home folder, the OS layer with every outside effect recorded instead of done (no
 // registry, no PowerShell), and a claude CLI stand-in that knows which MCP entries are registered.
-function setup({ registered = [], noCli = false, reloaded = false, running = false } = {}) {
+function setup({ registered = [], noCli = false, reloaded = false, running = false, browsers = ['chrome'] } = {}) {
   const home = tempDir();
   const calls = [];
   const cli = [];
@@ -189,9 +189,12 @@ function setup({ registered = [], noCli = false, reloaded = false, running = fal
     legacyInstallDir: h => win32.legacyInstallDir(h),
     claudeConfigFile: h => win32.claudeConfigFile(h),
     writeHostLauncher: (dir, node) => win32.writeHostLauncher(dir, node),
-    registerNativeHost: (name, manifest) => { calls.push(['register', name, manifest]); return `HKCU\\fake\\${name}`; },
-    unregisterNativeHost: name => { calls.push(['unregister', name]); },
-    nativeHostEntry: name => `HKCU\\fake\\${name}`,
+    registerNativeHost: (name, manifest, browser) => { calls.push(['register', name, manifest, browser]); return `HKCU\\fake\\${browser}\\${name}`; },
+    unregisterNativeHost: (name, browser) => { calls.push(['unregister', name, browser]); },
+    nativeHostEntry: (name, browser) => `HKCU\\fake\\${browser}\\${name}`,
+    detectBrowsers: () => browsers.slice(),
+    appDataDir: () => path.join(home, 'AppData', 'Roaming'),
+    which: () => null,
     picturesDir: () => path.join(home, 'Pictures'),
     claudeCli: () => { throw new Error('the real claude CLI must not be looked up'); },
     desktopConfigFiles: () => desktop.slice(),
@@ -234,7 +237,7 @@ test('install: copies the files, writes the host manifest and the config, regist
   const cfg = readJson(path.join(t.dest, 'data', 'config.json'));
   assert.deepEqual(cfg, { outputDir: path.join(t.home, 'Pictures', 'Backdraw'), collectionsDir: path.join(t.home, 'Pictures', 'Backdraw', 'References') });
   assert.ok(fs.statSync(cfg.outputDir).isDirectory());
-  assert.deepEqual(t.calls, [['unregister', LEGACY_HOST], ['register', HOST, manifestFile], ['reload', t.dest]]);
+  assert.deepEqual(t.calls, [['unregister', LEGACY_HOST, 'chrome'], ['register', HOST, manifestFile, 'chrome'], ['reload', t.dest]]);
   const entry = { type: 'stdio', command: process.execPath, args: [path.join(t.dest, 'mcp-server.js')], env: {} };
   assert.deepEqual(t.cli, [
     ['mcp', 'remove', 'chatgpt-images', '-s', 'user'], ['mcp', 'remove', 'backdraw', '-s', 'user'],
@@ -329,7 +332,9 @@ function uninstallSetup(options) {
 test('uninstall: both host names, both MCP entries and the desktop entries (with a backup) go; the data stays', async () => {
   const t = uninstallSetup({ running: false });
   await uninstall(t.ctx);
-  assert.deepEqual(t.calls, [['unregister', HOST], ['unregister', LEGACY_HOST], ['desktopAppRunning']]);
+  assert.deepEqual(t.calls, [
+    ...['chrome', 'edge', 'chromium'].map(k => ['unregister', HOST, k]), ['unregister', LEGACY_HOST, 'chrome'], ['desktopAppRunning'],
+  ]);
   assert.deepEqual(t.cli, [['mcp', 'remove', 'backdraw', '-s', 'user'], ['mcp', 'remove', 'chatgpt-images', '-s', 'user']]);
   assert.deepEqual(readJson(t.desktopFile), { mcpServers: { other: { command: 'x' } } });
   assert.equal(backups(t.desktopFile).length, 1);
@@ -364,7 +369,8 @@ test('uninstall --dry-run: lists every target and changes or calls nothing', asy
   assert.deepEqual(t.cli, []);
   const text = t.text();
   assert.match(text, /^Dry run: nothing was changed\./);
-  for (const v of [`HKCU\\fake\\${HOST}`, `HKCU\\fake\\${LEGACY_HOST}`, '"backdraw", "chatgpt-images" with "claude mcp remove <name> -s user"',
+  for (const v of [`HKCU\\fake\\chrome\\${HOST}`, `HKCU\\fake\\edge\\${HOST}`, `HKCU\\fake\\chromium\\${HOST}`,
+    `HKCU\\fake\\chrome\\${LEGACY_HOST}`, '"backdraw", "chatgpt-images" with "claude mcp remove <name> -s user"',
     `"backdraw", "chatgpt-images" from ${t.desktopFile}`, t.cfg.outputDir, t.cfg.collectionsDir, path.join(t.dest, 'data')]) {
     assert.ok(text.includes(v), v);
   }
@@ -404,4 +410,58 @@ test('uninstall --dry-run without the claude CLI names the entries ~/.claude.jso
   assert.ok(t.text().includes(`"backdraw" from ${file}`));
   await uninstall(t.ctx); // for real: only that entry goes
   assert.deepEqual(readJson(file), { mcpServers: { other: { command: 'x' } } });
+});
+
+test('install: the host is registered under the key each installed browser reads first, one manifest; Chrome when none is found', async () => {
+  const t = setup({ browsers: ['chrome', 'edge', 'brave'] });
+  await install(t.ctx);
+  const manifestFile = path.join(t.dest, `${HOST}.json`);
+  // Brave has no key of its own: it reads Chromium's, then Chrome's.
+  assert.deepEqual(t.calls.filter(c => c[0] === 'register'), ['chrome', 'edge', 'chromium'].map(k => ['register', HOST, manifestFile, k]));
+  assert.match(t.text(), /Browsers {10}: Google Chrome, Microsoft Edge, Brave\n/);
+  const none = setup({ browsers: [] });
+  await install(none.ctx);
+  assert.deepEqual(none.calls.filter(c => c[0] === 'register').map(c => c[3]), ['chrome']);
+});
+
+test('install for setup: Claude Code only when selected, and the result comes back without a report', async () => {
+  const t = setup();
+  const r = await install({ ...t.ctx, clients: ['cursor'], report: false });
+  assert.deepEqual(t.cli, []);
+  assert.deepEqual(t.out, []);
+  assert.equal(r.mcp, 'not selected');
+  assert.equal(r.server, path.join(t.dest, 'mcp-server.js'));
+  assert.deepEqual(r.registered, ['chrome']);
+  await install({ ...t.ctx, clients: ['claude-code'], report: false });
+  assert.equal(t.cli.at(-1)[1], 'add-json');
+});
+
+test('uninstall: the Backdraw entries of Codex, Cursor, VS Code and Gemini go too (with backups); --dry-run lists them', async () => {
+  const t = uninstallSetup({ running: false });
+  const env = { home: t.home, appData: path.join(t.home, 'AppData', 'Roaming'), which: () => null };
+  const mcpClients = require('../lib/mcp-clients');
+  for (const c of mcpClients.FILE_CLIENTS) mcpClients.addEntry(c, env, process.execPath, path.join(t.dest, 'mcp-server.js'));
+  const vscode = mcpClients.byId('vscode').file(env);
+  fs.writeFileSync(vscode, '{ // comments\n "servers": { "backdraw": {} } }');
+  const before = snapshot(t.home);
+  await uninstall({ ...t.ctx, dryRun: true });
+  assert.deepEqual(snapshot(t.home), before);
+  const dry = t.text();
+  for (const c of ['codex', 'cursor', 'gemini']) assert.ok(dry.includes(`"backdraw" from ${mcpClients.byId(c).file(env)}`), c);
+  assert.match(dry, /VS Code: "backdraw" from .*can't be changed: .*has comments/);
+  t.out.length = 0;
+  await uninstall(t.ctx);
+  for (const c of ['codex', 'cursor', 'gemini']) assert.equal(mcpClients.readEntry(mcpClients.byId(c), env).entry, null, c);
+  assert.equal(fs.readFileSync(vscode, 'utf8'), '{ // comments\n "servers": { "backdraw": {} } }');
+  assert.match(t.text(), /Cursor: removed "backdraw" from .*\(backup: .*\.bak\)/);
+  assert.match(t.text(), /VS Code: left alone/);
+});
+
+test('install: Chrome\'s key is written even when only Edge is found (Chrome Beta/Canary or a portable copy read it)', async () => {
+  const t = setup({ browsers: ['edge'] });
+  await install(t.ctx);
+  assert.deepEqual(t.calls.filter(c => c[0] === 'register').map(c => c[3]), ['chrome', 'edge']);
+  const named = setup({ browsers: [] });
+  await install({ ...named.ctx, browsers: ['brave'] });
+  assert.deepEqual(named.calls.filter(c => c[0] === 'register').map(c => c[3]), ['chrome', 'chromium']);
 });

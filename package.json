@@ -1,8 +1,7 @@
 {
   "name": "backdraw",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Local MCP server, native messaging host and Chrome extension that let Claude generate images with your own signed-in ChatGPT account in a background tab.",
-  "private": true,
   "license": "MIT",
   "author": "devtalh",
   "homepage": "https://github.com/devtalh/backdraw#readme",
@@ -25,6 +24,24 @@
     "native-messaging",
     "windows"
   ],
+  "bin": {
+    "backdraw": "bin/backdraw.js"
+  },
+  "files": [
+    "bin/",
+    "extension/",
+    "lib/",
+    "platform/",
+    "cli.js",
+    "doctor.js",
+    "host.js",
+    "identity.js",
+    "install.js",
+    "mcp-server.js",
+    "setup.js",
+    "shared.js",
+    "README.tr.md"
+  ],
   "engines": {
     "node": ">=20"
   },
@@ -32,5 +49,8 @@
     "status": "node cli.js status",
     "install-bridge": "node install.js",
     "test": "node --test"
-  }
+  },
+  "os": [
+    "win32"
+  ]
 }

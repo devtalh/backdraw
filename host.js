@@ -577,6 +577,8 @@ const handlers = {
     return config;
   },
   diagnose: p => askExtension('diagnose', p, 180000),
+  // ChatGPT sign-in as the extension last saw it ({ loggedIn, challenge, checkedAt }); opens no tab.
+  chatgpt_state: () => askExtension('chatgpt_state', {}, 10000),
   reload_extension: () => {
     if (!extension) throw new shared.BridgeError('The extension is not connected.', 'NO_EXTENSION');
     toExtension({ type: 'reload' });

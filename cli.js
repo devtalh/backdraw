@@ -44,8 +44,9 @@ async function follow(jobId, waitSec) {
   }
 }
 
-async function main() {
-  const [cmd, ...rest] = process.argv.slice(2);
+// argv: the words after "node cli.js" (or "backdraw").
+async function run(argv) {
+  const [cmd, ...rest] = argv;
   const { pos, flags } = parseArgs(rest, FLAGS);
   const copyTo = typeof flags.out === 'string' ? path.resolve(flags.out) : undefined;
   if (flags.aspect === true) throw new Error('--aspect needs a ratio, e.g. --aspect 16:9.');
@@ -99,4 +100,6 @@ async function main() {
   }
 }
 
-main().catch(e => { console.error(`Error: ${e.message}`); process.exitCode = 1; });
+if (require.main === module) run(process.argv.slice(2)).catch(e => { console.error(`Error: ${e.message}`); process.exitCode = 1; });
+
+module.exports = { USAGE, COMMANDS: ['status', 'projects', 'select', 'generate', 'collect', 'job', 'cancel', 'collections', 'collection', 'outdir', 'debug', 'diagnose', 'reload'], run };

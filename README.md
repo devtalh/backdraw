@@ -43,6 +43,8 @@ and the link to the chat.
 - **References from the web.** Right-click images on any site to collect them, then generate in
   their style.
 - **A gallery** of everything you made, in Chrome's side panel.
+- **One command to set up:** `npx backdraw@latest setup`. Loading the extension is the only step
+  left to you.
 
 ### How it compares
 
@@ -102,16 +104,48 @@ Images are saved in your Pictures folder under `Backdraw`, named after the time 
 | | |
 |---|---|
 | OS | Windows 10 or 11 |
-| Browser | Google Chrome 116 or newer |
+| Browser | Google Chrome 116 or newer (Edge, Brave and Chromium are registered too, but only Chrome is tested) |
 | Runtime | Node.js 20 or newer |
 | Account | A ChatGPT account that can generate images, signed in to chatgpt.com in Chrome |
-| Client | Claude Code or the Claude desktop app (or another MCP client that runs stdio servers) |
+| Client | Claude Code, the Claude desktop app, Codex, Cursor, VS Code or Gemini CLI (or another MCP client that runs stdio servers) |
 
 Windows only for now — the code is split into a platform module and macOS/Linux contributions are
 welcome. Everything OS-specific (named pipe, native host registration, user folders) lives in
 `platform/win32.js`.
 
 ## Installation
+
+### Quick install
+
+Run this in PowerShell or cmd (no admin rights needed):
+
+```
+npx backdraw@latest setup
+```
+
+`setup` does everything except one click in the browser:
+
+1. It copies Backdraw to `%USERPROFILE%\.backdraw` (npx's own copy is temporary) and sets up the
+   images folder `Pictures\Backdraw` (reference collections go to `Pictures\Backdraw\References`).
+   Running it again updates Backdraw and keeps your settings, job history and collections.
+2. It registers the native messaging host for your Windows user, for each browser it finds
+   (Chrome, Edge, Brave, Chromium).
+3. It lists the MCP clients it finds (Claude Code, the Claude desktop app, Codex, Cursor, VS Code,
+   Gemini CLI) and asks which ones to add Backdraw to. Only the `backdraw` entry is added or
+   updated, and every config file gets a timestamped `.bak` copy before it changes.
+   `--yes` takes every client it found; `--clients=claude-code,cursor` takes exactly those.
+4. It opens the extension folder and your browser's extensions page, copies the folder path to the
+   clipboard, and waits for you to **load the extension**, the one step left to you:
+   1. turn on **Developer mode** (top right),
+   2. click **Load unpacked**,
+   3. pick the folder (paste the path with Ctrl+V).
+
+   As soon as the extension connects, setup prints **✓ Ready** and an example prompt.
+
+The native host is still named `io.github.muhammedtalha04.backdraw`, after the project's old GitHub
+user name: renaming it would break existing installs.
+
+### Manual install
 
 1. **Get the code.** Clone the repository with git, or download it as a ZIP (**Code** →
    **Download ZIP**) and unzip it:
@@ -126,26 +160,26 @@ welcome. Everything OS-specific (named pipe, native host registration, user fold
    node install.js
    ```
 
-   It copies Backdraw to `%USERPROFILE%\.backdraw`, registers the Chrome native messaging host for
-   your Windows user, adds the `backdraw` MCP server to Claude Code (user scope) and sets up the
-   images folder `Pictures\Backdraw` (reference collections go to `Pictures\Backdraw\References`).
-   An upgraded install keeps the folders it already had; `node cli.js status` shows them.
-   The native host is still named `io.github.muhammedtalha04.backdraw`, after the project's old
-   GitHub user name: renaming it would break existing installs.
+   It does steps 1 and 2 above and adds Backdraw to Claude Code (user scope). For the other
+   clients, run `node bin/backdraw.js setup` instead, or see [Use it](#use-it).
 3. **Load the extension** once: open `chrome://extensions`, turn on **Developer mode**, click
    **Load unpacked** and select `%USERPROFILE%\.backdraw\extension`.
-4. **Open the popup.** Click the Backdraw icon in the toolbar (pin it from the puzzle-piece menu).
+
+### Finish in the popup
+
+1. **Open the popup.** Click the Backdraw icon in the toolbar (pin it from the puzzle-piece menu).
    Until everything works, the popup shows a setup checklist with the fix for each step:
    1. the bridge is connected,
    2. you are signed in to ChatGPT,
    3. a ChatGPT Project is selected,
    4. ready: an example prompt to copy into Claude.
-5. **Create and select a ChatGPT Project.** In ChatGPT, create a Project for your images (for
+2. **Create and select a ChatGPT Project.** In ChatGPT, create a Project for your images (for
    example "Backdraw"), open it, click the Backdraw icon and press **Use the “Backdraw” project**.
    You can also ask Claude: *"Select my Backdraw project in ChatGPT for images."* Every new image
    chat is created inside that Project.
 
 The popup also has a language (Auto / English / Türkçe) and a theme (Auto / Light / Dark) setting.
+If something doesn't work, run [`npx backdraw@latest doctor`](#doctor).
 
 ## Use it
 
@@ -158,30 +192,34 @@ starts) and ask in plain words, in any language. The `backdraw` server gives Cla
 
 ### From the Claude desktop app (chat)
 
-The desktop app keeps its own MCP config for chats. Add Backdraw to it once:
+The desktop app keeps its own MCP config for chats. Claude rewrites that config when it exits, so
+Backdraw only changes it while Claude is closed. If setup found Claude running, add Backdraw later:
 
-1. Quit Claude **completely**, also from the system tray. Claude rewrites its config when it exits,
-   so the command refuses to change it while Claude is running.
+1. Quit Claude **completely**, also from the system tray.
 2. Run this from **PowerShell** (not from a Claude session):
 
    ```powershell
-   cd ~\.backdraw
-   node install.js --desktop
+   npx backdraw@latest setup --clients=claude-desktop
    ```
 
-   A timestamped `.bak` copy of each config file is written before it is changed.
+   (From a manual install: `node install.js --desktop` in `~\.backdraw`.) A timestamped `.bak` copy
+   of each config file is written before it is changed.
 3. Start Claude again. Backdraw is available in new chats.
 
 ### From other MCP clients
 
-Backdraw is a plain stdio MCP server: `node %USERPROFILE%\.backdraw\mcp-server.js`. For now the
-installer registers it automatically only in Claude Code and the Claude desktop app; automatic
-setup for other clients is planned for v2.1. Until then, add it by hand as shown below, then
-restart the client or start a new session.
+`setup` adds Backdraw to Codex, Cursor, VS Code and Gemini CLI too: pick them when it asks, or run
+`npx backdraw@latest setup --clients=codex,cursor,vscode,gemini`. It writes the full path of
+`node.exe` as the command, so a client that doesn't see your `PATH` still finds it. Restart the
+client or start a new session afterwards.
 
-In the config files, replace `C:/Users/you` with your home folder (`echo %USERPROFILE%` in cmd
-prints it). Forward slashes work on Windows and need no escaping in JSON. `~` below is your home
-folder. The PowerShell commands fill in the path themselves.
+VS Code and Gemini CLI allow comments in their config files. Rewriting such a file would drop the
+comments, so setup leaves a file with comments alone and tells you; add the entry by hand then.
+
+Backdraw is a plain stdio MCP server: `node %USERPROFILE%\.backdraw\mcp-server.js`. To add it by
+hand, use the examples below. In the config files, replace `C:/Users/you` with your home folder
+(`echo %USERPROFILE%` in cmd prints it). Forward slashes work on Windows and need no escaping in
+JSON. `~` below is your home folder. The PowerShell commands fill in the path themselves.
 
 **Codex** (the CLI, the IDE extension and the app share `~\.codex\config.toml`;
 [docs](https://learn.chatgpt.com/docs/extend/mcp)). From PowerShell:
@@ -396,7 +434,8 @@ waiting; the job keeps running until `cancel_job` stops it.
 ## CLI
 
 For setup and troubleshooting, run these in the Backdraw folder (`%USERPROFILE%\.backdraw`, or the
-folder you installed from). `npm run status` is the same as `node cli.js status`.
+folder you installed from). From anywhere, `npx backdraw <command>` runs the same commands, e.g.
+`npx backdraw status`. `npm run status` is the same as `node cli.js status`.
 
 ```
 node cli.js status                          Bridge status (Chrome connected, selected project, queue)
@@ -426,12 +465,38 @@ node cli.js generate "close only the eyes" --ref C:\path\to\portrait.png
 node cli.js collect https://chatgpt.com/c/<chat id> --aspect 16:9
 ```
 
+## Doctor
+
+```
+npx backdraw@latest doctor          checks everything, changes nothing
+npx backdraw@latest doctor --fix    repairs what is safe to repair, then checks again
+```
+
+`doctor` prints one line per check, ✓ (fine), ⚠ (worth a look) or ✗ (broken), each with a one-line
+fix:
+
+- Node.js version, the install folder, and that its files, the extension and this version match.
+- The host manifest and, for each installed browser, the registry entry it really reads (also
+  from inside the Claude desktop app's MSIX sandbox).
+- Browser policies that switch off per-user native hosts (`NativeMessagingUserLevelHosts`) or block
+  them (`NativeMessagingBlocklist`). Only an administrator can change these.
+- The bridge (named pipe), the extension and its version, the ChatGPT sign-in as the extension
+  last saw it, and whether a Project is selected.
+- Every MCP client's Backdraw entry: there, and pointing to this install. It also says whether the
+  Claude desktop app is running.
+
+`--fix` rewrites the host manifest and the registry entries, and points client entries back at
+this install (with a backup; the Claude desktop app only while it is closed). It says what it
+couldn't fix. The output is safe to paste into an issue: your home folder is shown as `~`, and
+project names, prompts and chat links are never printed.
+
 ## Troubleshooting
 
 | Problem | What to do |
 |---|---|
+| Anything | Run `npx backdraw@latest doctor` first. |
 | `BRIDGE NOT RUNNING` | Chrome is closed, or the extension is not loaded or turned off. Open Chrome (the extension connects by itself) or turn Backdraw on at `chrome://extensions`. Check with `node cli.js status`. |
-| Red **!** on the Backdraw icon | The extension can't reach the local host. The popup shows the error and the fix. Run `node install.js` again, then reload Backdraw at `chrome://extensions`. |
+| Red **!** on the Backdraw icon | The extension can't reach the local host. The popup shows the error and the fix. Run `npx backdraw@latest doctor --fix` (or `node install.js` again), then reload Backdraw at `chrome://extensions`. |
 | `NEEDS USER ACTION` | ChatGPT shows a login or a human verification (CAPTCHA). Open the ChatGPT tab in Chrome and finish it yourself; Backdraw never tries to get around it. The job waits up to 10 minutes for you; as soon as you finish, it continues by itself. After 10 minutes it fails and leaves the ChatGPT tab open. |
 | `⚠ EDIT CHECK (edited: false)` | ChatGPT drew a new picture instead of editing (a real edit keeps ~95-100% of the image). Ask again with the original in `reference_images` and without `conversation_url`, i.e. in a fresh chat. |
 | `NEEDS REFERENCE IMAGE` | ChatGPT lost track of the image in a long chat. Attach it with `reference_images` (best in a fresh chat) or use `auto_reattach`. |
@@ -459,15 +524,16 @@ find the message box).
 ## Updating
 
 ```
-git pull                      (or download the ZIP again and unzip it)
-node install.js
+npx backdraw@latest setup
 ```
 
-`install.js` copies the new files over the old ones, keeps your settings and job history, registers
-everything again and reloads the running extension. If Chrome was closed, it loads the new version
-when it starts.
+From a manual install: `git pull` (or download the ZIP again), then `node install.js`.
 
-**Coming from the "ChatGPT image bridge" (1.x)?** `node install.js` migrates it: it copies the
+Both copy the new files over the old ones, keep your settings, job history and collections,
+register everything again and reload the running extension. If Chrome was closed, it loads the new
+version when it starts.
+
+**Coming from the "ChatGPT image bridge" (1.x)?** Setup (or `node install.js`) migrates it: it copies the
 settings and job history from `%USERPROFILE%\.claude\chatgpt-image-bridge` (never overwriting) and
 removes the old native host and the old `chatgpt-images` MCP entry. Then, at `chrome://extensions`,
 remove the old "Claude ChatGPT Görsel Köprüsü" extension and load `%USERPROFILE%\.backdraw\extension`
@@ -476,13 +542,14 @@ instead; the extension ID stays the same. Delete the old folder by hand once Bac
 ## Uninstall
 
 ```
-node install.js --uninstall --dry-run     shows what would be removed, changes nothing
-node install.js --uninstall
+npx backdraw@latest uninstall --dry-run     shows what would be removed, changes nothing
+npx backdraw@latest uninstall
 ```
 
-This removes the Chrome native host registration and the `backdraw` MCP entry from Claude Code and,
-while Claude is closed, from the desktop app's config (with a backup), plus the names used by 1.x.
-Then remove the extension at `chrome://extensions`.
+(From a manual install: `node install.js --uninstall [--dry-run]`.) This removes the native host
+registration of every browser, and the `backdraw` MCP entry from Claude Code, Codex, Cursor,
+VS Code and Gemini CLI and, while Claude is closed, from the desktop app's config (each with a
+backup), plus the names used by 1.x. Then remove the extension at `chrome://extensions`.
 
 Your files are kept, in two places:
 

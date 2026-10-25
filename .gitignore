@@ -24,3 +24,6 @@ desktop.ini
 
 # Overnight work report (local only)
 /NIGHT_REPORT.md
+
+# npm pack output
+*.tgz

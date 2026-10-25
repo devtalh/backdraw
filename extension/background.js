@@ -756,6 +756,7 @@ async function handleRequest(msg) {
     if (msg.action === 'list_projects') data = await listProjects();
     else if (msg.action === 'resolve_project') data = await resolveProject((msg.params || {}).name);
     else if (msg.action === 'diagnose') data = await diagnose(msg.params || {});
+    else if (msg.action === 'chatgpt_state') data = chatgptState; // what the last look at chatgpt.com showed (backdraw doctor)
     else throw new Error(`Unknown action ${msg.action}`);
     post({ type: 'response', reqId: msg.reqId, ok: true, data });
   } catch (e) {

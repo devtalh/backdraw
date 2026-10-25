@@ -12,10 +12,13 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const identity = require('./identity');
 const platform = require('./platform');
+const browsers = require('./lib/browsers');
+const mcpClients = require('./lib/mcp-clients');
 
 const { LEGACY } = identity;
 const SRC = __dirname;
-const FILES = ['package.json', 'LICENSE', 'identity.js', 'shared.js', 'host.js', 'mcp-server.js', 'cli.js', 'install.js', 'README.md', 'README.tr.md', 'SECURITY.md', 'CHANGELOG.md', 'extension', 'platform', 'lib'];
+const FILES = ['package.json', 'LICENSE', 'identity.js', 'shared.js', 'host.js', 'mcp-server.js', 'cli.js', 'install.js', 'setup.js', 'doctor.js',
+  'README.md', 'README.tr.md', 'SECURITY.md', 'CHANGELOG.md', 'bin', 'extension', 'platform', 'lib'];
 const NODE = process.execPath;
 const MCP_NAMES = [identity.MCP_NAME, LEGACY.MCP_NAME];
 
@@ -38,6 +41,9 @@ function extensionId(manifest) {
 //   src        the folder that is installed    log     prints the report
 //   claudeCli  runs `claude <args>`, or null when the Claude Code CLI is not installed
 //   reload     asks a running extension to reload itself (resolves to true when it did)
+//   clients    (setup) the MCP clients to register in; without it, Claude Code only, as before
+//   report     false: install() returns its result without printing the report (setup prints its own)
+//   browsers   (setup --browser) browser ids to register for even when they aren't found
 function context(ctx = {}) {
   const p = ctx.platform || platform;
   let claudeCli = ctx.claudeCli;
@@ -45,10 +51,20 @@ function context(ctx = {}) {
     const exe = p.claudeCli();
     claudeCli = exe ? args => execFileSync(exe, args, { stdio: 'ignore' }) : null;
   }
+  const home = ctx.home || os.homedir();
   return {
-    platform: p, home: ctx.home || os.homedir(), src: ctx.src || SRC, log: ctx.log || (text => console.log(text)),
+    platform: p, home, src: ctx.src || SRC, log: ctx.log || (text => console.log(text)),
     claudeCli, reload: ctx.reload || reloadRunningExtension, dryRun: !!ctx.dryRun,
+    clients: ctx.clients || null, report: ctx.report !== false, browsers: ctx.browsers || [],
+    clientEnv: { home, appData: p.appDataDir(home), which: cmd => p.which(cmd) },
   };
+}
+
+// The browsers to register the native host for: Chrome always (every Chrome channel and a copy the
+// check can't see read its key, and the others fall back to it), the installed ones, and any the
+// user named (setup --browser).
+function targetBrowsers(p, extra = []) {
+  return [...new Set(['chrome', ...p.detectBrowsers(), ...extra])];
 }
 
 // Copies the settings and job history of an older install. Never overwrites; returns a report.
@@ -239,6 +255,7 @@ function installReport(r) {
     `  Images folder     : ${r.cfg.outputDir}`,
     `  References folder : ${r.cfg.collectionsDir}`,
     `  Extension ID      : ${r.id}`,
+    `  Browsers          : ${r.registered.map(b => browsers.byId(b).name).join(', ')}`,
     `  Claude Code MCP   : ${r.mcp}`];
   const migrated = [...r.migration.filter(m => m.startsWith('copied ')),
     ...(r.legacyMcpRemoved ? [`removed the old "${LEGACY.MCP_NAME}" Claude Code MCP entry`] : [])];
@@ -266,17 +283,7 @@ async function install(ctx) {
     }
   }
   const migration = hasLegacy ? migrateData(legacyDir, dest) : [];
-  const id = extensionId(readJson(path.join(dest, 'extension', 'manifest.json'), {}));
-
-  // Chrome starts this host when the extension connects (native messaging).
-  const launcher = p.writeHostLauncher(dest, NODE);
-  const hostManifest = path.join(dest, `${identity.HOST_NAME}.json`);
-  fs.writeFileSync(hostManifest, JSON.stringify({
-    name: identity.HOST_NAME, description: identity.HOST_DESCRIPTION, path: launcher, type: 'stdio',
-    allowed_origins: [`chrome-extension://${id}/`],
-  }, null, 2));
-  p.unregisterNativeHost(LEGACY.HOST_NAME);
-  p.registerNativeHost(identity.HOST_NAME, hostManifest);
+  const { id, browsers: registered } = registerHost(c, dest);
 
   const cfgFile = path.join(dest, 'data', 'config.json');
   let pictures = null;
@@ -286,13 +293,36 @@ async function install(ctx) {
   fs.mkdirSync(cfg.outputDir, { recursive: true });
 
   const server = path.join(dest, 'mcp-server.js');
-  const [mcp, legacyMcpRemoved] = registerMcp(c, server);
+  const claudeCode = !c.clients || c.clients.includes('claude-code');
+  const [mcp, legacyMcpRemoved] = claudeCode ? registerMcp(c, server) : ['not selected', false];
   const reloaded = await c.reload(dest);
   const desktopStale = p.desktopConfigFiles().some(f => desktopNeedsUpdate(f, desktopEntry(server)));
-  c.log(installReport({
+  const result = {
     version: readJson(path.join(dest, 'package.json'), {}).version || '?', dest, cfg, id, mcp, legacyDir, hasLegacy, migration,
     legacyMcpRemoved, wasInstalled, reloaded, desktopStale, desktopRunning: desktopStale ? p.desktopAppRunning() : false,
-  }));
+    server, registered,
+  };
+  if (c.report) c.log(installReport(result));
+  return result;
+}
+
+// Writes the launcher and the host manifest, and registers the host under the key each installed
+// browser reads first (all of them load the same unpacked extension, so they share one extension
+// ID and one manifest). Also what `backdraw doctor --fix` repairs.
+// Returns { id, manifest, browsers: [ids], keys: [registry keys written] }.
+function registerHost(c, dest) {
+  const p = c.platform;
+  const id = extensionId(readJson(path.join(dest, 'extension', 'manifest.json'), {}));
+  const launcher = p.writeHostLauncher(dest, NODE);
+  const manifest = path.join(dest, `${identity.HOST_NAME}.json`);
+  fs.writeFileSync(manifest, JSON.stringify({
+    name: identity.HOST_NAME, description: identity.HOST_DESCRIPTION, path: launcher, type: 'stdio',
+    allowed_origins: [`chrome-extension://${id}/`],
+  }, null, 2));
+  p.unregisterNativeHost(LEGACY.HOST_NAME, 'chrome');
+  const targets = targetBrowsers(p, c.browsers);
+  const keys = browsers.keysFor(targets).map(key => p.registerNativeHost(identity.HOST_NAME, manifest, key));
+  return { id, manifest, browsers: targets, keys };
 }
 
 // ---------------------------------------------------------------- uninstall
@@ -303,18 +333,38 @@ function keptLines(dest, cfg) {
     .filter(([, dir]) => dir && fs.existsSync(dir)).map(([label, dir]) => `  ${label}: ${dir}`);
 }
 
+// Every registry key a host registration can have: Backdraw's under each browser key, and 1.x's
+// under Chrome's.
+const hostEntries = () => [...Object.keys(browsers.HOST_KEYS).map(key => [identity.HOST_NAME, key]), [LEGACY.HOST_NAME, 'chrome']];
+
+// The other MCP clients that have a Backdraw entry: [{ client, file }]. A file Backdraw can't read
+// is listed with its error.
+function fileClientEntries(c) {
+  return mcpClients.FILE_CLIENTS.map(client => {
+    try {
+      const { file, entry } = mcpClients.readEntry(client, c.clientEnv);
+      if (!entry) return null;
+      if (client.format === 'json') mcpClients.readJsonConfig(file); // one with comments can't be rewritten
+      return { client, file };
+    } catch (e) { return { client, file: client.file(c.clientEnv), error: e.message }; }
+  }).filter(Boolean);
+}
+
 // Lists the targets without changing anything (no registry, CLI or file writes).
-function dryRunReport(c, { dest, folders, desktopFiles, cfg }) {
+function dryRunReport(c, { dest, folders, desktopFiles, cfg, others }) {
   const configFile = c.platform.claudeConfigFile(c.home);
   const inFile = c.claudeCli ? [] : mcpEntriesInFile(c);
-  return ['Dry run: nothing was changed. "node install.js --uninstall" would remove:',
-    '  Chrome host entries (where present):',
-    ...[identity.HOST_NAME, LEGACY.HOST_NAME].map(n => `    ${c.platform.nativeHostEntry(n)}`),
+  return ['Dry run: nothing was changed. "backdraw uninstall" would remove:',
+    '  Browser host entries (where present):',
+    ...hostEntries().map(([n, b]) => `    ${c.platform.nativeHostEntry(n, b)}`),
     '  Claude Code MCP entries:',
     c.claudeCli ? `    ${quoted(MCP_NAMES)} with "claude mcp remove <name> -s user" (where registered)`
       : inFile.length ? `    ${quoted(inFile)} from ${configFile}` : `    none (${configFile} has no Backdraw entry)`,
     '  Claude desktop app chat config (a backup is made first; only while Claude is closed):',
     ...(desktopFiles.length ? desktopFiles.map(f => `    ${quoted(desktopEntriesIn(f))} from ${f}`) : ['    none (no Backdraw entry)']),
+    '  Other MCP clients (a backup is made first):',
+    ...(others.length ? others.map(o => `    ${o.client.label}: "${mcpClients.NAME}" from ${o.file}${o.error ? ` (can't be changed: ${o.error})` : ''}`)
+      : ['    none (no Backdraw entry)']),
     'It keeps:', ...keptLines(dest, cfg),
     ...folders.map(d => `  The folder ${d} itself (delete it by hand)`),
     '  The Chrome extension (remove it at chrome://extensions)',
@@ -329,10 +379,15 @@ async function uninstall(ctx) {
   const cfg = readJson(path.join(dest, 'data', 'config.json'), {}) || {};
   const desktopFiles = p.desktopConfigFiles().filter(f => desktopEntriesIn(f).length);
   const folders = [dest, legacyDir].filter(d => fs.existsSync(d));
-  if (c.dryRun) return c.log(dryRunReport(c, { dest, folders, desktopFiles, cfg }));
+  const others = fileClientEntries(c);
+  if (c.dryRun) return c.log(dryRunReport(c, { dest, folders, desktopFiles, cfg, others }));
 
-  for (const name of [identity.HOST_NAME, LEGACY.HOST_NAME]) p.unregisterNativeHost(name);
+  for (const [name, browser] of hostEntries()) p.unregisterNativeHost(name, browser);
   const mcpRemoved = unregisterMcp(c);
+  const otherLines = others.map(({ client, file, error }) => {
+    if (error) return `${client.label}: left alone (${error})`;
+    try { return `${client.label}: removed "${mcpClients.NAME}" from ${file} (backup: ${mcpClients.removeEntry(client, c.clientEnv).backup})`; } catch (e) { return `${client.label}: left alone (${e.message})`; }
+  });
   const desktopRunning = desktopFiles.length ? p.desktopAppRunning() : false;
   const desktopLines = [];
   if (desktopRunning === false) {
@@ -348,10 +403,11 @@ Quit Claude completely (also from the system tray), then run this again from Pow
   if (folders.length) steps.push(`Optionally delete ${folders.join(' and ')} by hand (that deletes the settings and job history too).`);
   const kept = keptLines(dest, cfg);
   c.log(['Backdraw was uninstalled.',
-    `  Chrome host entries : removed ${identity.HOST_NAME} and ${LEGACY.HOST_NAME} (where present)`,
+    `  Browser host entries: removed ${identity.HOST_NAME} (Chrome, Edge and Chromium keys; Brave reads the last two) and ${LEGACY.HOST_NAME} (where present)`,
     `  Claude Code MCP     : ${mcpRemoved.length ? `removed ${quoted(mcpRemoved)}` : 'no entry was registered'}`,
     ...(desktopLines.length ? desktopLines.map(l => `  Claude desktop app  : ${l}`)
       : [`  Claude desktop app  : ${desktopFiles.length ? 'left alone (see the next steps)' : 'no Backdraw entry'}`]),
+    ...otherLines.map(l => `  ${l}`),
     ...(kept.length ? ['Kept:', ...kept] : []),
     '', 'Next steps:', ...numbered(steps)].join('\n'));
 }
@@ -365,4 +421,7 @@ if (require.main === module) {
   Promise.resolve().then(run).catch(e => { console.error(`Setup failed: ${e.message}`); process.exitCode = 1; });
 }
 
-module.exports = { FILES, migrateData, updateDesktopConfig, desktopEntry, extensionSteps, configDefaults, install, uninstall };
+module.exports = {
+  FILES, NODE, context, extensionId, migrateData, updateDesktopConfig, desktopNeedsUpdate, desktopEntry, desktopEntriesIn, desktopCommand,
+  extensionSteps, configDefaults, registerHost, registerMcp, targetBrowsers, install, uninstall,
+};
