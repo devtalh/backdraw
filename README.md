@@ -151,6 +151,28 @@ It runs the [`backdraw` package from npm](https://www.npmjs.com/package/backdraw
 The native host is still named `io.github.muhammedtalha04.backdraw`, after the project's old GitHub
 user name: renaming it would break existing installs.
 
+### Install from your client
+
+Your MCP client can also add Backdraw itself; it then starts the server with
+`npx backdraw@latest mcp`. The browser side still needs a one-time setup on the PC, which leaves the
+clients alone:
+
+```
+npx backdraw@latest setup --clients=none
+```
+
+| Client | Add Backdraw |
+|---|---|
+| Claude Code | `/plugin install backdraw --marketplace devtalh/backdraw` (Claude Code 2.1.275 or later; or `/plugin marketplace add devtalh/backdraw`, then `/plugin install backdraw@backdraw`). `/backdraw:setup` explains the browser step. |
+| Cursor | [![Add Backdraw to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=backdraw&config=eyJjb21tYW5kIjoiY21kIiwiYXJncyI6WyIvYyIsIm5weCIsIi15IiwiYmFja2RyYXdAbGF0ZXN0IiwibWNwIl19) |
+| VS Code | [![Install Backdraw in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=backdraw&config=%7B%22type%22%3A%22stdio%22%2C%22command%22%3A%22cmd%22%2C%22args%22%3A%5B%22%2Fc%22%2C%22npx%22%2C%22-y%22%2C%22backdraw%40latest%22%2C%22mcp%22%5D%7D) |
+| Codex | `codex mcp add backdraw -- cmd /c npx -y backdraw@latest mcp` |
+| Gemini CLI | `npx backdraw@latest setup --clients=gemini` |
+
+On Windows the command goes through `cmd /c`, because clients start `npx` without a shell. Use one
+way per client: if setup already added Backdraw to Claude Code, the plugin would start a second
+server with the same tools.
+
 ### Manual install
 
 1. **Get the code.** Clone the repository with git, or download it as a ZIP (**Code** →
@@ -441,7 +463,8 @@ waiting; the job keeps running until `cancel_job` stops it.
 
 For setup and troubleshooting, run these in the Backdraw folder (`%USERPROFILE%\.backdraw`, or the
 folder you installed from). From anywhere, `npx backdraw <command>` runs the same commands, e.g.
-`npx backdraw status`. `npm run status` is the same as `node cli.js status`.
+`npx backdraw status`. `npm run status` is the same as `node cli.js status`. `backdraw mcp` runs
+the MCP server itself on stdio; that is what MCP clients start.
 
 ```
 node cli.js status                          Bridge status (Chrome connected, selected project, queue)

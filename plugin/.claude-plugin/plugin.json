@@ -1,0 +1,13 @@
+{
+  "name": "backdraw",
+  "version": "2.1.1",
+  "description": "Generate images with your own signed-in ChatGPT account in a background Chrome tab (Windows, no API key). Run /backdraw:setup once.",
+  "author": {
+    "name": "devtalh",
+    "url": "https://github.com/devtalh"
+  },
+  "homepage": "https://github.com/devtalh/backdraw#readme",
+  "repository": "https://github.com/devtalh/backdraw",
+  "license": "MIT",
+  "keywords": ["chatgpt", "image-generation", "mcp", "chrome", "windows"]
+}

@@ -3,7 +3,7 @@
 // own copy is temporary), registers the native host for the installed browsers, adds Backdraw to
 // the MCP clients the user picks, then walks through loading the extension and waits for it.
 //   --yes                 no questions: every client that was found
-//   --clients=a,b         exactly these (ids: see CLIENT_IDS)
+//   --clients=a,b         exactly these (ids: see CLIENT_IDS); --clients=none: none, the browser side only
 //   --browser=edge        the browser to load the extension in (default: the first one found)
 //   --no-wait             don't wait for the extension to connect
 const fs = require('fs');
@@ -31,6 +31,7 @@ function detectClients(c) {
 function parseClientList(value) {
   if (value === true || value === '') throw new Error(`--clients needs a list, e.g. --clients=claude-code,cursor (one of: ${CLIENT_IDS.join(', ')}).`);
   const ids = String(value).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  if (ids.length === 1 && ids[0] === 'none') return []; // the browser side only (e.g. the Claude Code plugin)
   const unknown = ids.filter(id => !CLIENT_IDS.includes(id));
   if (unknown.length) throw new Error(`Unknown client ${unknown.join(', ')}; use: ${CLIENT_IDS.join(', ')}.`);
   return [...new Set(ids)];

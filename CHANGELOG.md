@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.1] - 2026-10-25
+
+### Added
+
+- `backdraw mcp` runs the MCP server on stdio, so clients can start it with
+  `npx backdraw@latest mcp` (through `cmd /c` on Windows).
+- **Claude Code plugin and marketplace:** `/plugin install backdraw --marketplace devtalh/backdraw`
+  adds the server; `/backdraw:setup` explains the one-time browser step.
+- **Official MCP Registry** entry `io.github.devtalh/backdraw` (`server.json`, `mcpName` in
+  `package.json`).
+- README (English and Turkish): "Install from your client", with the Claude Code plugin command,
+  Add to Cursor and Install in VS Code buttons, and Codex and Gemini CLI lines.
+- `setup --clients=none` sets up only the browser side (for clients that add the server
+  themselves).
+- `glama.json` for the Glama MCP directory.
+- Releases are published by GitHub Actions when a `v*` tag is pushed: tests on Windows, npm with
+  trusted publishing (OIDC, with provenance) and the MCP Registry with GitHub OIDC. No token is
+  stored.
+
+### Changed
+
+- The npm package no longer restricts the OS. Directories that check MCP servers on Linux can start
+  it and list its tools; setup and the tools themselves still say clearly that only Windows is
+  supported.
+
 ## [2.1.0] - 2026-10-25
 
 ### Added

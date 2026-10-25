@@ -10,6 +10,8 @@ const win32 = require('../platform/win32');
 const mcpClients = require('../lib/mcp-clients');
 const { setup, parseChoice, parseClientList, CLIENT_IDS } = require('../setup');
 
+const VERSION = require('../package.json').version;
+
 function system({ desktopRunning = false, connectAfter = 1, reloaded = false, cli = true } = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'backdraw-setup-'));
   test.after(() => fs.rmSync(home, { recursive: true, force: true }));
@@ -35,7 +37,7 @@ function system({ desktopRunning = false, connectAfter = 1, reloaded = false, cl
   const call = async method => {
     assert.equal(method, 'status');
     if (++polls < connectAfter) throw Object.assign(new Error('not running'), { code: 'NOT_RUNNING' });
-    return { hostVersion: '2.1.0', extension: { version: '2.1.0' }, project: null };
+    return { hostVersion: VERSION, extension: { version: VERSION }, project: null };
   };
   const out = [];
   const deps = {
@@ -81,7 +83,7 @@ test('no terminal: installs, adds the found clients, walks through loading the e
   assert.match(text, /✓ Claude desktop app {3}added \(/);
   assert.match(text, /✓ Cursor {15}added \(/);
   assert.match(text, /Load the extension in Google Chrome \(once\):\n {2}1\. chrome:\/\/extensions is opening; turn on "Developer mode" \(top right\)\.\n {2}2\. Click "Load unpacked"\.\n {2}3\. Pick the folder .*\(the path is on your clipboard/);
-  assert.match(text, /✓ Extension {12}2\.1\.0 connected\n\n✓ Ready\.\nOne more step: click the Backdraw icon/);
+  assert.match(text, /✓ Extension {12}\d+\.\d+\.\d+ connected\n\n✓ Ready\.\nOne more step: click the Backdraw icon/);
   assert.match(text, /say:\n {2}"Generate an image with ChatGPT: /);
 });
 
@@ -126,7 +128,7 @@ test('an extension reloaded by the update: setup waits for it to reconnect and s
   const s = system({ reloaded: true, connectAfter: 3, cli: false });
   const { status } = await setup({ yes: true }, s.deps);
   assert.ok(status);
-  assert.match(s.text(), /✓ Extension {12}2\.1\.0 connected \(reloaded with the new files\)/);
+  assert.match(s.text(), /✓ Extension {12}\d+\.\d+\.\d+ connected \(reloaded with the new files\)/);
   assert.doesNotMatch(s.text(), /Load the extension/);
   assert.match(s.text(), /⚠ MCP clients {10}none chosen/);
 });
@@ -173,4 +175,15 @@ test('after a reload, setup waits for the new version, not the old host that sti
   const stuck = system({ reloaded: true, cli: false });
   await setup({ clients: 'cursor' }, { ...stuck.deps, call: async () => ({ extension: { version: '2.0.1' }, project: null }) });
   assert.match(stuck.text(), /⚠ Extension {12}2\.0\.1 is still running; reload Backdraw at chrome:\/\/extensions/);
+});
+
+test('--clients=none: the browser side only, no client is touched', async () => {
+  assert.deepEqual(parseClientList('none'), []);
+  assert.deepEqual(parseClientList(' NONE '), []);
+  const s = system({ connectAfter: 1 });
+  fs.mkdirSync(path.join(s.home, '.cursor'));
+  const { chosen } = await setup({ clients: 'none' }, s.deps);
+  assert.deepEqual(chosen, []);
+  assert.deepEqual(s.claudeAdds, []);
+  assert.ok(!fs.existsSync(path.join(s.home, '.cursor', 'mcp.json')));
 });

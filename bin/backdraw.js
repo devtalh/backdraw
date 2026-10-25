@@ -16,6 +16,7 @@ Usage: backdraw <command>
                                   clients: claude-code, claude-desktop, codex, cursor, vscode, gemini
   doctor [--fix]                  Check the install; --fix repairs registrations
   uninstall [--dry-run]           Remove the registrations (your images and settings stay)
+  mcp                             Run the MCP server on stdio (what MCP clients start; needs setup once)
   --version                       Print the version
 ${cli.USAGE.split('\n').slice(1).join('\n')}`;
 
@@ -33,6 +34,9 @@ async function main(argv) {
   const [cmd, ...rest] = argv;
   const { flags } = parseArgs(rest, { booleans: ['yes', 'fix', 'dry-run', 'no-wait'] });
   switch (cmd) {
+    // stdout belongs to the JSON-RPC stream from here on; the server reads stdin until it closes.
+    case 'mcp':
+      return require('../mcp-server');
     case '-v': case '--version': case 'version':
       return console.log(VERSION);
     case 'setup':
