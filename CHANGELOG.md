@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.2] - 2026-10-26
+
+### Added
+
+- `generate_image` takes an optional `filename_hint`: a few words naming the subject, used for the
+  saved file name instead of the start of the prompt. A prompt that opens with instructions about
+  the reference images (common with collections) no longer names the file
+  `…_use-the-attached-reference-images-…`.
+
+### Changed
+
+- After a successful image, the server instructions and the SUCCESS result ask the client to show
+  the saved image to the user in the chat when it can display or share a local file, and otherwise
+  to give the path clearly. Some clients show the attached preview only as a small icon.
+
 ## [2.1.1] - 2026-10-25
 
 ### Added

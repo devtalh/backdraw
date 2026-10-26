@@ -13,7 +13,7 @@ const { spawn } = require('node:child_process');
 const test = require('node:test');
 const identity = require('../identity');
 const { buildText } = require('../lib/prompt');
-const { resultLines } = require('../lib/results');
+const { SHOW_IMAGE, resultLines } = require('../lib/results');
 const { MAX_COLLECTION_BYTES } = require('../lib/limits');
 const { png } = require('./png-fixture');
 
@@ -194,7 +194,7 @@ test('the host', async t => {
       png: { colorType: 6, alphaChannel: true, trns: false }, alpha: null,
     });
     assert.deepEqual(fs.readFileSync(im.path), image);
-    assert.deepEqual(resultLines(done).slice(1), [`Saved: ${im.path} (1254x1254)`]);
+    assert.deepEqual(resultLines(done).slice(1), [`Saved: ${im.path} (1254x1254)`, SHOW_IMAGE]);
   });
 
   await t.test('an aspect ratio that was already right: no crop, one file', async () => {
@@ -205,7 +205,7 @@ test('the host', async t => {
     const [im] = (await finished(job.id)).images;
     assert.equal(im.full, null);
     assert.equal(im.aspect, '16:9');
-    assert.deepEqual(resultLines(await call('job', { jobId: job.id })).slice(-1), ['Aspect ratio: 16:9 requested, got 1672x941 (within 1%, not cropped).']);
+    assert.deepEqual(resultLines(await call('job', { jobId: job.id })).slice(-2), ['Aspect ratio: 16:9 requested, got 1672x941 (within 1%, not cropped).', SHOW_IMAGE]);
   });
 
   await t.test('send_as_is: the text stays verbatim even with aspect and transparency', async () => {
@@ -283,5 +283,17 @@ test('the host', async t => {
     }
     toHost({ type: 'call', reqId: 'g3', method: 'reveal_image', params: { jobId: job.id, n: 1 } });
     assert.deepEqual(await nextFromHost('reply'), { type: 'reply', reqId: 'g3', ok: false, error: `The image file was moved or deleted: ${saved}`, code: 'NOT_FOUND' });
+  });
+
+  await t.test('filenameHint names the saved file instead of the prompt; a blank one is ignored', async () => {
+    const saved = async params => {
+      const job = await call('generate', params);
+      await nextFromHost('run');
+      toHost({ type: 'result', jobId: job.id, ok: true, status: 'succeeded', images: [{ data: b64(png(6, { width: 1254, height: 1254 })), mime: 'image/png', width: 1254, height: 1254 }] });
+      return path.basename((await finished(job.id)).images[0].path);
+    };
+    const prompt = 'Ekteki referans görselleri incele ve aynı tarzda bir tilki maskotu çiz';
+    assert.match(await saved({ prompt, filenameHint: '  Kırmızı tilki maskotu  ' }), /^\d{8}-\d{6}_kirmizi-tilki-maskotu\.png$/);
+    assert.match(await saved({ prompt, filenameHint: '   ' }), /^\d{8}-\d{6}_ekteki-referans-gorselleri-incele-ve-ayni-tarzda\.png$/);
   });
 });
