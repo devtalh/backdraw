@@ -1,6 +1,6 @@
 {
   "name": "backdraw",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "description": "Generate images with your own signed-in ChatGPT account in a background Chrome tab (Windows, no API key). Run /backdraw:setup once.",
   "author": {
     "name": "devtalh",

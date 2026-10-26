@@ -174,3 +174,50 @@ test('--fix rewrites a broken host manifest even when the registry can\'t be rea
   assert.match(fixed[0], /Rewrote the host manifest/);
   assert.equal((await gather(c, s.call)).hostManifest.problem, null);
 });
+
+// The README's npx entries are a supported way to start Backdraw: ✓, and --fix never touches them.
+test('npx entries are fine; --fix only rewrites a local entry that cannot work', async () => {
+  const s = fakeSystem();
+  s.ctx.platform.which = cmd => (['node', 'npx', 'cmd'].includes(cmd) ? process.execPath : null);
+  await install(s.ctx);
+  const env = { home: s.home, appData: path.join(s.home, 'AppData', 'Roaming'), which: () => null };
+  const write = (id, entry) => {
+    const client = mcpClients.byId(id);
+    const file = client.file(env);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (client.format === 'toml') fs.writeFileSync(file, `[mcp_servers.backdraw]\ncommand = "node"\nargs = [${JSON.stringify(entry.args[0])}]\n`);
+    else fs.writeFileSync(file, `${JSON.stringify({ [client.key]: { backdraw: entry } }, null, 2)}\n`);
+    return file;
+  };
+  const copy = path.join(s.home, 'src', 'mcp-server.js');
+  fs.mkdirSync(path.dirname(copy), { recursive: true });
+  fs.writeFileSync(copy, '');
+  const files = {
+    cursor: write('cursor', { command: 'cmd', args: ['/c', 'npx', '-y', 'backdraw@latest', 'mcp'] }),
+    vscode: write('vscode', { type: 'stdio', command: 'npx', args: ['backdraw@2.1.2', 'mcp'] }),
+    gemini: write('gemini', { command: 'node', args: [copy] }),
+    codex: write('codex', { args: [path.join(s.home, 'gone', 'mcp-server.js')] }),
+  };
+  const before = Object.fromEntries(Object.entries(files).map(([id, f]) => [id, fs.readFileSync(f, 'utf8')]));
+
+  const c = require('../install').context({ ...s.ctx, report: false });
+  const checks = report.evaluate(await gather(c, s.call));
+  const row = label => checks.find(x => x.label === label);
+  assert.deepEqual([row('Cursor').status, row('Cursor').detail], ['ok', 'set up via npx (backdraw@latest)']);
+  assert.deepEqual([row('VS Code').status, row('VS Code').detail], ['ok', 'set up via npx (backdraw@2.1.2)']);
+  assert.equal(row('Gemini CLI').status, 'warn');
+  assert.match(row('Gemini CLI').detail, /starts another copy of Backdraw/);
+  assert.equal(row('Gemini CLI').fix, 'To start this install instead: npx backdraw@latest setup --clients=gemini');
+  assert.deepEqual([row('Codex').status, row('Codex').fixable], ['fail', true]);
+  assert.match(row('Codex').detail, /gone.mcp-server\.js, which does not exist/);
+
+  const { fixed, failed } = fix(c, await gather(c, s.call));
+  assert.deepEqual(failed, []);
+  assert.deepEqual(fixed.map(l => l.split(':')[0]), ['Codex']);
+  for (const id of ['cursor', 'vscode', 'gemini']) assert.equal(fs.readFileSync(files[id], 'utf8'), before[id], id);
+  assert.equal(mcpClients.readEntry(mcpClients.byId('codex'), env).entry.args[0], path.join(s.home, '.backdraw', 'mcp-server.js'));
+  // An npx entry whose npx is missing is a warning with a hint, still not something to fix.
+  s.ctx.platform.which = cmd => (cmd === 'node' ? process.execPath : null);
+  const noNpx = report.evaluate(await gather(require('../install').context({ ...s.ctx, report: false }), s.call)).find(x => x.label === 'VS Code');
+  assert.deepEqual([noNpx.status, noNpx.detail, noNpx.fixable], ['warn', 'its command npx was not found', false]);
+});

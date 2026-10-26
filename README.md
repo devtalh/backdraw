@@ -559,6 +559,8 @@ find the message box).
 npx backdraw@latest setup
 ```
 
+On an update, setup changes only the MCP clients that already have a Backdraw entry and leaves npx entries as they are; add a new client with `--clients=…`.
+
 From a manual install: `git pull` (or download the ZIP again), then `node install.js`.
 
 Both copy the new files over the old ones, keep your settings, job history and collections,

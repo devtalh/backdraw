@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.3] - 2026-10-26
+
+### Changed
+
+- **Updating with setup no longer adds clients.** When Backdraw is already installed and
+  `--clients` is not given, `npx backdraw@latest setup` (also with `--yes` or without a terminal)
+  updates only the MCP clients that already have a Backdraw entry and lists the found ones it
+  skipped. A new client takes `--clients=…` or picking it on the terminal, where Enter now keeps
+  the ones already set up. A first install works as before.
+- **npx entries stay npx.** Setup never rewrites an entry that starts `npx backdraw@latest mcp`
+  (also through `cmd /c`, with `-y` or a pinned `backdraw@x.y.z`), for any client, the Claude
+  desktop app included; the output says it was kept.
+- **Doctor accepts npx entries:** they show as ✓ "set up via npx (backdraw@latest)" instead of
+  "points to another script". `doctor --fix` rewrites only an entry that cannot work (a missing
+  script or command, or the old 1.x install); an npx entry, another working copy of Backdraw or an
+  entry it doesn't recognise is reported and left alone.
+- Setup no longer warns that Claude is running when the desktop app's entry is already right.
+
 ## [2.1.2] - 2026-10-26
 
 ### Added

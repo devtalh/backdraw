@@ -571,6 +571,8 @@ mesaj kutusunu artık bulamaz).
 npx backdraw@latest setup
 ```
 
+Güncellemede setup yalnızca zaten Backdraw kaydı olan MCP istemcilerini değiştirir, npx kayıtlarını olduğu gibi bırakır; yeni bir istemciyi `--clients=…` ile eklersin.
+
 Elle kurulumda: `git pull` (ya da ZIP'i yeniden indirip aç), ardından `node install.js`.
 
 İkisi de yeni dosyaları eskilerinin üzerine kopyalar, ayarlarını, iş geçmişini ve koleksiyonlarını
