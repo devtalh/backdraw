@@ -197,6 +197,14 @@ test('generate_image schema: one reference limit, collection options after the o
 test('instructions mention collections', async () => {
   const res = await request('initialize', { protocolVersion: '2025-06-18' });
   assert.match(res.result.instructions, /call list_collections if needed and pass reference_collection/);
+  assert.match(res.result.instructions, /pass filename_hint with a few words naming what the user asked for/);
+});
+
+// Some clients show the preview only as a small icon; the image itself should reach the user.
+test('instructions ask to show the saved image in the chat without naming a client tool', async () => {
+  const res = await request('initialize', { protocolVersion: '2025-06-18' });
+  assert.match(res.result.instructions, /After SUCCESS, show the saved image to the user in the chat: if you can display or share a local file with the user, do that with the saved path/);
+  assert.match(res.result.instructions, /otherwise give the saved path clearly/);
 });
 
 // Directories such as Glama read the instructions through mcp-proxy with a 2025-11-25 initialize.
@@ -505,6 +513,9 @@ test('with a fake host', async t => {
     await callTool('generate_image', { prompt: 'x', wait_seconds: 0 });
     assert.equal(sent.referenceCollection, undefined);
     assert.equal(sent.referenceFiles, undefined);
+    assert.equal(sent.filenameHint, undefined);
+    await callTool('generate_image', { prompt: 'x', filename_hint: 'red fox mascot', wait_seconds: 0 });
+    assert.equal(sent.filenameHint, 'red fox mascot');
   });
 
   await t.test('a job that starts to need the user returns at once', async () => {

@@ -19,12 +19,14 @@ const INSTRUCTIONS = `Generates images with the user's own ChatGPT account (alre
 - To EDIT an image or keep a character consistent, pass the image file(s) in reference_images (e.g. a file saved by an earlier call). A fresh chat with reference_images is the most reliable way to edit; long revision chains via conversation_url make ChatGPT lose track of earlier images.
 - For a specific shape (banner, avatar, phone wallpaper) pass aspect_ratio instead of describing the size in the prompt; for stickers/logos/icons that need a see-through background pass transparent_background=true and read the transparency line in the result.
 - When the user mentions one of their Backdraw collections (reference images they saved from the web in Chrome), call list_collections if needed and pass reference_collection to generate_image.
+- The saved file is named after the start of the prompt. When the prompt opens with something other than the subject (e.g. instructions about the reference images), pass filename_hint with a few words naming what the user asked for.
 - Read every result line: NEEDS REFERENCE IMAGE means ChatGPT could not reach the image to edit; CHATGPT REPLIED WITHOUT AN IMAGE shows ChatGPT's own text. Never resend the identical prompt in a loop; follow the next step given in the result.
 - An EDIT CHECK warning means ChatGPT drew a new picture instead of editing; tell the user and retry with reference_images in a fresh chat if an exact edit is needed.
 - The work happens in a background Chrome tab; never tell the user to switch tabs unless a result says NEEDS USER ACTION.
 - NEEDS USER ACTION means ChatGPT shows a login or human-verification (CAPTCHA) page: ask the user to open the ChatGPT tab in Chrome and finish it themselves. Never try to get around it. The job continues automatically afterwards (check with job_status).
 - If no project is selected, call list_projects, then select_project with the user's images project.
 - If a job timed out but has a conversation link, fetch_images can still download the result later; pass the job's aspect_ratio again so it is cropped the same way.
+- After SUCCESS, show the saved image to the user in the chat: if you can display or share a local file with the user, do that with the saved path (the preview in the result is a small copy for you to check); otherwise give the saved path clearly.
 - Report the saved file path(s) and the ChatGPT conversation link to the user.`;
 
 // Shared by the tools that wait for a job.
@@ -77,6 +79,11 @@ const TOOLS = [
         output_dir: {
           type: 'string',
           description: "Optional folder to also copy the image(s) into, e.g. the current project's assets folder (absolute path preferred). The central images folder always keeps a copy.",
+        },
+        filename_hint: {
+          type: 'string',
+          description: "Optional few words naming the subject (e.g. 'red fox mascot'), used for the saved file name instead of the start of the prompt. " +
+            'Pass it when the prompt opens with something else, such as instructions about the reference images.',
         },
         wait_seconds: WAIT_SECONDS,
         include_preview: { type: 'boolean', default: true, description: 'Attach a downscaled preview of the result so you can check it.' },
@@ -302,6 +309,7 @@ async function generateImage(args, call) {
     prompt, references, autoReattach: !!args.auto_reattach, sendAsIs: !!args.send_as_is,
     aspect: args.aspect_ratio, transparent: !!args.transparent_background,
     copyTo: args.output_dir ? path.resolve(String(args.output_dir)) : undefined,
+    filenameHint: args.filename_hint ? String(args.filename_hint) : undefined,
     startUrl: args.conversation_url ? String(args.conversation_url) : undefined,
     referenceCollection: args.reference_collection ? String(args.reference_collection) : undefined,
     // A single file name as a string works too, like reference_images.

@@ -417,7 +417,7 @@ themselves stay in your images folder.
 
 | Tool | Parameters (default) | What it does |
 |---|---|---|
-| `generate_image` | `prompt` (required), `aspect_ratio`, `transparent_background` (false), `reference_images`, `reference_collection`, `reference_files`, `conversation_url`, `auto_reattach` (false), `send_as_is` (false), `output_dir`, `wait_seconds` (45), `include_preview` (true) | Starts a new chat in your Project (or continues `conversation_url`) and generates or edits an image. |
+| `generate_image` | `prompt` (required), `aspect_ratio`, `transparent_background` (false), `reference_images`, `reference_collection`, `reference_files`, `conversation_url`, `auto_reattach` (false), `send_as_is` (false), `output_dir`, `filename_hint`, `wait_seconds` (45), `include_preview` (true) | Starts a new chat in your Project (or continues `conversation_url`) and generates or edits an image. |
 | `job_status` | `job_id`, `wait_seconds` (45), `include_preview` (true) | Waits for a job and reports it. Without `job_id`: the bridge status (Chrome connected, selected Project, images folder, queue, recent jobs). |
 | `cancel_job` | `job_id` (required) | Cancels a queued or running job. If ChatGPT is already generating, it presses Stop in the background tab. |
 | `fetch_images` | `conversation_url` (required), `aspect_ratio`, `output_dir`, `wait_seconds` (45), `include_preview` (true) | Downloads the images of the latest answer in an existing chat, without sending anything. |
@@ -435,6 +435,8 @@ themselves stay in your images folder.
 - `send_as_is`: send the prompt word for word, without the short instruction Backdraw adds (e.g. to
   answer a question ChatGPT asked).
 - `output_dir`: also copy the result into this folder; the images folder always keeps a copy.
+- `filename_hint`: a few words naming the subject, used for the file name instead of the start of
+  the prompt (handy when the prompt opens with instructions about the reference images).
 - `wait_seconds`: 0 to 900.
 
 What a result can say:

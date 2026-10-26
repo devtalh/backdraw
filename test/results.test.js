@@ -1,7 +1,7 @@
 'use strict';
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { FINAL, DEFAULT_WAIT, EDIT_INTENT, waitSeconds, editCheckLines, imageLines, referenceLines, resultLines } = require('../lib/results');
+const { FINAL, DEFAULT_WAIT, EDIT_INTENT, SHOW_IMAGE, waitSeconds, editCheckLines, imageLines, referenceLines, resultLines } = require('../lib/results');
 
 const CHAT_URL = 'https://chatgpt.com/g/g-p-67a1b2c3d4e5f60718293a4b5c6d7e8f-images/c/6812a3b4-1c2d-8000-9e8f-0123456789ab';
 const job = fields => ({ id: 'img_1a2b3c4d', prompt: 'a void mage', images: [], copies: [], references: [], ...fields });
@@ -105,6 +105,7 @@ test('resultLines: succeeded with saved files, copies and a copy error', () => {
     'Saved: C:\\Pictures\\Backdraw\\b.png',
     'Copied to: D:\\game\\assets\\a.png',
     'Could not copy into output_dir: EACCES: permission denied',
+    SHOW_IMAGE,
     "ChatGPT's text: Here is your image.",
   ]);
 });
@@ -196,6 +197,7 @@ test('resultLines: a cropped image shows both files', () => {
     'SUCCESS — ChatGPT generated 1 image(s). Job img_1a2b3c4d.',
     `Saved: ${DIR}banner.png (2172x543, cropped from the centre to 4:1)`,
     `Full image before cropping: ${DIR}banner_full.png (2172x724)`,
+    SHOW_IMAGE,
   ]);
 });
 
@@ -224,6 +226,7 @@ test('resultLines: an aspect ratio already within 1% is not cropped', () => {
   assert.deepEqual(resultLines(succeeded([{ path: `${DIR}a.png`, width: 1672, height: 941, aspect: '16:9', full: null }])).slice(1), [
     `Saved: ${DIR}a.png (1672x941)`,
     'Aspect ratio: 16:9 requested, got 1672x941 (within 1%, not cropped).',
+    SHOW_IMAGE,
   ]);
   assert.match(text(succeeded([{ path: 'a.png', width: 1010, height: 1000, aspect: '1:1' }])), /got 1010x1000 \(within 1%, not cropped\)/);
 });
@@ -236,7 +239,7 @@ test('resultLines: an image that should have been cropped but was not says so', 
 
 test('resultLines: no aspect asked, no aspect line', () => {
   assert.deepEqual(resultLines(succeeded([{ path: 'a.png', width: 1254, height: 1254, aspect: null, full: null, png: RGBA, alpha: null }])).slice(1),
-    ['Saved: a.png (1254x1254)']);
+    ['Saved: a.png (1254x1254)', SHOW_IMAGE]);
 });
 
 test('resultLines: transparent background present', () => {
@@ -266,7 +269,7 @@ test("resultLines: a cropped image is judged by ChatGPT's original file", () => 
     path: 'banner.png', width: 2172, height: 543, aspect: '4:1', png: RGB, alpha: alpha(0),
     full: { path: 'banner_full.png', width: 2172, height: 724 },
   }], { transparent: true }));
-  assert.equal(lines.length, 4);
+  assert.equal(lines.length, 5);
   assert.match(lines[3], /^⚠ TRANSPARENT BACKGROUND MISSING: ChatGPT returned an image without an alpha channel \(RGB PNG\)/);
   assert.match(text(succeeded([{ path: 'b.png', aspect: '4:1', png: null, alpha: alpha(0.2), full: { path: 'b_full.jpg' } }], { transparent: true })),
     /without an alpha channel \(JPEG\)/);
@@ -307,7 +310,7 @@ test('resultLines: several images keep their lines together', () => {
   assert.deepEqual(lines.slice(1).map(l => l.slice(0, 24)), [
     'Saved: a.png (1983x496, ', 'Full image before croppi', '⚠ ChatGPT drew 1983x793 ', 'Transparent background: ',
     'Saved: b.png (1672x941)', '⚠ Aspect ratio: 4:1 requ', '⚠ TRANSPARENT BACKGROUND',
-    'Copied to: D:\\x\\a.png',
+    'Copied to: D:\\x\\a.png', SHOW_IMAGE.slice(0, 24),
   ]);
 });
 
@@ -352,4 +355,14 @@ test("referenceLines: the caller's own images and the collection images are repo
   assert.deepEqual(referenceLines(job({ references: refs(['003_c.png']), collection: { ...col, used: ['003_c.png'], skipped: ['004_d.png (larger than 20 MB)'] } })), [
     'References: collection "Cats": used 1 of 9 (003_c.png); left out: 004_d.png (larger than 20 MB)',
   ]);
+});
+
+test('resultLines: only a success with saved images asks to show the image to the user', () => {
+  const lines = resultLines(job({ status: 'succeeded', images: [{ path: 'a.png' }] }));
+  assert.deepEqual(lines.filter(l => l === SHOW_IMAGE), [SHOW_IMAGE]);
+  assert.match(SHOW_IMAGE, /^Show the image to the user in the chat: if you can display or share a local file with the user, do that with the Saved path above/);
+  assert.ok(!resultLines(job({ status: 'succeeded', images: [] })).includes(SHOW_IMAGE));
+  for (const status of ['failed', 'cancelled', 'text_reply', 'needs_reference', 'needs_human', 'queued', 'running']) {
+    assert.ok(!resultLines(job({ status, images: [{ path: 'a.png' }] })).includes(SHOW_IMAGE), status);
+  }
 });

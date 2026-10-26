@@ -199,6 +199,8 @@ function createJob(p) {
     // outputDir: legacy clients, the host writes a copy there. copyTo: the MCP server copies itself
     // (it runs in the caller's context, so the copy lands where the caller can see it).
     outputDir: p.outputDir || null, copyTo: p.copyTo || null, copies: [],
+    // Names the saved files instead of the prompt (whose opening may be instructions, not the subject).
+    filenameHint: String(p.filenameHint || '').trim().slice(0, 200) || null,
     references: refs.map(r => ({ name: r.name, bytes: Math.round(r.data.length * 0.75) })), autoReattach: !!p.autoReattach,
     timeoutSec: clamp(Number(p.timeoutSec) || 600, 60, 1800),
     createdAt: now(), startedAt: null, finishedAt: null,
@@ -323,9 +325,9 @@ function uniquePath(dir, base, ext) {
 function saveImages(job, images, title) {
   fs.mkdirSync(config.outputDir, { recursive: true });
   fs.mkdirSync(shared.PREVIEW_DIR, { recursive: true });
-  // Named after the prompt; when only collecting (no prompt) ChatGPT's chat title is used instead.
+  // Named after filename_hint, else the prompt; when only collecting (no prompt) ChatGPT's chat title.
   const usefulTitle = title && !/^(chatgpt\b|generate an image|update the image)/i.test(title.trim()) ? title : '';
-  const base = `${stamp()}_${slugify(job.prompt || usefulTitle)}`;
+  const base = `${stamp()}_${slugify(job.filenameHint || job.prompt || usefulTitle)}`;
   return images.map((img, i) => {
     const buf = Buffer.from(img.data || '', 'base64');
     if (buf.length < 100) throw new Error('empty image data');

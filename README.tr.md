@@ -427,7 +427,7 @@ klasöründe kalır.
 
 | Araç | Parametreler (varsayılan) | Ne yapar |
 |---|---|---|
-| `generate_image` | `prompt` (zorunlu), `aspect_ratio`, `transparent_background` (false), `reference_images`, `reference_collection`, `reference_files`, `conversation_url`, `auto_reattach` (false), `send_as_is` (false), `output_dir`, `wait_seconds` (45), `include_preview` (true) | Projende yeni bir sohbet başlatır (ya da `conversation_url`'deki sohbete devam eder) ve görsel üretir veya düzenler. |
+| `generate_image` | `prompt` (zorunlu), `aspect_ratio`, `transparent_background` (false), `reference_images`, `reference_collection`, `reference_files`, `conversation_url`, `auto_reattach` (false), `send_as_is` (false), `output_dir`, `filename_hint`, `wait_seconds` (45), `include_preview` (true) | Projende yeni bir sohbet başlatır (ya da `conversation_url`'deki sohbete devam eder) ve görsel üretir veya düzenler. |
 | `job_status` | `job_id`, `wait_seconds` (45), `include_preview` (true) | Bir işi bekler ve durumunu bildirir. `job_id` olmadan köprünün durumunu verir (Chrome bağlı mı, seçili Proje, görsel klasörü, kuyruk, son işler). |
 | `cancel_job` | `job_id` (zorunlu) | Kuyruktaki ya da çalışan bir işi iptal eder. ChatGPT üretmeye başladıysa arka plan sekmesinde Durdur'a basar. |
 | `fetch_images` | `conversation_url` (zorunlu), `aspect_ratio`, `output_dir`, `wait_seconds` (45), `include_preview` (true) | Var olan bir sohbetin son cevabındaki görselleri, hiçbir şey göndermeden indirir. |
@@ -446,6 +446,8 @@ klasöründe kalır.
 - `send_as_is`: istemi, Backdraw'ın eklediği kısa talimat olmadan, olduğu gibi gönderir (örneğin
   ChatGPT'nin sorduğu bir soruyu yanıtlamak için).
 - `output_dir`: sonucu bu klasöre de kopyalar; görsel klasöründe her zaman bir kopya kalır.
+- `filename_hint`: konuyu anlatan birkaç kelime; dosya adı istemin başı yerine bundan üretilir
+  (istem referans görsellerle ilgili talimatlarla başlıyorsa işe yarar).
 - `wait_seconds`: 0 ile 900 arası.
 
 Bir sonuç şunları söyleyebilir:
