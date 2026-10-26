@@ -187,3 +187,105 @@ test('--clients=none: the browser side only, no client is touched', async () => 
   assert.deepEqual(s.claudeAdds, []);
   assert.ok(!fs.existsSync(path.join(s.home, '.cursor', 'mcp.json')));
 });
+
+// ---------------------------------------------------------------- updating an install
+
+const NPX = { command: 'cmd', args: ['/c', 'npx', '-y', 'backdraw@latest', 'mcp'] };
+
+// Installs once (browser side only), so the next setup run is an update.
+async function installed(opts) {
+  const s = system(opts);
+  await setup({ clients: 'none', wait: false }, s.deps);
+  s.out.length = 0;
+  return s;
+}
+
+test('update without --clients: only the clients that have an entry; npx stays npx; the rest is listed as skipped', async () => {
+  const s = await installed({ connectAfter: 1 });
+  const env = { home: s.home, appData: s.appData, which: () => null };
+  const server = path.join(s.home, '.backdraw', 'mcp-server.js');
+  write(path.join(s.home, '.claude.json'), { mcpServers: { backdraw: { type: 'stdio', command: 'node', args: ['C:\\old\\mcp-server.js'], env: {} } } });
+  write(mcpClients.byId('cursor').file(env), { mcpServers: { backdraw: NPX, other: { command: 'x' } } });
+  write(mcpClients.byId('vscode').file(env), { servers: { backdraw: { type: 'stdio', command: 'node', args: ['C:\\old\\mcp-server.js'] } } });
+  write(s.desktopFile, { mcpServers: { backdraw: { command: 'node', args: ['C:\\old\\mcp-server.js'] } } });
+  fs.mkdirSync(path.join(s.home, '.codex')); // found, but without an entry
+  const cursorBefore = fs.readFileSync(mcpClients.byId('cursor').file(env), 'utf8');
+
+  const { chosen } = await setup({}, s.deps);
+  assert.deepEqual(chosen, ['claude-code', 'claude-desktop', 'cursor', 'vscode']);
+  assert.deepEqual(s.claudeAdds, ['backdraw']);
+  assert.equal(fs.readFileSync(mcpClients.byId('cursor').file(env), 'utf8'), cursorBefore);
+  assert.equal(mcpClients.readEntry(mcpClients.byId('vscode'), env).entry.args[0], server);
+  assert.equal(JSON.parse(fs.readFileSync(s.desktopFile, 'utf8')).mcpServers.backdraw.args[0], server);
+  assert.ok(!fs.existsSync(mcpClients.byId('codex').file(env)), 'no new client is added');
+  const text = s.text();
+  assert.match(text, /✓ Claude Code {10}updated \(user scope\)/);
+  assert.match(text, /✓ Cursor {15}kept as it is: starts via npx \(backdraw@latest\)/);
+  assert.match(text, /✓ VS Code {14}updated \(/);
+  assert.match(text, /✓ Claude desktop app {3}updated \(/);
+  assert.match(text, /· Codex {16}skipped: it has no Backdraw entry \(add it with: npx backdraw@latest setup --clients=codex\)/);
+  // --yes on an update means the same: no new client.
+  s.out.length = 0;
+  assert.deepEqual((await setup({ yes: true }, s.deps)).chosen, ['claude-code', 'claude-desktop', 'cursor', 'vscode']);
+  assert.ok(!fs.existsSync(mcpClients.byId('codex').file(env)));
+});
+
+test('npx entries are kept even when the client is named with --clients, also for Claude Code and the desktop app', async () => {
+  const s = await installed({ connectAfter: 1 });
+  const env = { home: s.home, appData: s.appData, which: () => null };
+  write(path.join(s.home, '.claude.json'), { mcpServers: { backdraw: NPX } });
+  write(s.desktopFile, { mcpServers: { backdraw: { command: 'npx', args: ['backdraw@2.1.2', 'mcp'] } } });
+  write(mcpClients.byId('gemini').file(env), { mcpServers: { backdraw: { command: 'npx', args: ['-y', 'backdraw@2.1.1', 'mcp'] } } });
+  const before = [path.join(s.home, '.claude.json'), s.desktopFile, mcpClients.byId('gemini').file(env)].map(f => fs.readFileSync(f, 'utf8'));
+  await setup({ clients: 'claude-code,claude-desktop,gemini' }, s.deps);
+  assert.deepEqual(s.claudeAdds, []);
+  assert.deepEqual([path.join(s.home, '.claude.json'), s.desktopFile, mcpClients.byId('gemini').file(env)].map(f => fs.readFileSync(f, 'utf8')), before);
+  const text = s.text();
+  assert.match(text, /✓ Claude Code {10}kept as it is: starts via npx \(backdraw@latest\)/);
+  assert.match(text, /✓ Claude desktop app {3}kept as it is: starts via npx \(backdraw@2\.1\.2; /);
+  assert.match(text, /✓ Gemini CLI {11}kept as it is: starts via npx \(backdraw@2\.1\.1\)/);
+  assert.doesNotMatch(text, /skipped/);
+});
+
+test('update on a terminal: Enter keeps the ones already set up; picking a number adds a new client', async () => {
+  const s = await installed({ connectAfter: 1, cli: false });
+  const env = { home: s.home, appData: s.appData, which: () => null };
+  write(mcpClients.byId('cursor').file(env), { mcpServers: { backdraw: NPX } });
+  fs.mkdirSync(path.join(s.home, '.codex'));
+  const asked = [];
+  const answers = ['', '3,4'];
+  const deps = { ...s.deps, ask: async q => { asked.push(q); return answers.shift(); } };
+  assert.deepEqual((await setup({}, deps)).chosen, ['cursor']);
+  assert.match(asked[0], /Enter = the ones already set up \(4\)/);
+  assert.match(s.text(), / {2}3\. Codex {16}found\n {2}4\. Cursor {15}set up\n/);
+  assert.ok(!fs.existsSync(mcpClients.byId('codex').file(env)));
+  assert.deepEqual((await setup({}, deps)).chosen, ['codex', 'cursor']);
+  assert.equal(mcpClients.readEntry(mcpClients.byId('codex'), env).entry.args[0], path.join(s.home, '.backdraw', 'mcp-server.js'));
+  assert.equal(mcpClients.npxSpec(mcpClients.readEntry(mcpClients.byId('cursor'), env).entry), 'backdraw@latest');
+});
+
+test('update with no client entries: nothing is added, and setup says so', async () => {
+  const s = await installed({ connectAfter: 1 });
+  fs.mkdirSync(path.join(s.home, '.cursor'));
+  const { chosen } = await setup({}, s.deps);
+  assert.deepEqual(chosen, []);
+  assert.deepEqual(s.claudeAdds, []);
+  assert.ok(!fs.existsSync(path.join(s.home, '.cursor', 'mcp.json')));
+  assert.match(s.text(), /· Cursor {15}skipped: it has no Backdraw entry/);
+  assert.match(s.text(), /· MCP clients {10}none had a Backdraw entry, so none was changed; add one later with: npx backdraw@latest setup --clients=claude-code/);
+});
+
+test('an update while Claude runs: a desktop entry that is already right needs no warning', async () => {
+  const s = await installed({ connectAfter: 1, desktopRunning: true });
+  write(s.desktopFile, { mcpServers: { backdraw: { command: process.execPath, args: [path.join(s.home, '.backdraw', 'mcp-server.js')] } } });
+  const before = fs.readFileSync(s.desktopFile, 'utf8');
+  assert.deepEqual((await setup({}, s.deps)).chosen, ['claude-desktop']);
+  assert.equal(fs.readFileSync(s.desktopFile, 'utf8'), before);
+  assert.match(s.text(), /✓ Claude desktop app {3}already set up/);
+  assert.doesNotMatch(s.text(), /Claude is running/);
+  // One that needs a change still waits for Claude to be closed.
+  write(s.desktopFile, { mcpServers: { backdraw: { command: 'node', args: ['C:\\old\\mcp-server.js'] } } });
+  s.out.length = 0;
+  await setup({}, s.deps);
+  assert.match(s.text(), /⚠ Claude desktop app {3}Claude is running, so its config was left alone/);
+});

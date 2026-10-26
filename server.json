@@ -8,12 +8,12 @@
     "url": "https://github.com/devtalh/backdraw",
     "source": "github"
   },
-  "version": "2.1.2",
+  "version": "2.1.3",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "backdraw",
-      "version": "2.1.2",
+      "version": "2.1.3",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

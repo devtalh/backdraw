@@ -134,13 +134,44 @@ test('codex: a config.toml form Backdraw can\'t edit safely is left untouched', 
   assert.equal(fs.readFileSync(client.file(e), 'utf8'), text);
 });
 
-test('entryProblem: the right script and an existing command, or what is wrong', () => {
-  const yes = () => true;
-  assert.equal(clients.entryProblem({ command: NODE, args: [SERVER] }, SERVER, yes), null);
-  assert.equal(clients.entryProblem({ command: NODE, args: [SERVER.toLowerCase()] }, SERVER, yes), null);
-  assert.equal(clients.entryProblem(null, SERVER, yes), 'no Backdraw entry');
-  assert.match(clients.entryProblem({ command: NODE, args: ['C:\\old\\mcp-server.js'] }, SERVER, yes), /points to C:\\old\\mcp-server\.js/);
-  assert.match(clients.entryProblem({ command: 'C:\\gone\\node.exe', args: [SERVER] }, SERVER, () => false), /not found/);
+// The README's "Install from your client" entries, as Cursor, VS Code, Codex and Gemini CLI keep them.
+test('npxSpec: npx and cmd /c npx entries, latest or pinned; anything else is not one', () => {
+  const npx = (command, ...args) => clients.npxSpec({ command, args });
+  assert.equal(npx('npx', 'backdraw@latest', 'mcp'), 'backdraw@latest');
+  assert.equal(npx('cmd', '/c', 'npx', '-y', 'backdraw@latest', 'mcp'), 'backdraw@latest');
+  assert.equal(npx('cmd.exe', '/d', '/C', 'npx.cmd', '--yes', 'backdraw@2.1.2', 'mcp'), 'backdraw@2.1.2');
+  assert.equal(npx(String.raw`C:\Program Files\nodejs\npx.cmd`, '-y', 'backdraw@2.2.0-beta.1', 'mcp'), 'backdraw@2.2.0-beta.1');
+  assert.equal(npx('npx', '-y', 'backdraw', 'mcp'), 'backdraw');
+  for (const args of [['backdraw@latest'], ['backdraw@latest', 'setup'], ['backdraw@latest', 'mcp', 'extra'], ['backdraw@2.1', 'mcp'],
+    ['backdrawx@latest', 'mcp'], ['other-server', 'mcp'], ['-y']]) assert.equal(npx('npx', ...args), null, args.join(' '));
+  assert.equal(npx('cmd', 'npx', 'backdraw@latest', 'mcp'), null); // no /c
+  assert.equal(npx('cmd', '/k', 'x', '/c', 'npx', 'backdraw@latest', 'mcp'), null);
+  assert.equal(npx(NODE, SERVER), null);
+  assert.equal(clients.npxSpec(null), null);
+  assert.equal(clients.npxSpec({ args: ['npx'] }), null);
+});
+
+test('checkEntry: npx is fine and never fixable; only a local entry that cannot work is', () => {
+  const opts = { commandExists: () => true, fileExists: p => !/gone/i.test(p), staleDirs: [String.raw`C:\Users\you\.claude\chatgpt-image-bridge`] };
+  const check = (entry, o = opts) => clients.checkEntry(entry, SERVER, o);
+  assert.deepEqual(check({ command: 'cmd', args: ['/c', 'npx', '-y', 'backdraw@latest', 'mcp'] }),
+    { kind: 'npx', spec: 'backdraw@latest', problem: null, fixable: false });
+  assert.deepEqual(check({ command: 'npx', args: ['backdraw@2.1.1', 'mcp'] }, { ...opts, commandExists: () => false }),
+    { kind: 'npx', spec: 'backdraw@2.1.1', problem: 'its command npx was not found', fixable: false });
+  assert.deepEqual(check({ command: NODE, args: [SERVER] }), { kind: 'local', script: SERVER, problem: null, fixable: false });
+  assert.equal(check({ command: NODE, args: [SERVER.toLowerCase()] }).problem, null);
+  const gone = String.raw`C:\gone\mcp-server.js`;
+  assert.deepEqual(check({ command: NODE, args: [gone] }), { kind: 'local', script: gone, problem: `points to ${gone}, which does not exist`, fixable: true });
+  const legacy = check({ command: 'node', args: [String.raw`C:\Users\you\.claude\chatgpt-image-bridge\mcp-server.js`] });
+  assert.equal(legacy.fixable, true);
+  assert.match(legacy.problem, /points to the old install/);
+  const noNode = check({ command: String.raw`C:\gone\node.exe`, args: [SERVER] }, { ...opts, commandExists: () => false });
+  assert.deepEqual([noNode.problem, noNode.fixable], [String.raw`its command C:\gone\node.exe was not found`, true]);
+  // Another working copy (e.g. a source checkout) is reported, not rewritten.
+  const other = check({ command: NODE, args: [String.raw`D:\src\backdraw\mcp-server.js`] });
+  assert.deepEqual([other.kind, other.fixable], ['local', false]);
+  assert.match(other.problem, /starts another copy of Backdraw \(D:\\src\\backdraw\\mcp-server\.js\)/);
+  assert.deepEqual(check({ command: 'uvx', args: ['something'] }), { kind: 'unknown', problem: 'it does not start a Backdraw mcp-server.js', fixable: false });
 });
 
 test('stripJsonc: comments and trailing commas go, strings with // and /* stay', () => {

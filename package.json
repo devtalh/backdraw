@@ -1,6 +1,6 @@
 {
   "name": "backdraw",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "description": "Local MCP server, native messaging host and Chrome extension that let Claude generate images with your own signed-in ChatGPT account in a background tab.",
   "mcpName": "io.github.devtalh/backdraw",
   "license": "MIT",

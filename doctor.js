@@ -79,17 +79,19 @@ async function gather(c, call) {
   }
 
   const server = path.join(dest, 'mcp-server.js');
-  const problem = entry => (entry ? mcpClients.entryProblem(entry, server, cmd => commandExists(p, cmd)) : null);
+  // { kind, spec, problem, fixable } of an entry (lib/mcp-clients.js checkEntry); nothing without one.
+  const opts = { commandExists: cmd => commandExists(p, cmd), staleDirs: [p.legacyInstallDir(c.home)] };
+  const check = entry => (entry ? mcpClients.checkEntry(entry, server, opts) : {});
   const claudeFile = p.claudeConfigFile(c.home);
   const claudeEntry = ((readJson(claudeFile) || {}).mcpServers || {})[identity.MCP_NAME] || null;
   facts.clients = [{
-    id: 'claude-code', label: 'Claude Code', detected: !!c.claudeCli || fs.existsSync(claudeFile), entry: claudeEntry, problem: problem(claudeEntry),
+    id: 'claude-code', label: 'Claude Code', detected: !!c.claudeCli || fs.existsSync(claudeFile), entry: claudeEntry, ...check(claudeEntry),
   }];
   for (const client of mcpClients.FILE_CLIENTS) {
     const fact = { id: client.id, label: client.label, detected: client.detect(c.clientEnv) };
     try {
       fact.entry = mcpClients.readEntry(client, c.clientEnv).entry;
-      fact.problem = problem(fact.entry);
+      Object.assign(fact, check(fact.entry));
     } catch (e) { fact.error = e.message; }
     facts.clients.push(fact);
   }
@@ -100,7 +102,7 @@ async function gather(c, call) {
       const json = readJson(file);
       if (!json) return { file, error: `${file} is not valid JSON` };
       const entry = (json.mcpServers || {})[identity.MCP_NAME] || null;
-      return { file, entry, problem: problem(entry) };
+      return { file, entry, ...check(entry) };
     }),
     running: desktopFiles.length ? p.desktopAppRunning() : false,
   };
@@ -127,14 +129,15 @@ function fix(c, facts) {
       fixed.push(`Rewrote the host manifest and registered it for ${r.browsers.map(b => browsers.byId(b).name).join(', ')}.`);
     } catch (e) { failed.push(`Couldn't register the native host: ${e.message}`); }
   }
-  for (const client of facts.clients.filter(x => x.entry && x.problem)) {
+  // Only an entry that can't work is rewritten; an npx entry or another working copy never is.
+  for (const client of facts.clients.filter(x => x.entry && x.problem && x.fixable)) {
     try {
       if (client.id === 'claude-code') installer.registerMcp(c, server);
       else mcpClients.addEntry(mcpClients.byId(client.id), c.clientEnv, installer.NODE, server);
       fixed.push(`${client.label}: the Backdraw entry now starts ${server}.`);
     } catch (e) { failed.push(`${client.label}: ${e.message}`); }
   }
-  for (const file of facts.desktop.files.filter(x => x.entry && x.problem)) {
+  for (const file of facts.desktop.files.filter(x => x.entry && x.problem && x.fixable)) {
     if (facts.desktop.running !== false) { failed.push('Claude desktop app: it is running; quit it completely (also from the system tray) and run this again.'); continue; }
     try {
       installer.updateDesktopConfig(file.file, installer.desktopEntry(server));
