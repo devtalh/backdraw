@@ -308,6 +308,28 @@ async function runJob(job) {
       remember(job.id, outcome.kind);
       return;
     }
+    let images = null;
+    if (job.animated && !ctx.collect) {
+      ctx.progress('downloading', 'Downloading the image', { conversationUrl: ctx.conversationUrl });
+      images = await downloadImages(ctx, outcome.images);
+      if (!images.some(im => im.animated)) {
+        ctx.animatedRetry = true;
+        ctx.progress('animating', 'ChatGPT sent a still image: asking once more for an animated GIF', { conversationUrl: ctx.conversationUrl });
+        try {
+          const now = (await probeTab(ctx, null)) || { counts: { users: 0, images: 0 } };
+          const retry = await sendAndWait(ctx, now, 'Make it an animated GIF with one clear motion.', []);
+          if (retry.kind === 'images') {
+            ctx.progress('downloading', 'Downloading the image', { conversationUrl: ctx.conversationUrl });
+            const downloaded = await downloadImages(ctx, retry.images);
+            images = downloaded;
+            outcome = { ...retry, reattached: outcome.reattached };
+          }
+        } catch (e) {
+          if (e instanceof Cancelled || ctx.cancelled) throw e;
+          log('warn', 'animated GIF retry failed', String(e));
+        }
+      }
+    }
     let editCheck = null;
     if (!ctx.collect && (attached.length || isChatUrl(job.startUrl))) {
       // Best effort: never let the comparison hold up the result.
@@ -316,12 +338,14 @@ async function runJob(job) {
         sleep(20000).then(() => { throw new Error('timed out'); }),
       ]).catch(e => { log('warn', 'edit check skipped', String(e)); return null; });
     }
-    ctx.progress('downloading', 'Downloading the image', { conversationUrl: ctx.conversationUrl });
-    const images = await downloadImages(ctx, outcome.images);
+    if (!images) {
+      ctx.progress('downloading', 'Downloading the image', { conversationUrl: ctx.conversationUrl });
+      images = await downloadImages(ctx, outcome.images);
+    }
     post({
       type: 'result', jobId: job.id, ok: true, status: 'succeeded', conversationUrl: ctx.conversationUrl,
       assistantText: outcome.text, title: outcome.title, images, editCheck, reattached: !!outcome.reattached,
-      references: attached.length,
+      references: attached.length, animatedRetry: !!ctx.animatedRetry,
     });
     remember(job.id, 'succeeded');
   } catch (e) {
@@ -338,7 +362,7 @@ async function runJob(job) {
     post({
       type: 'result', jobId: job.id, ok: false, status: cancelled ? 'cancelled' : 'failed',
       reason: cancelled ? 'cancelled' : e.reason || 'error', error: cancelled ? 'Cancelled.' : e.message,
-      conversationUrl: ctx.conversationUrl, assistantText: ctx.lastText || null,
+      conversationUrl: ctx.conversationUrl, assistantText: ctx.lastText || null, animatedRetry: !!ctx.animatedRetry,
     });
     remember(job.id, cancelled ? 'cancelled' : 'failed');
   } finally {

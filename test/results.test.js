@@ -327,10 +327,39 @@ test('imageLines: one image on its own', () => {
   assert.deepEqual(imageLines(job({}), { path: 'a.png', width: 1, height: 1 }), ['Saved: a.png (1x1)']);
 });
 
+test('resultLines: animated requests warn about still images with and without a retry', () => {
+  for (const animatedRetry of [false, true]) {
+    const expected = `⚠ NOT ANIMATED: ChatGPT returned a still image${animatedRetry ? ' even after the bridge asked once more for an animated GIF' : ''}. Tell the user; retry in a fresh chat with a simpler prompt (one subject, one clear motion).`;
+    const lines = resultLines(succeeded([{ path: 'a.png' }], { animated: true, animatedRetry }));
+    assert.ok(lines.includes(expected));
+    assert.ok(!lines.some(l => l.startsWith('Note: ChatGPT first sent a still image')));
+  }
+});
+
+test('resultLines: a retried GIF gets a note; other jobs get neither animation line', () => {
+  const gif = { path: 'a.gif', gif: { frames: 3, durationMs: 600, loop: 0 } };
+  const note = 'Note: ChatGPT first sent a still image; the bridge asked once more for an animated GIF.';
+  assert.ok(resultLines(succeeded([gif], { animated: true, animatedRetry: true })).includes(note));
+  const mixed = resultLines(succeeded([{ path: 'a.png' }, gif], { animated: true, animatedRetry: true }));
+  assert.ok(mixed.includes(note));
+  assert.ok(!mixed.some(l => l.includes('NOT ANIMATED')));
+  for (const images of [[gif], [{ path: 'a.png' }]]) {
+    for (const animatedRetry of [false, true]) {
+      assert.doesNotMatch(text(succeeded(images, { animated: false, animatedRetry })), /NOT ANIMATED|Note: ChatGPT first sent a still image/);
+    }
+  }
+  assert.doesNotMatch(text(succeeded([gif], { animated: true })), /NOT ANIMATED|Note: ChatGPT first sent a still image/);
+  for (const status of ['running', 'failed', 'cancelled', 'text_reply']) {
+    assert.doesNotMatch(text(job({ status, images: [gif], animated: true, animatedRetry: true })), /NOT ANIMATED|Note: ChatGPT first sent a still image/);
+    assert.doesNotMatch(text(job({ status, animated: true, animatedRetry: true })), /NOT ANIMATED|Note: ChatGPT first sent a still image/);
+  }
+});
+
 test('imageLines: GIF frames, duration, loop counts and truncation follow the Saved line', () => {
   const cases = [
     [{ frames: 3, durationMs: 600, loop: 0 }, 'Animated GIF: 3 frames, 600 ms per loop, loops forever; the attached preview shows only the first frame.'],
-    [{ frames: 3, durationMs: 600, loop: 4 }, 'Animated GIF: 3 frames, 600 ms per loop, plays 4 times; the attached preview shows only the first frame.'],
+    [{ frames: 3, durationMs: 600, loop: 4 }, 'Animated GIF: 3 frames, 600 ms per loop, repeats 4 more times; the attached preview shows only the first frame.'],
+    [{ frames: 3, durationMs: 600, loop: 1 }, 'Animated GIF: 3 frames, 600 ms per loop, repeats 1 more time; the attached preview shows only the first frame.'],
     [{ frames: 3, durationMs: 600, loop: null }, 'Animated GIF: 3 frames, 600 ms per loop, plays once; the attached preview shows only the first frame.'],
     [{ frames: 1, durationMs: 0, loop: 0 }, 'GIF with a single frame (not animated).'],
     [{ frames: 0, durationMs: 0, loop: null }, 'GIF with a single frame (not animated).'],

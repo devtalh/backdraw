@@ -10,7 +10,7 @@ const CHAT = /^https:\/\/chatgpt\.com\//i;
 const STEPS = {
   queued: 'stepQueued', starting: 'stepStarting', opening: 'stepOpening', attaching: 'stepAttaching', typing: 'stepTyping',
   sending: 'stepSending', generating: 'stepGenerating', verifying: 'stepVerifying', downloading: 'stepDownloading',
-  reattaching: 'stepReattaching', needs_human: 'stepNeedsHuman', resuming: 'stepResuming',
+  reattaching: 'stepReattaching', animating: 'stepAnimating', needs_human: 'stepNeedsHuman', resuming: 'stepResuming',
 };
 const ICONS = {
   chat: '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/>',

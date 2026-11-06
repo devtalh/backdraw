@@ -196,7 +196,7 @@ function createJob(p) {
   const job = {
     id: `img_${crypto.randomBytes(4).toString('hex')}`,
     mode, status: 'queued', step: 'queued', message: 'Waiting for its turn',
-    prompt, sendAsIs: !!p.sendAsIs, aspect, transparent: !!p.transparent, startUrl, project: startUrl ? null : config.project,
+    prompt, sendAsIs: !!p.sendAsIs, aspect, transparent: !!p.transparent, animated: !!p.animated, startUrl, project: startUrl ? null : config.project,
     // outputDir: legacy clients, the host writes a copy there. copyTo: the MCP server copies itself
     // (it runs in the caller's context, so the copy lands where the caller can see it).
     outputDir: p.outputDir || null, copyTo: p.copyTo || null, copies: [],
@@ -235,7 +235,7 @@ function pump() {
     job: {
       id: job.id, mode: job.mode, text: job.mode === 'collect' ? '' : buildText(job), startUrl: job.startUrl || job.project.url,
       timeoutSec: job.timeoutSec, debug: config.debug, autoReattach: job.autoReattach,
-      aspect: job.aspect ? job.aspect.target : null, transparent: !!job.transparent,
+      aspect: job.aspect ? job.aspect.target : null, transparent: !!job.transparent, animated: !!job.animated,
     },
   });
   clearTimeout(watchdog);
@@ -275,6 +275,7 @@ function onResult(msg) {
     if (msg.conversationUrl) job.conversationUrl = msg.conversationUrl;
     if (msg.assistantText) job.assistantText = String(msg.assistantText).slice(0, 4000);
     job.reattached = !!msg.reattached;
+    job.animatedRetry = !!msg.animatedRetry;
     if (msg.ok && Array.isArray(msg.images) && msg.images.length) {
       try {
         const images = saveImages(job, msg.images, msg.title);
@@ -533,7 +534,7 @@ function publicJob(j) {
     conversationUrl: j.conversationUrl, startUrl: j.startUrl, images: j.images, assistantText: j.assistantText,
     error: j.error, reason: j.reason, createdAt: j.createdAt, startedAt: j.startedAt, finishedAt: j.finishedAt,
     references: j.references || [], reattached: !!j.reattached, editCheck: j.editCheck || null,
-    aspect: j.aspect ? j.aspect.target.label : null, transparent: !!j.transparent,
+    aspect: j.aspect ? j.aspect.target.label : null, transparent: !!j.transparent, animated: !!j.animated, animatedRetry: !!j.animatedRetry,
     copyTo: j.copyTo || null, copies: j.copies || [],
     collection: j.collection || null,
     chatImages: j.status === 'needs_reference' || j.status === 'text_reply' ? imagesFromChat(j) : undefined,
@@ -552,7 +553,7 @@ function statusInfo() {
     running: publicJob(jobs.find(j => j.id === runningId)),
     queued: jobs.filter(j => j.status === 'queued').map(j => j.id),
     recent: jobs.slice(-5).reverse().map(j => ({
-      id: j.id, status: j.status, createdAt: j.createdAt, prompt: j.prompt.slice(0, 80), conversationUrl: j.conversationUrl,
+      id: j.id, status: j.status, createdAt: j.createdAt, prompt: j.prompt.slice(0, 80), conversationUrl: j.conversationUrl, animated: !!j.animated,
     })),
   };
 }

@@ -298,6 +298,28 @@ test('the host', async t => {
     assert.match(await saved({ prompt, filenameHint: '   ' }), /^\d{8}-\d{6}_ekteki-referans-gorselleri-incele-ve-ayni-tarzda\.png$/);
   });
 
+  await t.test('animated jobs carry the GIF prompt and retain animatedRetry in job summaries', async () => {
+    const job = await call('generate', { prompt: 'A fox waves.', animated: true, aspect: '4:1', transparent: true });
+    assert.equal(job.animated, true);
+    assert.equal(job.animatedRetry, false);
+    const { job: run } = await nextFromHost('run');
+    assert.equal(run.animated, true);
+    assert.equal(run.text, "Create an animated GIF: A fox waves, one clear motion, still camera, seamless loop. Don't ask follow-up questions; create the GIF directly.");
+    const status = await call('status');
+    assert.equal(status.running.animated, true);
+    assert.equal(status.recent.find(j => j.id === job.id).animated, true);
+    toHost({ type: 'result', jobId: job.id, ok: true, status: 'succeeded', animatedRetry: true,
+      images: [{ data: b64(gif({ width: 12, height: 8, frames: [{}, {}, {}] })), mime: 'image/gif' }] });
+    const done = await finished(job.id);
+    assert.equal(done.status, 'succeeded');
+    assert.equal(done.animated, true);
+    assert.equal(done.animatedRetry, true);
+    assert.ok(done.images[0].gif);
+    const stored = JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8')).find(j => j.id === job.id);
+    assert.equal(stored.animated, true);
+    assert.equal(stored.animatedRetry, true);
+  });
+
   await t.test('GIF bytes ignore a crop and keep every frame in the main file and output_dir copy', async () => {
     const legacy = path.join(DIR, 'gif-out');
     const job = await call('generate', { prompt: 'A moving banner', aspect: '4:1', transparent: true, outputDir: legacy });

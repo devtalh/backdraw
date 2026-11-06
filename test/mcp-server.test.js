@@ -248,6 +248,20 @@ test('unknown methods are "method not found"', async () => {
   assert.equal(res.error.code, -32601);
 });
 
+test('animated schema and instructions describe GIF prompts without assuming PNG transparency', async () => {
+  const { result } = await request('tools/list', {});
+  const props = result.tools.find(t => t.name === 'generate_image').inputSchema.properties;
+  assert.deepEqual({ type: props.animated.type, default: props.animated.default }, { type: 'boolean', default: false });
+  for (const part of ['animated GIF', 'one subject', 'one clear motion', 'still camera', 'no small text', 'aspect_ratio is not applied', 'frame count and duration']) {
+    assert.ok(props.animated.description.includes(part), part);
+  }
+  assert.doesNotMatch(props.transparent_background.description, /Ask for a PNG/);
+  assert.match(props.transparent_background.description, /PNG is checked for transparent pixels; a GIF for a transparent color/);
+  const { result: init } = await request('initialize', { protocolVersion: '2025-06-18' });
+  assert.match(init.instructions, /animation, GIF or moving image, pass animated=true/);
+  assert.match(init.instructions, /one subject, one clear motion, a still camera and no small text.*aspect_ratio is not applied to the GIF/);
+});
+
 // ---------------------------------------------------------------- modern (2026-07-28) clients
 
 test('modern server/discover: versions, capabilities, serverInfo and caching', async () => {
@@ -322,6 +336,16 @@ test('generate_image with nothing listening: BRIDGE NOT RUNNING error result', a
 
 test('with a fake host', async t => {
   await startHost();
+
+  await t.test('animated is passed to the host and defaults to false', async () => {
+    const sent = [];
+    handlers = { generate: p => { sent.push(p); return fakeJob(); }, job: () => fakeJob() };
+    for (const args of [{ animated: true }, {}, { animated: false }]) {
+      const res = await callTool('generate_image', { prompt: 'A fox waves', wait_seconds: 0, ...args });
+      assert.equal(res.result.isError, false);
+    }
+    assert.deepEqual(sent.map(p => p.animated), [true, false, false]);
+  });
 
   await t.test('queued job: QUEUED with its position and how to keep waiting', async () => {
     handlers = { generate: () => fakeJob({ queuePosition: 2 }), job: () => fakeJob({ queuePosition: 2 }) };
