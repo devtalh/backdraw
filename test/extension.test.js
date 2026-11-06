@@ -289,8 +289,66 @@ test('downloadImages: invalid base64 keeps the existing uncropped fallback', asy
   assert.ok(warned(posted, 'image processing failed'));
 });
 
+// Run the real sendPrompt and probeTab without waiting for the send timeout in real time.
+function sendingWorker(conversationUrl, probe) {
+  const { ctx } = loadWorker();
+  const calls = [];
+  const baseline = { users: 1, images: 1 };
+  const jobCtx = {
+    job: { startUrl: 'https://chatgpt.com/g/g-p-0123456789abcdef/project' },
+    tabId: 7, conversationUrl, cancelled: false, sent: false,
+  };
+  let now = 0;
+  ctx.URL = URL;
+  ctx.Date = { now: () => now };
+  ctx.setTimeout = (fn, ms) => { now += ms; return setTimeout(fn, 0); };
+  ctx.pageCall = async (tabId, fn, arg) => {
+    assert.equal(tabId, jobCtx.tabId);
+    calls.push(fn);
+    if (fn === 'composerState') return { send: { disabled: false } };
+    if (fn === 'clickSend' || fn === 'pressEnter') return { ok: true };
+    assert.equal(fn, 'probe');
+    assert.equal(arg, baseline);
+    return { url: CHAT, stop: false, composer: true, composerText: 'Still in the box', ...probe() };
+  };
+  return { ctx, jobCtx, baseline, calls };
+}
+
+test('sendPrompt: a repeat send in the same chat waits for a new user turn', async () => {
+  let probes = 0;
+  const { ctx, jobCtx, baseline, calls } = sendingWorker(CHAT, () => ({ userTurns: ++probes >= 3 ? 1 : 0 }));
+  const sent = await ctx.sendPrompt(jobCtx, baseline, false);
+  assert.equal(probes, 3);
+  assert.equal(sent.userTurns, 1);
+  assert.equal(jobCtx.sent, true);
+  assert.equal(jobCtx.sentAt, 1800);
+  assert.equal(jobCtx.conversationUrl, CHAT);
+  assert.deepEqual(calls, ['composerState', 'clickSend', 'probe', 'probe', 'probe']);
+});
+
+test('sendPrompt: an ineffective repeat send tries Enter and fails if the composer stays full', async () => {
+  const { ctx, jobCtx, baseline, calls } = sendingWorker(CHAT, () => ({ userTurns: 0 }));
+  await assert.rejects(ctx.sendPrompt(jobCtx, baseline, false), { reason: 'send_failed' });
+  assert.equal(jobCtx.sent, false);
+  assert.equal(calls.filter(fn => fn === 'clickSend').length, 1);
+  assert.equal(calls.filter(fn => fn === 'pressEnter').length, 1);
+  assert.equal(calls.indexOf('pressEnter'), 22); // 20 probes after the click timeout
+  assert.equal(calls.filter(fn => fn === 'probe').length, 40);
+});
+
+test('sendPrompt: the first send still accepts navigation from the project to a chat', async () => {
+  let probes = 0;
+  const { ctx, jobCtx, baseline, calls } = sendingWorker(null, () => { probes++; return { userTurns: 0 }; });
+  const sent = await ctx.sendPrompt(jobCtx, baseline, false);
+  assert.equal(probes, 1);
+  assert.equal(sent.userTurns, 0);
+  assert.equal(jobCtx.sent, true);
+  assert.equal(jobCtx.conversationUrl, CHAT);
+  assert.deepEqual(calls, ['composerState', 'clickSend', 'probe']);
+});
+
 // Run the real runJob, sendAndWait, probeTab and downloadImages with scripted page replies.
-async function runAnimatedJob({ animated = true, firstGif = false, retry = 'gif', collect = false, reattach = false } = {}) {
+async function runAnimatedJob({ animated = true, firstGif = false, retry = 'gif', collect = false, reattach = false, debug = false } = {}) {
   const worker = loadWorker();
   const { ctx, posted } = worker;
   const calls = [];
@@ -332,7 +390,7 @@ async function runAnimatedJob({ animated = true, firstGif = false, retry = 'gif'
     return {};
   };
   ctx.fetch = async () => { throw new Error('worker download failed'); };
-  await ctx.runJob({ id: 'img_animation', startUrl: CHAT, text: 'Initial GIF prompt', animated,
+  await ctx.runJob({ id: 'img_animation', startUrl: CHAT, text: 'Initial GIF prompt', animated, debug,
     mode: collect ? 'collect' : 'generate', autoReattach: reattach,
     refs: reattach ? [{ name: 'original.png', mime: 'image/png', data: 'ref', complete: true }] : [] });
   const results = posted.filter(m => m.type === 'result');
@@ -357,7 +415,18 @@ test('runJob: a still image triggers exactly one GIF request with a fresh baseli
   assert.equal(progress[0].conversationUrl, CHAT);
   const fetches = calls.map(c => c[0]);
   assert.ok(fetches.indexOf('probe') > fetches.indexOf('fetchImage'));
-  assert.ok(fetches.indexOf('editCheck') > fetches.lastIndexOf('fetchImage'));
+  assert.ok(!fetches.includes('editCheck'));
+  assert.equal(result.editCheck, null);
+});
+
+test('runJob: skipping edit check after a GIF retry is logged only in debug mode', async () => {
+  for (const debug of [false, true]) {
+    const { calls, posted, result } = await runAnimatedJob({ debug });
+    assert.ok(!calls.some(c => c[0] === 'editCheck'));
+    assert.equal(result.editCheck, null);
+    assert.equal(posted.filter(m => m.type === 'log' && m.level === 'debug' &&
+      m.msg === 'edit check skipped after animated GIF retry').length, debug ? 1 : 0);
+  }
 });
 
 test('runJob: an initial GIF, a still-image job and collect mode never request animation again', async () => {
@@ -371,6 +440,13 @@ test('runJob: an initial GIF, a still-image job and collect mode never request a
     const names = calls.map(c => c[0]);
     if (options.animated === false) assert.ok(names.indexOf('editCheck') < names.indexOf('fetchImage'));
     if (options.collect) assert.ok(!names.includes('editCheck'));
+    if (options.collect) {
+      assert.equal(result.editCheck, null);
+    } else {
+      assert.equal(names.filter(fn => fn === 'editCheck').length, 1);
+      assert.deepEqual(JSON.parse(JSON.stringify(result.editCheck)), { results: [{ similarity: 0.9, against: 'original' }] });
+      if (options.firstGif) assert.ok(names.indexOf('editCheck') > names.lastIndexOf('fetchImage'));
+    }
   }
 });
 
@@ -378,6 +454,8 @@ test('runJob: a second still image is used without a third request', async () =>
   const { calls, result } = await runAnimatedJob({ retry: 'still' });
   assert.equal(calls.filter(c => c[0] === 'type').length, 2);
   assert.deepEqual([result.ok, result.animatedRetry, result.images[0].animated, result.assistantText], [true, true, false, 'retry text']);
+  assert.ok(!calls.some(c => c[0] === 'editCheck'));
+  assert.equal(result.editCheck, null);
 });
 
 test('runJob: text replies and retry errors keep the first images, text and title', async () => {
@@ -388,6 +466,8 @@ test('runJob: text replies and retry errors keep the first images, text and titl
       [true, true, false, 'first text', 'first text title']);
     if (retry !== 'text') assert.ok(warned(posted, 'animated GIF retry failed'));
     assert.equal(result.images[0].data, png(6, { width: 12, height: 8 }).toString('base64'));
+    assert.ok(!calls.some(c => c[0] === 'editCheck'));
+    assert.equal(result.editCheck, null);
   }
 });
 
@@ -401,7 +481,7 @@ test('runJob: cancellation during the GIF retry reaches the normal cancellation 
   }
 });
 
-test('runJob: GIF retry preserves auto_reattach metadata and compares after the final download', async () => {
+test('runJob: GIF retry preserves auto_reattach metadata and skips edit check', async () => {
   const { calls, result } = await runAnimatedJob({ reattach: true });
   assert.deepEqual([result.ok, result.reattached, result.animatedRetry, result.references], [true, true, true, 1]);
   assert.equal(calls.filter(c => c[0] === 'attach').length, 2);
@@ -409,5 +489,6 @@ test('runJob: GIF retry preserves auto_reattach metadata and compares after the 
   const sends = calls.filter(c => c[0] === 'send');
   assert.deepEqual(sends.map(c => c[2]), [true, true, false]);
   const names = calls.map(c => c[0]);
-  assert.ok(names.indexOf('editCheck') > names.lastIndexOf('fetchImage'));
+  assert.ok(!names.includes('editCheck'));
+  assert.equal(result.editCheck, null);
 });

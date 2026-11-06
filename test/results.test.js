@@ -336,6 +336,20 @@ test('resultLines: animated requests warn about still images with and without a 
   }
 });
 
+test('resultLines: only GIFs with more than one frame satisfy animated requests', () => {
+  for (const frames of [1, 2]) {
+    for (const animatedRetry of [false, true]) {
+      const gif = { path: 'a.gif', gif: { frames, durationMs: 600, loop: 0 } };
+      for (const images of [[gif], [{ path: 'a.png' }, gif]]) {
+        const lines = resultLines(succeeded(images, { animated: true, animatedRetry }));
+        assert.equal(lines.some(l => l.startsWith('⚠ NOT ANIMATED:')), frames === 1);
+        assert.equal(lines.includes('Note: ChatGPT first sent a still image; the bridge asked once more for an animated GIF.'),
+          frames > 1 && animatedRetry);
+      }
+    }
+  }
+});
+
 test('resultLines: a retried GIF gets a note; other jobs get neither animation line', () => {
   const gif = { path: 'a.gif', gif: { frames: 3, durationMs: 600, loop: 0 } };
   const note = 'Note: ChatGPT first sent a still image; the bridge asked once more for an animated GIF.';

@@ -384,7 +384,8 @@ A few names work too: `square`, `landscape` (3:2), `portrait` (2:3), `wide` (16:
 
 ### `transparent_background`
 
-`transparent_background: true` asks ChatGPT for a transparent background showing only the subject;
+`transparent_background: true` asks ChatGPT for a transparent background showing only the subject
+(not for animated GIFs, see below);
 GIF transparency is reported as described in Animated GIFs below. ChatGPT doesn't always deliver,
 so Backdraw checks the saved image: for PNGs, it reads the PNG header
 (alpha channel or `tRNS` chunk) and measures the share of see-through pixels. The result says
@@ -403,6 +404,7 @@ PNG images are drawn over a checkerboard.
 `animated: true` asks ChatGPT for a short animated GIF. If it returns a still image, Backdraw asks
 once more for an animated GIF; if the result is still a static image, the tool result warns you.
 For best results, use one subject, one clear motion, a fixed camera and no small text in the scene.
+For animated requests, Backdraw makes no additional request for transparency; `transparent_background: true` only reports the resulting transparency flag.
 
 GIFs are saved without cropping; `aspect_ratio` is not applied to them. With
 `transparent_background: true`, transparency is reported from the GIF's transparent color flag

@@ -395,7 +395,8 @@ Tam sayılarla `G:Y` (genişlik:yükseklik), `1:4` ile `4:1` arasında herhangi 
 
 ### `transparent_background`
 
-`transparent_background: true`, ChatGPT'den yalnızca konuyu gösteren şeffaf bir arka plan ister;
+`transparent_background: true`, ChatGPT'den yalnızca konuyu gösteren şeffaf bir arka plan ister
+(animasyonlu GIF'ler hariç, aşağıya bak);
 GIF şeffaflığı aşağıdaki Animasyonlu GIF'ler bölümünde anlatıldığı gibi raporlanır.
 ChatGPT bunu her zaman yapmaz; bu yüzden Backdraw kaydedilen görseli kontrol eder: PNG için başlığı
 okur (alfa kanalı ya da `tRNS` bölümü) ve saydam piksellerin oranını ölçer. Sonuçta ya şu yazar:
@@ -413,6 +414,7 @@ PNG görsellerinin önizlemeleri dama tahtası deseni üzerinde çizilir.
 `animated: true`, ChatGPT'den kısa bir animasyonlu GIF ister. Durağan bir görsel gelirse Backdraw
 bir kez daha animasyonlu GIF ister; sonuç hâlâ durağansa araç sonucunda uyarı verir.
 İyi sonuç için tek özne, tek net hareket, sabit kamera kullan ve sahnede küçük yazı bulundurma.
+Animasyon isteklerinde Backdraw şeffaflık için ayrıca bir şey istemez; `transparent_background: true` yalnızca sonuçtaki şeffaflık bayrağını raporlatır.
 
 GIF'ler hiç kırpılmadan kaydedilir; `aspect_ratio` onlara uygulanmaz.
 `transparent_background: true` ile şeffaflık, GIF'in transparent color bayrağından ve bu bayrağı

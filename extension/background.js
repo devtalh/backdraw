@@ -331,7 +331,9 @@ async function runJob(job) {
       }
     }
     let editCheck = null;
-    if (!ctx.collect && (attached.length || isChatUrl(job.startUrl))) {
+    if (ctx.animatedRetry) {
+      if (job.debug) log('debug', 'edit check skipped after animated GIF retry');
+    } else if (!ctx.collect && (attached.length || isChatUrl(job.startUrl))) {
       // Best effort: never let the comparison hold up the result.
       editCheck = await Promise.race([
         pageCall(ctx.tabId, 'editCheck', attached.map(r => ({ name: r.name, mime: r.mime, data: r.data }))),
@@ -516,7 +518,7 @@ async function typePrompt(ctx, text) {
 }
 
 async function sendPrompt(ctx, baseline, withFiles) {
-  const startPath = new URL(ctx.job.startUrl).pathname;
+  const startPath = new URL(ctx.conversationUrl || ctx.job.startUrl).pathname;
   for (const how of ['click', 'enter']) {
     check(ctx);
     if (how === 'click') {
