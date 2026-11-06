@@ -51,6 +51,13 @@ test('sidepanel: every text key exists in English and Turkish, and every step th
   for (const step of reported) assert.ok(steps[step], step);
 });
 
+test('sidepanel: GIF detail titles are translated in English and Turkish', () => {
+  assert.equal(i18n.translate('en', 'gifFrames', { frames: 12 }), '12 frames');
+  assert.equal(i18n.translate('en', 'gifDetails', { frames: 12, seconds: '1.4' }), '12 frames, 1.4 s per loop');
+  assert.equal(i18n.translate('tr', 'gifFrames', { frames: 12 }), '12 kare');
+  assert.equal(i18n.translate('tr', 'gifDetails', { frames: 12, seconds: '1.4' }), '12 kare, döngü başına 1.4 sn');
+});
+
 test('sidepanel: images go to the host by job id and number only; markup only from constants', () => {
   const js = read('sidepanel.js');
   const calls = [...js.matchAll(/hostCall\('(\w+)', \{([^}]*)\}/g)].map(m => [m[1], m[2]]);

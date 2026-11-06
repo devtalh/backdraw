@@ -423,8 +423,8 @@ can also right-click the Backdraw toolbar icon → **Open Backdraw gallery**.
 - **Top:** the job in progress (step, job id and elapsed time; hover for ChatGPT's message), "Idle",
   or a not-connected notice.
 - **Gallery:** your generated images, newest first, 12 at a time (**Load more**), each with a
-  thumbnail, the date, the prompt (hover to see its first 300 characters), the size and, if one was
-  asked, the aspect ratio.
+  thumbnail, the date, the prompt (hover to see its first 300 characters), the size, format
+  (PNG/JPG/WEBP/GIF; frame count and duration for GIFs) and the aspect ratio if it was applied.
 - **Per image:** **Open chat**, **Show in folder** (Explorer with the file selected),
   **Copy path** and **Add to collection** (an existing collection or **New collection…**).
 

@@ -232,6 +232,21 @@ function card(it) {
   };
   const meta = el('div', { className: 'meta' }, el('time', { dateTime: it.createdAt || '', textContent: formatDate(it.createdAt) }));
   if (it.width && it.height) meta.append(el('span', { textContent: `${it.width}×${it.height}` }));
+  if (it.format) {
+    let text = it.format;
+    let title = '';
+    if (it.format === 'GIF' && it.frames) {
+      text += ` · ${it.frames}f`;
+      if (it.durationMs > 0) {
+        const seconds = (it.durationMs / 1000).toFixed(1);
+        text += ` · ${seconds}s`;
+        title = t('gifDetails', { frames: it.frames, seconds });
+      } else {
+        title = t('gifFrames', { frames: it.frames });
+      }
+    }
+    meta.append(el('span', { className: 'pill', textContent: text, title }));
+  }
   if (it.aspect) meta.append(el('span', { className: 'pill', textContent: it.aspect }));
 
   const hasChat = CHAT.test(it.conversationUrl || '');

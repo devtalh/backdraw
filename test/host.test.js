@@ -242,7 +242,7 @@ test('the host', async t => {
     assert.equal(list.total, 5); // the banner's two images, the void mage, the landscape and this one
     assert.deepEqual(list.items[0], {
       jobId: job.id, n: 1, createdAt: done.createdAt, prompt: 'A gallery cat', conversationUrl: CHAT_URL, path: saved,
-      width: 900, height: 600, aspect: null, preview: true, missing: false,
+      width: 900, height: 600, format: 'PNG', frames: null, durationMs: null, aspect: null, preview: true, missing: false,
     });
     assert.deepEqual(list.items.slice(3).map(x => [x.n, x.aspect, x.prompt]), [[1, '4:1', 'A wide banner'], [2, '4:1', 'A wide banner']]);
     assert.deepEqual(await call('gallery_thumb', { jobId: job.id, n: 1 }), { data: b64(JPEG), mime: 'image/jpeg' });
