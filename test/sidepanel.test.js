@@ -56,7 +56,10 @@ test('sidepanel: GIF detail titles are translated in English and Turkish', () =>
   assert.equal(i18n.translate('en', 'gifDetails', { frames: 12, seconds: '1.4' }), '12 frames, 1.4 s per loop');
   assert.equal(i18n.translate('tr', 'gifFrames', { frames: 12 }), '12 kare');
   assert.equal(i18n.translate('tr', 'gifDetails', { frames: 12, seconds: '1,4' }), '12 kare, döngü başına 1,4 sn');
-  assert.match(read('sidepanel.js'), /seconds: language === 'tr' \? seconds\.replace\('\.', ','\) : seconds/);
+  const js = read('sidepanel.js');
+  assert.match(js, /seconds: language === 'tr' \? seconds\.replace\('\.', ','\) : seconds/);
+  assert.match(js, /const seconds = it\.durationMs > 0 \? \(it\.durationMs \/ 1000\)\.toFixed\(1\) : '0\.0';/);
+  assert.match(js, /if \(Number\(seconds\) > 0\)[\s\S]*?gifDetails[\s\S]*?else \{[\s\S]*?gifFrames/);
 });
 
 test('sidepanel: images go to the host by job id and number only; markup only from constants', () => {
@@ -84,6 +87,12 @@ test('sidepanel: GIF hover is gated by format, missing state and reduced motion;
   assert.match(js, /pic\.addEventListener\('mouseenter'/);
   assert.match(js, /pic\.addEventListener\('mouseleave'/);
   assert.match(js, /hostCall\('gallery_animation', \{ jobId: it\.jobId, n: it\.n \}\)/);
+  assert.match(js, /const result = still && !still\(\) \? Promise\.resolve\(undefined\) : fn\(\);/);
+  assert.match(js, /const p = limited\(async \(\) => \{[\s\S]*?hostCall\('gallery_animation',[\s\S]*?\}, still\);/);
+  assert.match(js, /animationOf\(it, \(\) => hovering\)/);
+  assert.match(js, /if \(!animationShown\) showPreview\(\);/);
+  assert.match(js, /if \(url\) \{\s*animationShown = true;\s*showImage\(url\);\s*\}/);
+  assert.match(js, /pic\.addEventListener\('mouseleave',[\s\S]*?hovering = false;\s*animationShown = false;/);
   assert.match(js, /shown\.src === url/);
 });
 

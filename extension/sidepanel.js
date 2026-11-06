@@ -239,8 +239,8 @@ function card(it) {
     let title = '';
     if (it.format === 'GIF' && it.frames) {
       text += ` · ${it.frames}f`;
-      if (it.durationMs > 0) {
-        const seconds = (it.durationMs / 1000).toFixed(1);
+      const seconds = it.durationMs > 0 ? (it.durationMs / 1000).toFixed(1) : '0.0';
+      if (Number(seconds) > 0) {
         text += ` · ${seconds}s`;
         title = t('gifDetails', { frames: it.frames, seconds: language === 'tr' ? seconds.replace('.', ',') : seconds });
       } else {
@@ -292,11 +292,12 @@ let thumbsBusy = 0;
 const thumbsWaiting = [];
 
 // At most two previews on their way at a time (each can be over half a megabyte).
-function limited(fn) {
+function limited(fn, still) {
   return new Promise(resolve => {
     const go = () => {
       thumbsBusy++;
-      fn().then(resolve, () => resolve(undefined)).finally(() => {
+      const result = still && !still() ? Promise.resolve(undefined) : fn();
+      result.then(resolve, () => resolve(undefined)).finally(() => {
         thumbsBusy--;
         if (thumbsWaiting.length) thumbsWaiting.shift()();
       });
@@ -329,13 +330,13 @@ function previewOf(it) {
 }
 
 // null: the saved file is not a small GIF. A failed host call (undefined) is retried next hover.
-function animationOf(it) {
+function animationOf(it, still) {
   const key = keyOf(it);
   if (!animations.has(key)) {
     const p = limited(async () => {
       const r = await hostCall('gallery_animation', { jobId: it.jobId, n: it.n });
       return r && r.data ? URL.createObjectURL(b64Blob(r.data, 'image/gif')) : null;
-    });
+    }, still);
     animations.set(key, p);
     p.then(url => { if (url === undefined) animations.delete(key); });
   }
@@ -344,6 +345,7 @@ function animationOf(it) {
 
 function showThumb(it, pic) {
   let hovering = false;
+  let animationShown = false;
   let previewReady = false;
   let previewUrl = null;
   const showImage = url => pic.replaceChildren(el('img', { src: url, alt: '', decoding: 'async' }));
@@ -354,18 +356,21 @@ function showThumb(it, pic) {
     previewReady = true;
     previewUrl = url;
     pic.classList.remove('loading');
-    if (!hovering) showPreview();
+    if (!animationShown) showPreview();
   });
   if (it.format === 'GIF' && !it.missing && !reducedMotion) {
     pic.addEventListener('mouseenter', async () => {
       hovering = true;
-      const url = await animationOf(it);
+      const url = await animationOf(it, () => hovering);
       if (!hovering) return;
-      if (url) showImage(url);
-      else if (previewReady) showPreview();
+      if (url) {
+        animationShown = true;
+        showImage(url);
+      } else if (previewReady) showPreview();
     });
     pic.addEventListener('mouseleave', () => {
       hovering = false;
+      animationShown = false;
       if (previewReady) showPreview();
     });
   }
