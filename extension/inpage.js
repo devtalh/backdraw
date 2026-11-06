@@ -117,13 +117,17 @@
     return null;
   }
 
+  // Match only a short survey label at the start of the squashed text, not general helpfulness.
+  const FEEDBACK_TEXT = /^(?=.{1,79}$)(?:is this conversation helpful so far|bu (?:sohbet|konuşma) (?:(?:şu ana kadar|şimdiye kadar) )?(?:faydalı|yararlı|işe yarar)(?: mı)?)(?:\?|(?= |$))/i;
+
   // The reply as ChatGPT wrote it (its markdown blocks), plus a failure line if there is one.
   // Other text after the reply (feedback surveys, buttons, screen-reader labels) is left out.
   function replyText(replyEls) {
     const md = outermost(replyEls.filter(el => /MarkdownRoot|(^|\s)markdown(\s|$)/.test(classOf(el))));
     const parts = md.length
       ? md.map(el => el.innerText || el.textContent)
-      : replyEls.filter(el => !el.childElementCount && !el.closest('.sr-only, button, [role="status"], form')).map(el => el.textContent);
+      : replyEls.filter(el => !el.childElementCount && !el.closest('.sr-only, button, [role="status"], form') &&
+        !FEEDBACK_TEXT.test(squash(el.textContent))).map(el => el.textContent);
     const failed = failedText(replyEls);
     if (failed) parts.push(failed);
     return tidy(parts.join('\n'));
@@ -619,6 +623,6 @@
   globalThis.__cgb = {
     version: VERSION, probe, composerState, clearComposer, setPrompt, clickSend, pressEnter, clickStop,
     dismissDialogs, listProjects, openProject, sidebar, clickLabel, fetchImage, snapshot, counts,
-    attachFiles, attachmentState, removeAttachments, latestEarlierImage, editCheck,
+    attachFiles, attachmentState, removeAttachments, latestEarlierImage, editCheck, replyText,
   };
 })();

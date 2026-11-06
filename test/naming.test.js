@@ -60,3 +60,11 @@ test('sniffExt: anything else is unknown (null)', () => {
   assert.equal(sniffExt(Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WAVE')])), null);
   assert.equal(sniffExt(Buffer.alloc(0)), null);
 });
+
+test('sniffExt: leading bytes take precedence over embedded SVG text', () => {
+  const { png } = require('./png-fixture');
+  const { gif } = require('./gif-fixture');
+  const svg = Buffer.from('image/svg+xml <svg xmlns="http://www.w3.org/2000/svg">');
+  assert.equal(sniffExt(Buffer.concat([png(6), svg])), 'png');
+  assert.equal(sniffExt(gif()), 'gif');
+});

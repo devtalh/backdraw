@@ -5,7 +5,7 @@
   // The steps of a running job (background.js ctx.progress) and their texts in i18n.js.
   const JOB_STEPS = {
     starting: 'jobStarting', opening: 'jobOpening', attaching: 'jobAttaching', typing: 'jobTyping', sending: 'jobSending',
-    generating: 'jobGenerating', reattaching: 'jobReattaching', verifying: 'jobVerifying', downloading: 'jobDownloading',
+    generating: 'jobGenerating', reattaching: 'jobReattaching', animating: 'jobAnimating', verifying: 'jobVerifying', downloading: 'jobDownloading',
     needs_human: 'jobNeedsHuman', resuming: 'jobResuming',
   };
 

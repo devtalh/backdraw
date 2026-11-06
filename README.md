@@ -324,6 +324,7 @@ or in `settings.json`:
 | *Generate an image with ChatGPT: a cozy reading nook by a rainy window, warm lamp light.* | a detailed `prompt` |
 | *Make a 16:9 banner for my blog with ChatGPT: "Night Shift Notes", neon city at dusk.* | `aspect_ratio: "16:9"` |
 | *Use ChatGPT to make a sticker of a happy cactus with a transparent background.* | `transparent_background: true` |
+| *Make an animated GIF with ChatGPT: one cat waving a paw, fixed camera, no text.* | `animated: true` |
 | *Edit `C:\path\to\photo.png` with ChatGPT: turn the sky into a sunset, keep everything else.* | `reference_images: ["C:\\path\\to\\photo.png"]` |
 | *Use my "Cats" collection as reference and make a poster with ChatGPT.* | `reference_collection: "Cats"` |
 
@@ -383,8 +384,10 @@ A few names work too: `square`, `landscape` (3:2), `portrait` (2:3), `wide` (16:
 
 ### `transparent_background`
 
-`transparent_background: true` asks ChatGPT for a PNG with an alpha channel that shows only the
-subject. ChatGPT doesn't always deliver, so Backdraw checks the saved image: it reads the PNG header
+`transparent_background: true` asks ChatGPT for a transparent background showing only the subject
+(not for animated GIFs, see below);
+GIF transparency is reported as described in Animated GIFs below. ChatGPT doesn't always deliver,
+so Backdraw checks the saved image: for PNGs, it reads the PNG header
 (alpha channel or `tRNS` chunk) and measures the share of see-through pixels. The result says
 either
 
@@ -394,7 +397,23 @@ Transparent background: yes — PNG with an alpha channel, 61% of the pixels are
 
 or starts with `⚠ TRANSPARENT BACKGROUND MISSING` (no alpha channel, or 2% or fewer of the pixels are transparent). Then
 retry once in a fresh chat or remove the background with another tool. Previews of transparent
-images are drawn over a checkerboard.
+PNG images are drawn over a checkerboard.
+
+## Animated GIFs
+
+`animated: true` asks ChatGPT for a short animated GIF. If it returns a still image, Backdraw asks
+once more for an animated GIF; if the result is still a static image, the tool result warns you.
+For best results, use one subject, one clear motion, a fixed camera and no small text in the scene.
+For animated requests, Backdraw makes no additional request for transparency; `transparent_background: true` only reports the resulting transparency flag.
+
+GIFs are saved without cropping; `aspect_ratio` is not applied to them. With
+`transparent_background: true`, transparency is reported from the GIF's transparent color flag
+and the number of frames that set it; the share of transparent pixels is not measured.
+The attached preview shows only the first frame. For example, a result line can be:
+
+```
+Animated GIF: 12 frames, 1200 ms per loop, loops forever; the attached preview shows only the first frame.
+```
 
 ## Gallery side panel
 
@@ -417,7 +436,7 @@ themselves stay in your images folder.
 
 | Tool | Parameters (default) | What it does |
 |---|---|---|
-| `generate_image` | `prompt` (required), `aspect_ratio`, `transparent_background` (false), `reference_images`, `reference_collection`, `reference_files`, `conversation_url`, `auto_reattach` (false), `send_as_is` (false), `output_dir`, `filename_hint`, `wait_seconds` (45), `include_preview` (true) | Starts a new chat in your Project (or continues `conversation_url`) and generates or edits an image. |
+| `generate_image` | `prompt` (required), `animated` (false), `aspect_ratio`, `transparent_background` (false), `reference_images`, `reference_collection`, `reference_files`, `conversation_url`, `auto_reattach` (false), `send_as_is` (false), `output_dir`, `filename_hint`, `wait_seconds` (45), `include_preview` (true) | Starts a new chat in your Project (or continues `conversation_url`) and generates or edits an image. |
 | `job_status` | `job_id`, `wait_seconds` (45), `include_preview` (true) | Waits for a job and reports it. Without `job_id`: the bridge status (Chrome connected, selected Project, images folder, queue, recent jobs). |
 | `cancel_job` | `job_id` (required) | Cancels a queued or running job. If ChatGPT is already generating, it presses Stop in the background tab. |
 | `fetch_images` | `conversation_url` (required), `aspect_ratio`, `output_dir`, `wait_seconds` (45), `include_preview` (true) | Downloads the images of the latest answer in an existing chat, without sending anything. |
@@ -425,6 +444,7 @@ themselves stay in your images folder.
 | `select_project` | `name` or `url` | Selects and remembers the Project for new image chats (the name is matched loosely). |
 | `list_collections` | – | Lists your reference collections with image counts, folders and files (newest first). |
 
+- `animated`: request a short animated GIF; if ChatGPT returns a still image, ask once more.
 - `reference_images`: local png / jpg / webp / gif files, up to 16; collection images fill the
   slots that are left.
 - `reference_files`: file names from `list_collections`, to attach only those images of `reference_collection`.
@@ -631,7 +651,7 @@ Details, the threat model and how to report a vulnerability: [SECURITY.md](SECUR
   authors are not responsible for what happens to your account.
 - **One job at a time, at a human pace.** There is a single queue: one prompt in one background
   tab, and the next job starts only after the image is saved. Backdraw doesn't open parallel
-  chats, doesn't resend prompts on its own (apart from the single re-ask of `auto_reattach`) and
+  chats, doesn't resend prompts on its own (apart from the single re-asks of `auto_reattach` and `animated`) and
   stops at every login or human-verification page until you finish it yourself.
 - **Your normal limits apply.** Every image counts toward your own ChatGPT usage limits.
 - Not affiliated with, endorsed or sponsored by OpenAI or Anthropic.

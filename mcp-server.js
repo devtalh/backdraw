@@ -18,6 +18,7 @@ const INSTRUCTIONS = `Generates images with the user's own ChatGPT account (alre
 - generate_image and fetch_images return within about ${DEFAULT_WAIT} seconds. Generating usually takes 1-3 minutes, so the first result is often STILL RUNNING or QUEUED with a job id: keep calling job_status(job_id, wait_seconds=${DEFAULT_WAIT}) until it reports a final status. Do not call generate_image again for the same request while its job is still running.
 - To EDIT an image or keep a character consistent, pass the image file(s) in reference_images (e.g. a file saved by an earlier call). A fresh chat with reference_images is the most reliable way to edit; long revision chains via conversation_url make ChatGPT lose track of earlier images.
 - For a specific shape (banner, avatar, phone wallpaper) pass aspect_ratio instead of describing the size in the prompt; for stickers/logos/icons that need a see-through background pass transparent_background=true and read the transparency line in the result.
+- When the user asks for an animation, GIF or moving image, pass animated=true. Use one subject, one clear motion, a still camera and no small text in the scene; aspect_ratio is not applied to the GIF.
 - When the user mentions one of their Backdraw collections (reference images they saved from the web in Chrome), call list_collections if needed and pass reference_collection to generate_image.
 - The saved file is named after the start of the prompt. When the prompt opens with something other than the subject (e.g. instructions about the reference images), pass filename_hint with a few words naming what the user asked for.
 - Read every result line: NEEDS REFERENCE IMAGE means ChatGPT could not reach the image to edit; CHATGPT REPLIED WITHOUT AN IMAGE shows ChatGPT's own text. Never resend the identical prompt in a loop; follow the next step given in the result.
@@ -54,6 +55,11 @@ const TOOLS = [
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'Full image description or edit instructions, in any language.' },
+        animated: {
+          type: 'boolean', default: false,
+          description: 'Ask for a short animation (animated GIF). For best results use one subject, one clear motion, a still camera and no small text in the scene. ' +
+            'aspect_ratio is not applied to the GIF. The result reports the frame count and duration.',
+        },
         aspect_ratio: {
           type: 'string',
           description: 'Optional shape as W:H, e.g. 1:1, 3:2, 2:3, 4:3, 3:4, 16:9, 9:16, 4:5, 5:2 (Discord banner) or 3:1 (header). ' +
@@ -62,7 +68,7 @@ const TOOLS = [
         },
         transparent_background: {
           type: 'boolean', default: false,
-          description: 'Ask for a PNG with a transparent background (stickers, logos, icons, sprites). The result says whether the saved image really has transparent pixels.',
+          description: 'Ask for a transparent background (stickers, logos, icons, sprites). A PNG is checked for transparent pixels; a GIF for a transparent color.',
         },
         reference_images: {
           type: 'array', items: { type: 'string' }, maxItems: MAX_REFS,
@@ -307,7 +313,7 @@ async function generateImage(args, call) {
   const references = bridge.readReferences(args.reference_images);
   const job = await bridge.call('generate', {
     prompt, references, autoReattach: !!args.auto_reattach, sendAsIs: !!args.send_as_is,
-    aspect: args.aspect_ratio, transparent: !!args.transparent_background,
+    aspect: args.aspect_ratio, transparent: !!args.transparent_background, animated: !!args.animated,
     copyTo: args.output_dir ? path.resolve(String(args.output_dir)) : undefined,
     filenameHint: args.filename_hint ? String(args.filename_hint) : undefined,
     startUrl: args.conversation_url ? String(args.conversation_url) : undefined,
