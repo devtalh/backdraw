@@ -331,6 +331,7 @@ ya da `settings.json` içinde:
 | *ChatGPT ile bir görsel üret: yağmurlu bir pencerenin önünde sıcak lamba ışıklı, rahat bir okuma köşesi.* | ayrıntılı bir `prompt` |
 | *ChatGPT ile blogum için 16:9 bir banner yap: "Gece Vardiyası Notları", alacakaranlıkta neon bir şehir.* | `aspect_ratio: "16:9"` |
 | *ChatGPT ile şeffaf arka planlı, mutlu bir kaktüs çıkartması yap.* | `transparent_background: true` |
+| *ChatGPT ile animasyonlu GIF yap: tek bir kedi patisini sallasın, kamera sabit olsun, yazı olmasın.* | `animated: true` |
 | *`C:\yol\foto.png` dosyasını ChatGPT ile düzenle: gökyüzünü gün batımına çevir, gerisi aynı kalsın.* | `reference_images: ["C:\\yol\\foto.png"]` |
 | *"Kediler" koleksiyonumu referans alarak ChatGPT ile bir afiş yap.* | `reference_collection: "Kediler"` |
 
@@ -394,8 +395,9 @@ Tam sayılarla `G:Y` (genişlik:yükseklik), `1:4` ile `4:1` arasında herhangi 
 
 ### `transparent_background`
 
-`transparent_background: true`, ChatGPT'den yalnızca konuyu gösteren, alfa kanallı bir PNG ister.
-ChatGPT bunu her zaman yapmaz; bu yüzden Backdraw kaydedilen görseli kontrol eder: PNG başlığını
+`transparent_background: true`, ChatGPT'den yalnızca konuyu gösteren şeffaf bir arka plan ister;
+GIF şeffaflığı aşağıdaki Animasyonlu GIF'ler bölümünde anlatıldığı gibi raporlanır.
+ChatGPT bunu her zaman yapmaz; bu yüzden Backdraw kaydedilen görseli kontrol eder: PNG için başlığı
 okur (alfa kanalı ya da `tRNS` bölümü) ve saydam piksellerin oranını ölçer. Sonuçta ya şu yazar:
 
 ```
@@ -404,7 +406,22 @@ Transparent background: yes — PNG with an alpha channel, 61% of the pixels are
 
 ya da satır `⚠ TRANSPARENT BACKGROUND MISSING` ile başlar (alfa kanalı yok ya da piksellerin en fazla %2'si saydam).
 Bu durumda yeni bir sohbette bir kez daha dene ya da arka planı başka bir araçla kaldır. Şeffaf
-görsellerin önizlemeleri dama tahtası deseni üzerinde çizilir.
+PNG görsellerinin önizlemeleri dama tahtası deseni üzerinde çizilir.
+
+## Animasyonlu GIF'ler
+
+`animated: true`, ChatGPT'den kısa bir animasyonlu GIF ister. Durağan bir görsel gelirse Backdraw
+bir kez daha animasyonlu GIF ister; sonuç hâlâ durağansa araç sonucunda uyarı verir.
+İyi sonuç için tek özne, tek net hareket, sabit kamera kullan ve sahnede küçük yazı bulundurma.
+
+GIF'ler hiç kırpılmadan kaydedilir; `aspect_ratio` onlara uygulanmaz.
+`transparent_background: true` ile şeffaflık, GIF'in transparent color bayrağından ve bu bayrağı
+taşıyan kare sayısından raporlanır; saydam piksellerin oranı ölçülmez.
+Eklenen önizleme yalnızca ilk kareyi gösterir. Örnek bir sonuç satırı:
+
+```
+Animated GIF: 12 frames, 1200 ms per loop, loops forever; the attached preview shows only the first frame.
+```
 
 ## Galeri yan paneli
 
@@ -427,7 +444,7 @@ klasöründe kalır.
 
 | Araç | Parametreler (varsayılan) | Ne yapar |
 |---|---|---|
-| `generate_image` | `prompt` (zorunlu), `aspect_ratio`, `transparent_background` (false), `reference_images`, `reference_collection`, `reference_files`, `conversation_url`, `auto_reattach` (false), `send_as_is` (false), `output_dir`, `filename_hint`, `wait_seconds` (45), `include_preview` (true) | Projende yeni bir sohbet başlatır (ya da `conversation_url`'deki sohbete devam eder) ve görsel üretir veya düzenler. |
+| `generate_image` | `prompt` (zorunlu), `animated` (false), `aspect_ratio`, `transparent_background` (false), `reference_images`, `reference_collection`, `reference_files`, `conversation_url`, `auto_reattach` (false), `send_as_is` (false), `output_dir`, `filename_hint`, `wait_seconds` (45), `include_preview` (true) | Projende yeni bir sohbet başlatır (ya da `conversation_url`'deki sohbete devam eder) ve görsel üretir veya düzenler. |
 | `job_status` | `job_id`, `wait_seconds` (45), `include_preview` (true) | Bir işi bekler ve durumunu bildirir. `job_id` olmadan köprünün durumunu verir (Chrome bağlı mı, seçili Proje, görsel klasörü, kuyruk, son işler). |
 | `cancel_job` | `job_id` (zorunlu) | Kuyruktaki ya da çalışan bir işi iptal eder. ChatGPT üretmeye başladıysa arka plan sekmesinde Durdur'a basar. |
 | `fetch_images` | `conversation_url` (zorunlu), `aspect_ratio`, `output_dir`, `wait_seconds` (45), `include_preview` (true) | Var olan bir sohbetin son cevabındaki görselleri, hiçbir şey göndermeden indirir. |
@@ -435,6 +452,7 @@ klasöründe kalır.
 | `select_project` | `name` ya da `url` | Yeni görsel sohbetlerinin açılacağı Projeyi seçer ve hatırlar (ad esnek eşleştirilir). |
 | `list_collections` | – | Referans koleksiyonlarını görsel sayıları, klasörleri ve dosyalarıyla (en yenisi önce) listeler. |
 
+- `animated`: kısa bir animasyonlu GIF ister; ChatGPT durağan bir görsel döndürürse bir kez daha sorar.
 - `reference_images`: yerel png / jpg / webp / gif dosyaları, en fazla 16; koleksiyon görselleri
   kalan yerleri doldurur.
 - `reference_files`: `list_collections`'taki dosya adları; `reference_collection`'dan yalnızca bu
@@ -647,7 +665,7 @@ Ayrıntılar, tehdit modeli ve bir güvenlik açığını nasıl bildireceğin: 
   ([MIT lisansı](LICENSE)); geliştiricileri hesabına olacaklardan sorumlu değildir.
 - **Aynı anda tek iş, insan temposunda.** Tek bir kuyruk var: bir arka plan sekmesinde bir istem;
   sıradaki iş ancak görsel kaydedildikten sonra başlar. Backdraw paralel sohbet açmaz, istemleri
-  kendiliğinden yeniden göndermez (`auto_reattach`'in tek seferlik yeniden sorması dışında) ve her
+  kendiliğinden yeniden göndermez (`auto_reattach` ve `animated` için tek seferlik yeniden sormalar dışında) ve her
   giriş ya da insan doğrulaması sayfasında, sen bitirene kadar bekler.
 - **Normal limitlerin geçerli.** Her görsel, kendi ChatGPT kullanım limitlerinden düşer.
 - OpenAI ya da Anthropic ile bir bağlantısı yoktur; onlar tarafından onaylanmamış ya da
