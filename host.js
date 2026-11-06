@@ -606,6 +606,7 @@ const handlers = {
   collection_thumbs: p => store.thumbs(config.collectionsDir, p.name, p.offset),
   gallery_list: p => gallery.listGallery(jobs, p.offset, p.limit, gallery.fileExists),
   gallery_thumb: p => gallery.readPreview(shared.PREVIEW_DIR, galleryImage(p).image),
+  gallery_animation: p => gallery.readAnimation(galleryImage(p).image),
   reveal_image: p => {
     platform.revealInFolder(galleryImage(p, true).image.path);
     return { ok: true };

@@ -431,6 +431,8 @@ can also right-click the Backdraw toolbar icon → **Open Backdraw gallery**.
 The gallery lists the images of the job history, which keeps the last 100 jobs. Thumbnails come
 from the previews, which are kept for 7 days; older images show a placeholder. The image files
 themselves stay in your images folder.
+Hover over a GIF card to play it. GIFs larger than 640 KB stay still in the gallery, while the full
+file remains unchanged in your images folder.
 
 ## Tools reference
 

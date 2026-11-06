@@ -10,6 +10,7 @@ const test = require('node:test');
 const g = require('../lib/gallery');
 const c = require('../lib/collections');
 const store = require('../lib/collection-store');
+const { gif } = require('./gif-fixture');
 const { png } = require('./png-fixture');
 
 const ROOT = path.join(__dirname, '..');
@@ -141,6 +142,20 @@ test('readPreview: a JPEG inside the previews folder only, and not too large for
   }
   assert.deepEqual(g.readPreview(previews, null), { data: null, mime: null });
   assert.ok(Math.ceil(g.MAX_PREVIEW_BYTES / 3) * 4 + 1000 < 1000000); // lib/extension-calls MAX_REPLY
+});
+
+test('readAnimation: a small saved GIF only, never another format or a file over the native-message limit', () => {
+  const animation = gif({ frames: [{ delayCs: 4 }, { delayCs: 6 }] });
+  const gifFile = abs('animation.gif');
+  const pngFile = abs('animation.png');
+  const bigFile = abs('big-animation.gif');
+  fs.writeFileSync(gifFile, animation);
+  fs.writeFileSync(pngFile, png(2));
+  fs.writeFileSync(bigFile, Buffer.concat([animation, Buffer.alloc(g.MAX_PREVIEW_BYTES)]));
+  assert.deepEqual(g.readAnimation({ path: gifFile }), { data: animation.toString('base64'), mime: 'image/gif' });
+  for (const image of [{ path: pngFile }, { path: bigFile }, { path: abs('gone.gif') }, {}, null]) {
+    assert.deepEqual(g.readAnimation(image), { data: null, mime: null }, JSON.stringify(image));
+  }
 });
 
 test('fileExists: files only', () => {

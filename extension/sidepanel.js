@@ -34,6 +34,8 @@ let total = 0;
 let nextOffset = null;
 let generation = 0; // a newer listing makes the answers to older ones stale
 const thumbs = new Map(); // key -> promise of a blob: URL (null: no preview)
+const animations = new Map(); // key -> promise of a GIF blob: URL (null: unavailable or too large)
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 async function hostCall(method, params = {}) {
   const r = await chrome.runtime.sendMessage({ type: 'panel:call', method, params }).catch(e => ({ ok: false, error: e.message }));
@@ -240,7 +242,7 @@ function card(it) {
       if (it.durationMs > 0) {
         const seconds = (it.durationMs / 1000).toFixed(1);
         text += ` · ${seconds}s`;
-        title = t('gifDetails', { frames: it.frames, seconds });
+        title = t('gifDetails', { frames: it.frames, seconds: language === 'tr' ? seconds.replace('.', ',') : seconds });
       } else {
         title = t('gifFrames', { frames: it.frames });
       }
@@ -326,20 +328,55 @@ function previewOf(it) {
   return thumbs.get(key);
 }
 
+// null: the saved file is not a small GIF. A failed host call (undefined) is retried next hover.
+function animationOf(it) {
+  const key = keyOf(it);
+  if (!animations.has(key)) {
+    const p = limited(async () => {
+      const r = await hostCall('gallery_animation', { jobId: it.jobId, n: it.n });
+      return r && r.data ? URL.createObjectURL(b64Blob(r.data, 'image/gif')) : null;
+    });
+    animations.set(key, p);
+    p.then(url => { if (url === undefined) animations.delete(key); });
+  }
+  return animations.get(key);
+}
+
 function showThumb(it, pic) {
+  let hovering = false;
+  let previewReady = false;
+  let previewUrl = null;
+  const showImage = url => pic.replaceChildren(el('img', { src: url, alt: '', decoding: 'async' }));
+  const showPreview = () => pic.replaceChildren(previewUrl ? el('img', { src: previewUrl, alt: '', decoding: 'async' })
+    : el('span', { className: 'ph', textContent: t('noThumb') }));
   pic.classList.add('loading');
   previewOf(it).then(url => {
+    previewReady = true;
+    previewUrl = url;
     pic.classList.remove('loading');
-    pic.replaceChildren(url ? el('img', { src: url, alt: '', decoding: 'async' }) : el('span', { className: 'ph', textContent: t('noThumb') }));
+    if (!hovering) showPreview();
   });
+  if (it.format === 'GIF' && !it.missing && !reducedMotion) {
+    pic.addEventListener('mouseenter', async () => {
+      hovering = true;
+      const url = await animationOf(it);
+      if (!hovering) return;
+      if (url) showImage(url);
+      else if (previewReady) showPreview();
+    });
+    pic.addEventListener('mouseleave', () => {
+      hovering = false;
+      if (previewReady) showPreview();
+    });
+  }
 }
 
 // The card's preview as an image: the one shown, or the same preview once it has arrived (they load
 // two at a time, so Add can come first).
 async function previewImage(it, shown) {
-  if (shown && shown.naturalWidth) return shown;
   const url = await previewOf(it);
   if (!url) return null;
+  if (shown && shown.naturalWidth && shown.src === url) return shown;
   const img = new Image();
   img.src = url;
   return img.decode().then(() => img, () => null);

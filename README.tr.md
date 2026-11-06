@@ -441,6 +441,8 @@ Araç çubuğundaki Backdraw simgesine sağ tıklayıp **Backdraw galerisini aç
 Galeri, iş geçmişindeki görselleri listeler; geçmiş son 100 işi tutar. Küçük resimler 7 gün saklanan
 önizlemelerden gelir; daha eski görsellerde yer tutucu görünür. Görsel dosyalarının kendisi görsel
 klasöründe kalır.
+Bir GIF kartının üzerine gelince animasyon oynar. 640 KB'den büyük GIF'ler galeride durağan kalır;
+dosyanın tam hâli görsel klasöründe değişmeden durur.
 
 ## Araç başvurusu
 

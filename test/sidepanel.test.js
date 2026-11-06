@@ -55,13 +55,14 @@ test('sidepanel: GIF detail titles are translated in English and Turkish', () =>
   assert.equal(i18n.translate('en', 'gifFrames', { frames: 12 }), '12 frames');
   assert.equal(i18n.translate('en', 'gifDetails', { frames: 12, seconds: '1.4' }), '12 frames, 1.4 s per loop');
   assert.equal(i18n.translate('tr', 'gifFrames', { frames: 12 }), '12 kare');
-  assert.equal(i18n.translate('tr', 'gifDetails', { frames: 12, seconds: '1.4' }), '12 kare, döngü başına 1.4 sn');
+  assert.equal(i18n.translate('tr', 'gifDetails', { frames: 12, seconds: '1,4' }), '12 kare, döngü başına 1,4 sn');
+  assert.match(read('sidepanel.js'), /seconds: language === 'tr' \? seconds\.replace\('\.', ','\) : seconds/);
 });
 
 test('sidepanel: images go to the host by job id and number only; markup only from constants', () => {
   const js = read('sidepanel.js');
   const calls = [...js.matchAll(/hostCall\('(\w+)', \{([^}]*)\}/g)].map(m => [m[1], m[2]]);
-  assert.deepEqual([...new Set(calls.map(c => c[0]))].sort(), ['collection_add_job_image', 'gallery_list', 'gallery_thumb', 'list_collections', 'reveal_image']);
+  assert.deepEqual([...new Set(calls.map(c => c[0]))].sort(), ['collection_add_job_image', 'gallery_animation', 'gallery_list', 'gallery_thumb', 'list_collections', 'reveal_image']);
   for (const [method, params] of calls) assert.doesNotMatch(params, /path/, method);
   assert.equal((js.match(/innerHTML/g) || []).length, 1);
   assert.match(js, /tpl\.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">\$\{ICONS\[name\]\}<\/svg>`/);
@@ -74,6 +75,16 @@ test('sidepanel: images go to the host by job id and number only; markup only fr
   const css = read('sidepanel.css');
   assert.match(css, /@media \(prefers-color-scheme: dark\) \{\s*:root:not\(\[data-theme="light"\]\)/);
   assert.match(css, /:root\[data-theme="dark"\] \{/);
+});
+
+test('sidepanel: GIF hover is gated by format, missing state and reduced motion; collection thumbnails stay previews', () => {
+  const js = read('sidepanel.js');
+  assert.match(js, /matchMedia\('\(prefers-reduced-motion: reduce\)'\)\.matches/);
+  assert.match(js, /if \(it\.format === 'GIF' && !it\.missing && !reducedMotion\)/);
+  assert.match(js, /pic\.addEventListener\('mouseenter'/);
+  assert.match(js, /pic\.addEventListener\('mouseleave'/);
+  assert.match(js, /hostCall\('gallery_animation', \{ jobId: it\.jobId, n: it\.n \}\)/);
+  assert.match(js, /shown\.src === url/);
 });
 
 test('toolbar icon menu: "Open Backdraw gallery", which the image menu handler leaves alone', () => {
@@ -168,7 +179,7 @@ test('worker: the panel reaches only the gallery methods (and the collection lis
 test('worker: the panel\'s methods are all on the host\'s own allow-list', () => {
   const [, list] = read('background.js').match(/PANEL_HOST_METHODS = new Set\(\[([^\]]*)\]\)/);
   const methods = list.match(/'[^']+'/g).map(s => s.slice(1, -1));
-  assert.deepEqual(methods.sort(), ['collection_add_job_image', 'gallery_list', 'gallery_thumb', 'list_collections', 'reveal_image']);
+  assert.deepEqual(methods.sort(), ['collection_add_job_image', 'gallery_animation', 'gallery_list', 'gallery_thumb', 'list_collections', 'reveal_image']);
   for (const m of methods) assert.ok(EXTENSION_METHODS.has(m), m);
 });
 

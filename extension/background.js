@@ -1007,7 +1007,7 @@ chrome.storage.local.get('chatgptState').then(r => {
 // ---------------------------------------------------------------- gallery side panel
 
 // What the side panel may ask the host through the worker (the host has its own allow-list too).
-const PANEL_HOST_METHODS = new Set(['gallery_list', 'gallery_thumb', 'reveal_image', 'collection_add_job_image', 'list_collections']);
+const PANEL_HOST_METHODS = new Set(['gallery_list', 'gallery_thumb', 'gallery_animation', 'reveal_image', 'collection_add_job_image', 'list_collections']);
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (!msg || sender.id !== chrome.runtime.id || !String(sender.url || '').startsWith(chrome.runtime.getURL(''))) return;
