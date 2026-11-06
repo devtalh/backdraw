@@ -16,6 +16,7 @@ const { buildText } = require('../lib/prompt');
 const { SHOW_IMAGE, resultLines } = require('../lib/results');
 const { MAX_COLLECTION_BYTES } = require('../lib/limits');
 const { png } = require('./png-fixture');
+const { gif } = require('./gif-fixture');
 
 const ROOT = path.join(__dirname, '..');
 const TAG = `backdraw-host-test-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
@@ -154,7 +155,7 @@ test('the host', async t => {
     assert.deepEqual({ ...a, path: 0, preview: 0, full: { ...a.full, path: 0 } }, {
       path: 0, width: 1983, height: 496, bytes: cropped.length, preview: 0,
       full: { path: 0, width: 1983, height: 793, bytes: original.length },
-      aspect: '4:1', png: { colorType: 2, alphaChannel: false, trns: false }, alpha: { transparentShare: 0, opaqueShare: 1 },
+      aspect: '4:1', png: { colorType: 2, alphaChannel: false, trns: false }, alpha: { transparentShare: 0, opaqueShare: 1 }, gif: null,
     });
     assert.equal(fs.readFileSync(a.preview, 'utf8'), 'preview-1');
     // ChatGPT's JPEG keeps its own extension; the crop is a PNG.
@@ -191,7 +192,7 @@ test('the host', async t => {
     const [im] = done.images;
     assert.deepEqual({ ...im, path: 0 }, {
       path: 0, width: 1254, height: 1254, bytes: image.length, preview: null, full: null, aspect: null,
-      png: { colorType: 6, alphaChannel: true, trns: false }, alpha: null,
+      png: { colorType: 6, alphaChannel: true, trns: false }, alpha: null, gif: null,
     });
     assert.deepEqual(fs.readFileSync(im.path), image);
     assert.deepEqual(resultLines(done).slice(1), [`Saved: ${im.path} (1254x1254)`, SHOW_IMAGE]);
@@ -295,5 +296,59 @@ test('the host', async t => {
     const prompt = 'Ekteki referans görselleri incele ve aynı tarzda bir tilki maskotu çiz';
     assert.match(await saved({ prompt, filenameHint: '  Kırmızı tilki maskotu  ' }), /^\d{8}-\d{6}_kirmizi-tilki-maskotu\.png$/);
     assert.match(await saved({ prompt, filenameHint: '   ' }), /^\d{8}-\d{6}_ekteki-referans-gorselleri-incele-ve-ayni-tarzda\.png$/);
+  });
+
+  await t.test('GIF bytes ignore a crop and keep every frame in the main file and output_dir copy', async () => {
+    const legacy = path.join(DIR, 'gif-out');
+    const job = await call('generate', { prompt: 'A moving banner', aspect: '4:1', transparent: true, outputDir: legacy });
+    await nextFromHost('run');
+    const image = gif({ width: 12, height: 8, loop: 0,
+      frames: [{ delayCs: 10 }, { delayCs: 20, transparentIndex: 0 }, { delayCs: 30 }] });
+    const before = fs.readdirSync(IMAGES);
+    toHost({ type: 'result', jobId: job.id, ok: true, status: 'succeeded', images: [{
+      data: b64(image), mime: 'image/png', animated: false,
+      crop: { data: b64(png(6, { width: 12, height: 3 })), width: 12, height: 3 },
+    }] });
+    const done = await finished(job.id);
+    assert.equal(done.status, 'succeeded');
+    assert.equal(done.images.length, 1);
+    const [im] = done.images;
+    assert.match(im.path, /\.gif$/);
+    assert.deepEqual(fs.readFileSync(im.path), image);
+    assert.equal(im.full, null);
+    assert.equal(im.aspect, '4:1');
+    assert.deepEqual([im.width, im.height, im.bytes, im.png, im.alpha], [12, 8, image.length, null, null]);
+    assert.deepEqual(fs.readdirSync(IMAGES).filter(f => !before.includes(f)), [path.basename(im.path)]);
+    assert.equal(fs.existsSync(im.path.replace(/\.gif$/, '_full.gif')), false);
+    assert.deepEqual(im.gif, { frames: 3, durationMs: 600, delaysMs: [100, 200, 300], loop: 0,
+      transparent: true, transparentFrames: 1, truncated: false });
+    assert.deepEqual(done.copies, [path.join(legacy, path.basename(im.path))]);
+    assert.deepEqual(fs.readdirSync(legacy), [path.basename(im.path)]);
+    assert.deepEqual(fs.readFileSync(done.copies[0]), image);
+    assert.deepEqual(resultLines(done).slice(1, 5), [
+      `Saved: ${im.path} (12x8)`,
+      'Animated GIF: 3 frames, 600 ms per loop, loops forever; the attached preview shows only the first frame.',
+      'Aspect ratio: 4:1 requested; not applied to the animated GIF (cropping would keep only the first frame). Saved at 12x8.',
+      'Transparent background: GIF with a transparent color in 1 of 3 frames; how much of it is transparent could not be measured.',
+    ]);
+    const stored = JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8')).find(j => j.id === job.id);
+    assert.deepEqual(stored.images[0].gif, im.gif);
+    assert.equal(Object.hasOwn(stored, 'gif'), false);
+    assert.equal(Object.hasOwn(stored.images[0], 'animated'), false);
+  });
+
+  await t.test('GIF metadata keeps only the first 64 delays, all frame totals and extension dimensions', async () => {
+    const job = await call('generate', { prompt: 'Many frames' });
+    await nextFromHost('run');
+    const image = gif({ frames: Array.from({ length: 65 }, () => ({ delayCs: 2 })) }).subarray(0, -1);
+    image.write('GIF87a', 0, 'latin1');
+    toHost({ type: 'result', jobId: job.id, ok: true, images: [{ data: b64(image), mime: 'image/jpeg', width: 40, height: 30 }] });
+    const done = await finished(job.id);
+    assert.equal(done.status, 'succeeded');
+    const [im] = done.images;
+    assert.deepEqual(fs.readFileSync(im.path), image);
+    assert.deepEqual([im.width, im.height, im.full, im.aspect], [40, 30, null, null]);
+    assert.deepEqual(im.gif, { frames: 65, durationMs: 1300, delaysMs: Array(64).fill(20), loop: null,
+      transparent: false, transparentFrames: 0, truncated: true });
   });
 });

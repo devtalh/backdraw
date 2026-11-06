@@ -15,6 +15,7 @@ const { normName, parseProjectUrl, pickProject } = require('./lib/projects');
 const { buildText } = require('./lib/prompt');
 const { aspectOption } = require('./lib/aspect');
 const { pngInfo } = require('./lib/png');
+const { gifInfo } = require('./lib/gif');
 const { MAX_REFS, MAX_REF_BYTES, MAX_REFS_TOTAL_BYTES, MAX_COLLECTION_BYTES } = require('./lib/limits');
 const { withCollection } = require('./lib/collections');
 const store = require('./lib/collection-store');
@@ -334,7 +335,10 @@ function saveImages(job, images, title) {
     const mimeExt = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' }[String(img.mime).split(';')[0]];
     const name = images.length > 1 ? `${base}-${i + 1}` : base;
     const ext = sniffExt(buf) || mimeExt || 'png';
-    const cropped = img.crop ? Buffer.from(img.crop.data || '', 'base64') : null;
+    const signature = buf.toString('latin1', 0, 6);
+    const isGif = signature === 'GIF87a' || signature === 'GIF89a';
+    const gif = isGif ? gifInfo(buf) : null;
+    const cropped = !isGif && img.crop ? Buffer.from(img.crop.data || '', 'base64') : null;
     const crop = cropped && cropped.length >= 100 ? cropped : null;
     const main = crop || buf;
     const mainExt = crop ? 'png' : ext;
@@ -363,9 +367,12 @@ function saveImages(job, images, title) {
     // ChatGPT sent an alpha channel.
     const info = pngInfo(buf);
     return {
-      path: file, width: (crop ? img.crop.width : img.width) || null, height: (crop ? img.crop.height : img.height) || null,
+      path: file, width: (crop ? img.crop.width : img.width) || (gif && gif.width) || null,
+      height: (crop ? img.crop.height : img.height) || (gif && gif.height) || null,
       bytes: main.length, preview, full, aspect: job.aspect ? job.aspect.target.label : null,
       png: info && { colorType: info.colorType, alphaChannel: info.alphaChannel, trns: info.trns }, alpha: img.alpha || null,
+      gif: gif && { frames: gif.frames, durationMs: gif.durationMs, delaysMs: gif.delaysMs.slice(0, 64), loop: gif.loop,
+        transparent: gif.transparent, transparentFrames: gif.transparentFrames, truncated: gif.truncated },
     };
   });
 }

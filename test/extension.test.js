@@ -7,6 +7,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const { gif } = require('./gif-fixture');
+const { png } = require('./png-fixture');
 
 const EXT = path.join(__dirname, '..', 'extension');
 
@@ -91,6 +93,7 @@ test('processImage: no aspect, no transparency: just the size and a white-backed
   assert.equal(out.height, 793);
   assert.equal(out.crop, null);
   assert.equal(out.alpha, null);
+  assert.equal(out.animated, false);
   assert.deepEqual(decode(out.preview), { type: 'image/jpeg', width: 1024, height: 409 });
   assert.equal(made.length, 1);
   assert.deepEqual(made[0].ops, [['fillRect', '#ffffff', 0, 0, 1024, 409], ['drawImage', 0, 0, 1983, 793, 0, 0, 1024, 409]]);
@@ -104,6 +107,7 @@ test('processImage: cropped to the aspect ratio, measured, previewed from the cr
   const out = await ctx.processImage(btoa('x'), 'image/png', { aspect: { w: 4, h: 1, label: '4:1' }, transparent: true });
   assert.deepEqual({ ...out.crop, data: decode(out.crop.data) }, { data: { type: 'image/png', width: 1983, height: 496 }, mime: 'image/png', width: 1983, height: 496 });
   assert.deepEqual([out.width, out.height], [1983, 793]);
+  assert.equal(out.animated, false);
   // The crop keeps the full width, so 500 of its 1983 columns are see-through.
   assert.ok(Math.abs(out.alpha.transparentShare - 500 / 1983) < 0.005, String(out.alpha.transparentShare));
   assert.ok(Math.abs(out.alpha.transparentShare + out.alpha.opaqueShare - 1) < 1e-9);
@@ -139,6 +143,71 @@ test('processImage: collect jobs crop too, without measuring alpha', async () =>
   assert.equal(out.alpha, null);
 });
 
+test('processImage: GIF signatures skip cropping and alpha measurement despite the MIME and job options', async () => {
+  for (const signature of ['GIF87a', 'GIF89a']) {
+    const { ctx, made } = loadWorker();
+    const bmp = ctx.nextBitmap = new FakeBitmap(12, 8, () => 0);
+    const image = gif({ width: 12, height: 8, frames: [{}, {}, {}] });
+    image.write(signature, 0, 'latin1');
+    const data = image.toString('base64');
+    const decoded = [];
+    ctx.atob = b64 => { decoded.push(b64); return atob(b64); };
+    ctx.measureAlpha = () => { throw new Error('GIF alpha must not be measured'); };
+    const out = await ctx.processImage(data, 'image/png', {
+      aspect: { w: 4, h: 1, label: '4:1' }, transparent: true, animated: false,
+    });
+    assert.deepEqual([out.width, out.height, out.crop, out.alpha, out.animated], [12, 8, null, null, true]);
+    assert.deepEqual(decode(out.preview), { type: 'image/jpeg', width: 12, height: 8 });
+    assert.equal(made.length, 1);
+    assert.deepEqual(made[0].ops, [['fillRect', '#ffffff', 0, 0, 12, 8], ['drawImage', 0, 0, 12, 8, 0, 0, 12, 8]]);
+    assert.deepEqual(decoded, [data]);
+    assert.equal(bmp.closed, true);
+  }
+});
+
+test('processImage: a large GIF preview keeps the whole first frame within the preview size limit', async () => {
+  const { ctx, made } = loadWorker();
+  ctx.nextBitmap = new FakeBitmap(1983, 793, () => 0);
+  const out = await ctx.processImage(gif().toString('base64'), 'image/gif', { aspect: { w: 4, h: 1 }, transparent: true });
+  assert.equal(out.animated, true);
+  assert.deepEqual(decode(out.preview), { type: 'image/jpeg', width: 1024, height: 409 });
+  assert.deepEqual(made[0].ops, [['fillRect', '#ffffff', 0, 0, 1024, 409], ['drawImage', 0, 0, 1983, 793, 0, 0, 1024, 409]]);
+});
+
+test('processImage: MIME and embedded text cannot turn PNG bytes into a GIF', async () => {
+  const { ctx } = loadWorker();
+  ctx.nextBitmap = new FakeBitmap(12, 8, () => 0);
+  const image = Buffer.concat([png(6, { width: 12, height: 8 }), Buffer.from('image/svg+xml GIF89a')]);
+  const out = await ctx.processImage(image.toString('base64'), 'image/gif', { aspect: { w: 4, h: 1 }, transparent: true });
+  assert.equal(out.animated, false);
+  assert.deepEqual([out.crop.width, out.crop.height], [12, 3]);
+  assert.deepEqual({ ...out.alpha }, { transparentShare: 1, opaqueShare: 0 });
+});
+
+test('isGifBytes: only complete GIF87a and GIF89a signatures at the start match', () => {
+  const { ctx } = loadWorker();
+  for (const signature of ['', 'GIF', 'GIF89', 'GIF90a', 'xGIF89a', 'image/gif', 'GIF89b']) {
+    assert.equal(ctx.isGifBytes(Buffer.from(signature)), false, signature);
+  }
+  assert.equal(ctx.isGifBytes(Buffer.from('GIF87a')), true);
+  assert.equal(ctx.isGifBytes(Buffer.from('GIF89a')), true);
+});
+
+test('latestImageAsFile: GIF, PNG, WebP and JPEG keep the matching filename extension', async () => {
+  const { ctx } = loadWorker();
+  for (const [mime, ext] of [['image/gif', 'gif'], ['image/png', 'png'], ['image/webp', 'webp'], ['image/jpeg', 'jpg']]) {
+    const calls = [];
+    const data = (ext === 'gif' ? gif() : Buffer.from('image bytes')).toString('base64');
+    ctx.pageCall = async (...args) => {
+      calls.push(args);
+      return args[1] === 'latestEarlierImage' ? { src: 'previous' } : { mime, data };
+    };
+    const out = JSON.parse(JSON.stringify(await ctx.latestImageAsFile({ tabId: 7 })));
+    assert.deepEqual(out, [{ name: `previous-image.${ext}`, mime, data }]);
+    assert.deepEqual(calls, [[7, 'latestEarlierImage'], [7, 'fetchImage', 'previous']]);
+  }
+});
+
 // ---------------------------------------------------------------- downloadImages: what the host receives
 
 const CHAT = 'https://chatgpt.com/c/6812a3b4-1c2d-8000-9e8f-0123456789ab';
@@ -156,7 +225,8 @@ test('downloadImages: each image carries ChatGPT\'s bytes, the crop and the alph
   const images = await download(ctx, BANNER, [{ src: 'https://chatgpt.com/files/a.png', w: 1983, h: 793 }]);
   assert.equal(images.length, 1);
   const [im] = images;
-  assert.deepEqual(Object.keys(im).sort(), ['alpha', 'crop', 'data', 'height', 'mime', 'preview', 'width']);
+  assert.deepEqual(Object.keys(im).sort(), ['alpha', 'animated', 'crop', 'data', 'height', 'mime', 'preview', 'width']);
+  assert.equal(im.animated, false);
   assert.equal(Buffer.from(im.data, 'base64').toString(), 'bytes of https://chatgpt.com/files/a.png');
   assert.deepEqual([im.mime, im.width, im.height], ['image/png', 1983, 793]);
   assert.deepEqual({ ...im.crop, data: decode(im.crop.data) }, { data: { type: 'image/png', width: 1983, height: 496 }, mime: 'image/png', width: 1983, height: 496 });
@@ -188,5 +258,33 @@ test('downloadImages: an image that cannot be decoded is still sent, uncropped, 
   const [im] = await download(ctx, BANNER, [{ src: 'a', w: 1536, h: 1024 }]);
   assert.equal(Buffer.from(im.data, 'base64').toString(), 'bytes of a');
   assert.deepEqual([im.width, im.height, im.preview, im.crop, im.alpha], [1536, 1024, null, null, null]);
+  assert.ok(warned(posted, 'image processing failed'));
+});
+
+test('downloadImages: GIF bytes and animated metadata reach the host, even if decoding fails', async () => {
+  for (const decodeFails of [false, true]) {
+    const { ctx, posted } = loadWorker();
+    ctx.nextBitmap = new FakeBitmap(12, 8, () => 0);
+    if (decodeFails) ctx.createImageBitmap = async () => { throw new Error('decode failed'); };
+    const data = gif({ width: 12, height: 8, frames: [{}, {}, {}] }).toString('base64');
+    ctx.pageCall = async () => ({ data, mime: 'image/png' });
+    const [im] = JSON.parse(JSON.stringify(await ctx.downloadImages({ job: BANNER, cancelled: false, tabId: 7 }, [{ src: 'a', w: 12, h: 8 }])));
+    assert.equal(im.data, data);
+    assert.deepEqual([im.mime, im.width, im.height, im.crop, im.alpha, im.animated], ['image/png', 12, 8, null, null, true]);
+    if (decodeFails) {
+      assert.equal(im.preview, null);
+      assert.ok(warned(posted, 'image processing failed'));
+    } else {
+      assert.deepEqual(decode(im.preview), { type: 'image/jpeg', width: 12, height: 8 });
+    }
+  }
+});
+
+test('downloadImages: invalid base64 keeps the existing uncropped fallback', async () => {
+  const { ctx, posted } = loadWorker();
+  ctx.pageCall = async () => ({ data: 'invalid!', mime: 'image/png' });
+  const [im] = JSON.parse(JSON.stringify(await ctx.downloadImages({ job: BANNER, cancelled: false, tabId: 7 }, [{ src: 'a', w: 12, h: 8 }])));
+  assert.equal(im.data, 'invalid!');
+  assert.deepEqual([im.width, im.height, im.preview, im.crop, im.alpha, im.animated], [12, 8, null, null, null, false]);
   assert.ok(warned(posted, 'image processing failed'));
 });

@@ -327,6 +327,41 @@ test('imageLines: one image on its own', () => {
   assert.deepEqual(imageLines(job({}), { path: 'a.png', width: 1, height: 1 }), ['Saved: a.png (1x1)']);
 });
 
+test('imageLines: GIF frames, duration, loop counts and truncation follow the Saved line', () => {
+  const cases = [
+    [{ frames: 3, durationMs: 600, loop: 0 }, 'Animated GIF: 3 frames, 600 ms per loop, loops forever; the attached preview shows only the first frame.'],
+    [{ frames: 3, durationMs: 600, loop: 4 }, 'Animated GIF: 3 frames, 600 ms per loop, plays 4 times; the attached preview shows only the first frame.'],
+    [{ frames: 3, durationMs: 600, loop: null }, 'Animated GIF: 3 frames, 600 ms per loop, plays once; the attached preview shows only the first frame.'],
+    [{ frames: 1, durationMs: 0, loop: 0 }, 'GIF with a single frame (not animated).'],
+    [{ frames: 0, durationMs: 0, loop: null }, 'GIF with a single frame (not animated).'],
+  ];
+  for (const [gif, line] of cases) {
+    for (const truncated of [false, true]) {
+      assert.deepEqual(imageLines(job({}), { path: 'a.gif', gif: { ...gif, truncated } }), [
+        'Saved: a.gif', line + (truncated ? ' (the file looks truncated)' : ''),
+      ]);
+    }
+  }
+});
+
+test('imageLines: a GIF reports the requested aspect ratio without claiming it was cropped', () => {
+  const im = { path: 'a.gif', aspect: '4:1', gif: { frames: 3, durationMs: 600, loop: 0 } };
+  const aspect = 'Aspect ratio: 4:1 requested; not applied to the animated GIF (cropping would keep only the first frame).';
+  assert.equal(imageLines(job({}), { ...im, width: 12, height: 8 })[2], `${aspect} Saved at 12x8.`);
+  assert.equal(imageLines(job({}), im)[2], aspect);
+  assert.equal(imageLines(job({}), { ...im, width: 12 })[2], aspect);
+  assert.equal(imageLines(job({}), { ...im, aspect: null }).length, 2);
+});
+
+test('imageLines: GIF transparency uses the per-frame flag rather than measured alpha', () => {
+  const im = { path: 'a.gif', gif: { frames: 3, durationMs: 600, loop: 0, transparent: true, transparentFrames: 2 } };
+  assert.equal(imageLines(job({ transparent: true }), { ...im, alpha: alpha(0) })[2],
+    'Transparent background: GIF with a transparent color in 2 of 3 frames; how much of it is transparent could not be measured.');
+  assert.equal(imageLines(job({ transparent: true }), { ...im, gif: { ...im.gif, transparent: false, transparentFrames: 0 }, alpha: alpha(1) })[2],
+    `⚠ TRANSPARENT BACKGROUND MISSING: ChatGPT returned a GIF without a transparent color, so the background is not transparent. ${RETRY}`);
+  assert.equal(imageLines(job({ transparent: false }), im).length, 2);
+});
+
 test('fetched (collect) images are cropped without blaming ChatGPT for the shape', () => {
   const im = { path: 'C:\\out\\a.png', width: 941, height: 941, aspect: '1:1', full: { path: 'C:\\out\\a_full.png', width: 1672, height: 941 } };
   const fetched = resultLines({ id: 'img_c', mode: 'collect', status: 'succeeded', images: [im] }).join('\n');

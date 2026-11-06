@@ -466,7 +466,7 @@ async function latestImageAsFile(ctx) {
   if (!info) return [];
   const r = await pageCall(ctx.tabId, 'fetchImage', info.src).catch(e => ({ error: e.message }));
   if (!r || r.error) { log('warn', 'could not read the previous image to re-attach', r && r.error); return []; }
-  const ext = /png/.test(r.mime) ? 'png' : /webp/.test(r.mime) ? 'webp' : 'jpg';
+  const ext = /png/.test(r.mime) ? 'png' : /webp/.test(r.mime) ? 'webp' : r.mime === 'image/gif' ? 'gif' : 'jpg';
   return [{ name: `previous-image.${ext}`, mime: r.mime || 'image/png', data: r.data }];
 }
 
@@ -647,6 +647,11 @@ function b64ToBytes(b64) {
   return out;
 }
 
+function isGifBytes(bytes) {
+  return bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38 &&
+    (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61;
+}
+
 function bytesToB64(bytes) {
   let bin = '';
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
@@ -698,19 +703,21 @@ async function makePreview(bmp, r, checker) {
 
 // Decodes a downloaded image once. With an aspect ratio it is cropped from the centre (exported as
 // PNG, which keeps any alpha); a transparent job measures the alpha of the (cropped) image; the
-// preview shows the cropped version.
+// preview shows the cropped version. GIFs keep every frame; only their preview uses the first.
 async function processImage(b64, mime, job) {
-  const bmp = await createImageBitmap(new Blob([b64ToBytes(b64)], { type: mime || 'image/png' }));
+  const bytes = b64ToBytes(b64);
+  const animated = isGifBytes(bytes);
+  const bmp = await createImageBitmap(new Blob([bytes], { type: mime || 'image/png' }));
   try {
-    const out = { width: bmp.width, height: bmp.height, crop: null, alpha: null, preview: null };
-    const rect = job.aspect ? cropRect(bmp.width, bmp.height, job.aspect.w, job.aspect.h) : null;
+    const out = { width: bmp.width, height: bmp.height, crop: null, alpha: null, preview: null, animated };
+    const rect = !animated && job.aspect ? cropRect(bmp.width, bmp.height, job.aspect.w, job.aspect.h) : null;
     const r = rect || { x: 0, y: 0, width: bmp.width, height: bmp.height };
     let canvas = null;
     if (rect) {
       canvas = drawPart(bmp, rect);
       out.crop = { data: await blobToB64(await canvas.convertToBlob({ type: 'image/png' })), mime: 'image/png', width: rect.width, height: rect.height };
     }
-    if (job.transparent) out.alpha = measureAlpha(canvas || drawPart(bmp, r));
+    if (!animated && job.transparent) out.alpha = measureAlpha(canvas || drawPart(bmp, r));
     out.preview = await makePreview(bmp, r, !!out.alpha && out.alpha.transparentShare > 0)
       .catch(e => { log('warn', 'preview failed', String(e)); return null; });
     return out;
@@ -738,10 +745,14 @@ async function downloadImages(ctx, images) {
     }
     if (ctx.job.debug) log('debug', `image downloaded via ${r.via || 'worker'}`, { bytes: r.size, mime: r.mime });
     let meta = {};
-    try { meta = await processImage(r.data, r.mime, ctx.job); } catch (e) { log('warn', 'image processing failed', String(e)); }
+    try {
+      // Keep the format flag even when the bitmap cannot be decoded.
+      meta.animated = isGifBytes(b64ToBytes(r.data.slice(0, 8)));
+      meta = await processImage(r.data, r.mime, ctx.job);
+    } catch (e) { log('warn', 'image processing failed', String(e)); }
     out.push({
       data: r.data, mime: r.mime, width: meta.width || im.w || null, height: meta.height || im.h || null, preview: meta.preview || null,
-      crop: meta.crop || null, alpha: meta.alpha || null,
+      crop: meta.crop || null, alpha: meta.alpha || null, animated: !!meta.animated,
     });
   }
   if (!out.length) throw fail('download_failed', `The image was generated but could not be downloaded. Open the chat: ${ctx.conversationUrl}`);
