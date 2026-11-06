@@ -146,7 +146,7 @@ test('fileNameFor: number, slug of the source file name, extension from the byte
 test('the extension may only call the collection and gallery methods', () => {
   assert.deepEqual([...c.EXTENSION_METHODS].sort(), [
     'collection_add', 'collection_add_job_image', 'collection_thumbs', 'delete_collection', 'delete_collection_image',
-    'gallery_list', 'gallery_thumb', 'list_collections', 'rename_collection', 'reveal_image',
+    'gallery_animation', 'gallery_list', 'gallery_thumb', 'list_collections', 'rename_collection', 'reveal_image',
   ]);
   for (const m of ['generate', 'diagnose', 'set_config', 'select_project', 'reload_extension', 'cancel', 'mark_copied', 'status']) {
     assert.ok(!c.EXTENSION_METHODS.has(m), m);

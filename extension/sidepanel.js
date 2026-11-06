@@ -34,6 +34,8 @@ let total = 0;
 let nextOffset = null;
 let generation = 0; // a newer listing makes the answers to older ones stale
 const thumbs = new Map(); // key -> promise of a blob: URL (null: no preview)
+const animations = new Map(); // key -> promise of a GIF blob: URL (null: unavailable or too large)
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 async function hostCall(method, params = {}) {
   const r = await chrome.runtime.sendMessage({ type: 'panel:call', method, params }).catch(e => ({ ok: false, error: e.message }));
@@ -232,6 +234,21 @@ function card(it) {
   };
   const meta = el('div', { className: 'meta' }, el('time', { dateTime: it.createdAt || '', textContent: formatDate(it.createdAt) }));
   if (it.width && it.height) meta.append(el('span', { textContent: `${it.width}×${it.height}` }));
+  if (it.format) {
+    let text = it.format;
+    let title = '';
+    if (it.format === 'GIF' && it.frames) {
+      text += ` · ${it.frames}f`;
+      const seconds = it.durationMs > 0 ? (it.durationMs / 1000).toFixed(1) : '0.0';
+      if (Number(seconds) > 0) {
+        text += ` · ${seconds}s`;
+        title = t('gifDetails', { frames: it.frames, seconds: language === 'tr' ? seconds.replace('.', ',') : seconds });
+      } else {
+        title = t('gifFrames', { frames: it.frames });
+      }
+    }
+    meta.append(el('span', { className: 'pill', textContent: text, title }));
+  }
   if (it.aspect) meta.append(el('span', { className: 'pill', textContent: it.aspect }));
 
   const hasChat = CHAT.test(it.conversationUrl || '');
@@ -275,11 +292,12 @@ let thumbsBusy = 0;
 const thumbsWaiting = [];
 
 // At most two previews on their way at a time (each can be over half a megabyte).
-function limited(fn) {
+function limited(fn, still) {
   return new Promise(resolve => {
     const go = () => {
       thumbsBusy++;
-      fn().then(resolve, () => resolve(undefined)).finally(() => {
+      const result = still && !still() ? Promise.resolve(undefined) : fn();
+      result.then(resolve, () => resolve(undefined)).finally(() => {
         thumbsBusy--;
         if (thumbsWaiting.length) thumbsWaiting.shift()();
       });
@@ -311,20 +329,59 @@ function previewOf(it) {
   return thumbs.get(key);
 }
 
+// null: the saved file is not a small GIF. A failed host call (undefined) is retried next hover.
+function animationOf(it, still) {
+  const key = keyOf(it);
+  if (!animations.has(key)) {
+    const p = limited(async () => {
+      const r = await hostCall('gallery_animation', { jobId: it.jobId, n: it.n });
+      return r && r.data ? URL.createObjectURL(b64Blob(r.data, 'image/gif')) : null;
+    }, still);
+    animations.set(key, p);
+    p.then(url => { if (url === undefined) animations.delete(key); });
+  }
+  return animations.get(key);
+}
+
 function showThumb(it, pic) {
+  let hovering = false;
+  let animationShown = false;
+  let previewReady = false;
+  let previewUrl = null;
+  const showImage = url => pic.replaceChildren(el('img', { src: url, alt: '', decoding: 'async' }));
+  const showPreview = () => pic.replaceChildren(previewUrl ? el('img', { src: previewUrl, alt: '', decoding: 'async' })
+    : el('span', { className: 'ph', textContent: t('noThumb') }));
   pic.classList.add('loading');
   previewOf(it).then(url => {
+    previewReady = true;
+    previewUrl = url;
     pic.classList.remove('loading');
-    pic.replaceChildren(url ? el('img', { src: url, alt: '', decoding: 'async' }) : el('span', { className: 'ph', textContent: t('noThumb') }));
+    if (!animationShown) showPreview();
   });
+  if (it.format === 'GIF' && !it.missing && !reducedMotion) {
+    pic.addEventListener('mouseenter', async () => {
+      hovering = true;
+      const url = await animationOf(it, () => hovering);
+      if (!hovering) return;
+      if (url) {
+        animationShown = true;
+        showImage(url);
+      } else if (previewReady) showPreview();
+    });
+    pic.addEventListener('mouseleave', () => {
+      hovering = false;
+      animationShown = false;
+      if (previewReady) showPreview();
+    });
+  }
 }
 
 // The card's preview as an image: the one shown, or the same preview once it has arrived (they load
 // two at a time, so Add can come first).
 async function previewImage(it, shown) {
-  if (shown && shown.naturalWidth) return shown;
   const url = await previewOf(it);
   if (!url) return null;
+  if (shown && shown.naturalWidth && shown.src === url) return shown;
   const img = new Image();
   img.src = url;
   return img.decode().then(() => img, () => null);

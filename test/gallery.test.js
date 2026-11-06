@@ -10,6 +10,7 @@ const test = require('node:test');
 const g = require('../lib/gallery');
 const c = require('../lib/collections');
 const store = require('../lib/collection-store');
+const { gif } = require('./gif-fixture');
 const { png } = require('./png-fixture');
 
 const ROOT = path.join(__dirname, '..');
@@ -24,6 +25,7 @@ const im = (name, extra) => ({ path: abs(name), width: 1024, height: 1536, previ
 const JOBS = [
   job('img_00000001', 'succeeded', [im('a1.png')]),
   job('img_00000002', 'failed', [im('b1.png')]),
+  // 1024x1536 does not match the requested 4:1 and there is no cropped original, so it was not applied.
   job('img_00000003', 'succeeded', [im('c1.png', { aspect: '4:1', preview: null }), { path: 'relative.png' }, null, im('c4.png')]),
   job('img_00000004', 'text_reply', []),
   job('img_00000005', 'succeeded', [im('e1.png')], { prompt: '' }),
@@ -36,12 +38,46 @@ test('listGallery: succeeded jobs only, newest first, a job\'s images in order, 
   assert.deepEqual(page.items.map(x => `${x.jobId}:${x.n}`), ['img_00000005:1', 'img_00000003:1', 'img_00000003:4', 'img_00000001:1']);
   assert.deepEqual(page.items[1], {
     jobId: 'img_00000003', n: 1, createdAt: '2026-10-03T10:00:00.000Z', prompt: 'prompt of img_00000003',
-    conversationUrl: 'https://chatgpt.com/c/img_00000003', path: abs('c1.png'), width: 1024, height: 1536, aspect: '4:1', preview: false,
+    conversationUrl: 'https://chatgpt.com/c/img_00000003', path: abs('c1.png'), width: 1024, height: 1536,
+    format: 'PNG', frames: null, durationMs: null, aspect: null, preview: false,
   });
   assert.equal(page.items[0].prompt, '');
   assert.equal(page.items[2].preview, true);
   // A malformed entry keeps its place: n is always the index in job.images plus one.
   assert.equal(g.findJobImage(JOBS, 'img_00000003', 4).image.path, abs('c4.png'));
+});
+
+test('listGallery: format comes only from the file extension; GIF details are validated independently', () => {
+  const images = [
+    im('a.PNG'), im('b.jpg'), im('c.JPEG'), im('d.webp'),
+    im('e.gif', { gif: { frames: 12, durationMs: 1400 } }),
+    im('old.gif'), im('f.bmp'), im('no-extension'),
+    im('bad.gif', { gif: { frames: 0, durationMs: -1 } }),
+    im('mixed.gif', { gif: { frames: 3, durationMs: '600' } }),
+    im('zero.gif', { gif: { frames: '3', durationMs: 0 } }),
+    im('odd.gif', { gif: true }),
+  ];
+  const items = g.listGallery([job('img_formats', 'succeeded', images)]).items;
+  assert.deepEqual(items.map(x => x.format), ['PNG', 'JPG', 'JPG', 'WEBP', 'GIF', 'GIF', null, null, 'GIF', 'GIF', 'GIF', 'GIF']);
+  assert.deepEqual(items.map(x => [x.frames, x.durationMs]), [
+    [null, null], [null, null], [null, null], [null, null], [12, 1400], [null, null],
+    [null, null], [null, null], [null, null], [3, null], [null, 0], [null, null],
+  ]);
+});
+
+test('listGallery: aspect is shown only when a valid ratio was actually applied', () => {
+  const images = [
+    im('cropped.png', { width: 1024, height: 256, aspect: '4:1', full: { path: abs('cropped_full.png') } }),
+    im('within.png', { width: 1010, height: 1000, aspect: '1:1' }),
+    im('outside.png', { width: 1011, height: 1000, aspect: '1:1' }),
+    im('animated.gif', { width: 362, height: 362, aspect: '16:9', gif: { frames: 12, durationMs: 1400 } }),
+    im('metadata.png', { width: 1600, height: 900, aspect: '16:9', gif: {} }),
+    im('malformed-metadata.png', { width: 1600, height: 900, aspect: '16:9', gif: 0 }),
+    im('broken.png', { width: 1600, height: 900, aspect: 'not-a-ratio' }),
+  ];
+  let page;
+  assert.doesNotThrow(() => { page = g.listGallery([job('img_aspects', 'succeeded', images)]); });
+  assert.deepEqual(page.items.map(x => x.aspect), ['4:1', '1:1', null, null, null, null, null]);
 });
 
 test('listGallery: pages with offset and limit; next is the offset to ask for', () => {
@@ -106,6 +142,20 @@ test('readPreview: a JPEG inside the previews folder only, and not too large for
   }
   assert.deepEqual(g.readPreview(previews, null), { data: null, mime: null });
   assert.ok(Math.ceil(g.MAX_PREVIEW_BYTES / 3) * 4 + 1000 < 1000000); // lib/extension-calls MAX_REPLY
+});
+
+test('readAnimation: a small saved GIF only, never another format or a file over the native-message limit', () => {
+  const animation = gif({ frames: [{ delayCs: 4 }, { delayCs: 6 }] });
+  const gifFile = abs('animation.gif');
+  const pngFile = abs('animation.png');
+  const bigFile = abs('big-animation.gif');
+  fs.writeFileSync(gifFile, animation);
+  fs.writeFileSync(pngFile, png(2));
+  fs.writeFileSync(bigFile, Buffer.concat([animation, Buffer.alloc(g.MAX_PREVIEW_BYTES)]));
+  assert.deepEqual(g.readAnimation({ path: gifFile }), { data: animation.toString('base64'), mime: 'image/gif' });
+  for (const image of [{ path: pngFile }, { path: bigFile }, { path: abs('gone.gif') }, {}, null]) {
+    assert.deepEqual(g.readAnimation(image), { data: null, mime: null }, JSON.stringify(image));
+  }
 });
 
 test('fileExists: files only', () => {

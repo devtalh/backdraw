@@ -433,14 +433,16 @@ Araç çubuğundaki Backdraw simgesine sağ tıklayıp **Backdraw galerisini aç
 - **Üstte:** sürmekte olan iş (adım, iş numarası ve geçen süre; ChatGPT'nin mesajı için üzerine gel),
   "Boşta" ya da bağlı değil uyarısı.
 - **Galeri:** ürettiğin görseller, en yenisi önce, 12'şer 12'şer (**Daha fazla yükle**). Her birinde
-  küçük resim, tarih, istem (üzerine gelince ilk 300 karakteri görünür), boyut ve istendiyse en-boy
-  oranı.
+  küçük resim, tarih, istem (üzerine gelince ilk 300 karakteri görünür), boyut, biçim
+  (PNG/JPG/WEBP/GIF; GIF'lerde kare sayısı ve süre) ve uygulandıysa en-boy oranı bulunur.
 - **Her görsel için:** **Sohbeti aç**, **Klasörde göster** (Gezgin dosya seçili olarak açılır),
   **Yolu kopyala** ve **Koleksiyona ekle** (var olan bir koleksiyon ya da **Yeni koleksiyon…**).
 
 Galeri, iş geçmişindeki görselleri listeler; geçmiş son 100 işi tutar. Küçük resimler 7 gün saklanan
 önizlemelerden gelir; daha eski görsellerde yer tutucu görünür. Görsel dosyalarının kendisi görsel
 klasöründe kalır.
+Bir GIF kartının üzerine gelince animasyon oynar. 640 KB'den büyük GIF'ler galeride durağan kalır;
+dosyanın tam hâli görsel klasöründe değişmeden durur.
 
 ## Araç başvurusu
 

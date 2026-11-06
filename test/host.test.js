@@ -234,24 +234,30 @@ test('the host', async t => {
     const job = await call('generate', { prompt: 'A gallery cat' });
     await nextFromHost('run');
     const image = png(2, { width: 900, height: 600 });
-    toHost({ type: 'result', jobId: job.id, ok: true, status: 'succeeded', conversationUrl: CHAT_URL, images: [{ data: b64(image), mime: 'image/png', width: 900, height: 600, preview: b64(JPEG) }] });
+    const animation = gif({ width: 12, height: 8, frames: [{ delayCs: 4 }, { delayCs: 6 }] });
+    toHost({ type: 'result', jobId: job.id, ok: true, status: 'succeeded', conversationUrl: CHAT_URL, images: [
+      { data: b64(image), mime: 'image/png', width: 900, height: 600, preview: b64(JPEG) },
+      { data: b64(animation), mime: 'image/gif', width: 12, height: 8 },
+    ] });
     const done = await finished(job.id);
     const saved = done.images[0].path;
 
     const list = await call('gallery_list', { offset: 0, limit: 100 });
-    assert.equal(list.total, 5); // the banner's two images, the void mage, the landscape and this one
+    assert.equal(list.total, 6); // the banner's two images, the void mage, the landscape and these two
     assert.deepEqual(list.items[0], {
       jobId: job.id, n: 1, createdAt: done.createdAt, prompt: 'A gallery cat', conversationUrl: CHAT_URL, path: saved,
-      width: 900, height: 600, aspect: null, preview: true, missing: false,
+      width: 900, height: 600, format: 'PNG', frames: null, durationMs: null, aspect: null, preview: true, missing: false,
     });
-    assert.deepEqual(list.items.slice(3).map(x => [x.n, x.aspect, x.prompt]), [[1, '4:1', 'A wide banner'], [2, '4:1', 'A wide banner']]);
+    assert.deepEqual(list.items.slice(4).map(x => [x.n, x.aspect, x.prompt]), [[1, '4:1', 'A wide banner'], [2, '4:1', 'A wide banner']]);
     assert.deepEqual(await call('gallery_thumb', { jobId: job.id, n: 1 }), { data: b64(JPEG), mime: 'image/jpeg' });
-    assert.deepEqual(await call('gallery_thumb', { jobId: list.items[3].jobId, n: 1 }), { data: null, mime: null }); // its preview is no JPEG
+    assert.deepEqual(await call('gallery_thumb', { jobId: list.items[4].jobId, n: 1 }), { data: null, mime: null }); // its preview is no JPEG
+    assert.deepEqual(await call('gallery_animation', { jobId: job.id, n: 2 }), { data: b64(animation), mime: 'image/gif' });
+    assert.deepEqual(await call('gallery_animation', { jobId: job.id, n: 1 }), { data: null, mime: null });
 
     // The extension asks the same over its native port.
     toHost({ type: 'call', reqId: 'g1', method: 'gallery_list', params: { offset: 1, limit: 2 } });
     const page = await nextFromHost('reply');
-    assert.deepEqual([page.reqId, page.ok, page.result.total, page.result.next, page.result.items.length], ['g1', true, 5, 3, 2]);
+    assert.deepEqual([page.reqId, page.ok, page.result.total, page.result.next, page.result.items.length], ['g1', true, 6, 3, 2]);
 
     toHost({ type: 'call', reqId: 'g2', method: 'collection_add_job_image', params: { collection: 'Gallery picks', create: true, jobId: job.id, n: 1, path: path.join(DIR, 'host.js') } });
     const added = await nextFromHost('reply');
@@ -268,8 +274,8 @@ test('the host', async t => {
     await assert.rejects(call('collection_add_job_image', { collection: 'Nope', jobId: job.id, n: 1 }), { code: 'NOT_FOUND' });
 
     // Never a path: an unknown job, a string number or a path alone find nothing.
-    for (const p of [{ jobId: 'img_00000000', n: 1 }, { jobId: job.id, n: '1' }, { jobId: job.id, n: 2 }, { path: saved }, { jobId: saved, n: 1 }]) {
-      for (const method of ['reveal_image', 'gallery_thumb', 'collection_add_job_image']) {
+    for (const p of [{ jobId: 'img_00000000', n: 1 }, { jobId: job.id, n: '1' }, { jobId: job.id, n: 3 }, { path: saved }, { jobId: saved, n: 1 }]) {
+      for (const method of ['reveal_image', 'gallery_thumb', 'gallery_animation', 'collection_add_job_image']) {
         await assert.rejects(call(method, { collection: 'Gallery picks', ...p }), { code: 'NOT_FOUND', message: 'That image is not in the gallery any more.' }, `${method} ${JSON.stringify(p)}`);
       }
     }

@@ -1,7 +1,7 @@
 'use strict';
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { TOLERANCE, ALIASES, parseAspect, plan, safeBand, promptLines, aspectOption } = require('../lib/aspect');
+const { TOLERANCE, ALIASES, withinAspect, parseAspect, plan, safeBand, promptLines, aspectOption } = require('../lib/aspect');
 const crop = require('../extension/aspect');
 
 const TRANSPARENT = 'Background: fully transparent (PNG with an alpha channel). Show only the subject: no background colour, no scenery, no floor shadow, no white or checkerboard box.';
@@ -65,6 +65,16 @@ test('parseAspect: 1:4 to 4:1 is accepted, anything beyond is not', () => {
 test('parseAspect: after reducing, both numbers must be 100 or less', () => {
   assert.throws(() => parseAspect('1921:1080'), /"1921:1080" \(1921:1080\) is too precise: use a simpler ratio with numbers up to 100/);
   assert.throws(() => parseAspect('101:100'), /too precise/);
+});
+
+test('withinAspect: accepts the 1% boundary and rejects invalid dimensions', () => {
+  const square = parseAspect('1:1');
+  assert.equal(withinAspect(1010, 1000, square), true);
+  assert.equal(withinAspect(1011, 1000, square), false);
+  for (const dimensions of [[0, 1000], [-1, 1000], [NaN, 1000], [Infinity, 1000], [1000, null]]) {
+    assert.equal(withinAspect(...dimensions, square), false, String(dimensions));
+  }
+  assert.equal(withinAspect(1000, 1000, null), false);
 });
 
 test('plan: native ratios are drawn as asked', () => {
