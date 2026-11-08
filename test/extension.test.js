@@ -457,6 +457,27 @@ test('sendPrompt: the first send still accepts navigation from the project to a 
   assert.deepEqual(calls, ['composerState', 'clickSend', 'probe']);
 });
 
+test('sendPrompt: stale sent signals are ignored until the new conversation appears', async () => {
+  const PREVIOUS_CHAT = 'https://chatgpt.com/g/g-p-0123456789abcdef/c/11111111-1111-1111-1111-111111111111';
+  const NEW_CHAT = 'https://chatgpt.com/g/g-p-0123456789abcdef/c/22222222-2222-2222-2222-222222222222';
+  let probes = 0;
+  const { ctx, jobCtx, baseline, calls } = sendingWorker(null, () => {
+    probes++;
+    assert.notEqual(jobCtx.conversationUrl, PREVIOUS_CHAT);
+    if (probes <= 2) return { url: PREVIOUS_CHAT, userTurns: 1, stop: true };
+    return { url: NEW_CHAT, userTurns: 1, stop: true };
+  });
+  jobCtx.staleUrl = PREVIOUS_CHAT;
+
+  const sent = await ctx.sendPrompt(jobCtx, baseline, false);
+
+  assert.equal(probes, 3);
+  assert.equal(sent.url, NEW_CHAT);
+  assert.equal(jobCtx.conversationUrl, NEW_CHAT);
+  assert.notEqual(jobCtx.conversationUrl, PREVIOUS_CHAT);
+  assert.deepEqual(calls, ['composerState', 'clickSend', 'probe', 'probe', 'probe']);
+});
+
 test('runJob: a reused worker never publishes the previous conversation URL', async () => {
   const PROJECT = 'https://chatgpt.com/g/g-p-0123456789abcdef/project';
   const PREVIOUS_CHAT = 'https://chatgpt.com/g/g-p-0123456789abcdef/c/11111111-1111-1111-1111-111111111111';

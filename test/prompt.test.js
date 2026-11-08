@@ -1,5 +1,6 @@
 'use strict';
 const assert = require('node:assert/strict');
+const { performance } = require('node:perf_hooks');
 const test = require('node:test');
 const { buildText } = require('../lib/prompt');
 const { aspectOption } = require('../lib/aspect');
@@ -126,6 +127,13 @@ test('animated: leaves wrapper wording in the middle of the prompt', () => {
   );
 });
 
+test('animated: does not treat one inside another word as the motion tail', () => {
+  assert.equal(
+    buildText({ prompt: 'a drone clear motion, still camera, seamless loop', animated: true }),
+    "Create an animated GIF: a drone clear motion, still camera, seamless loop, one clear motion, still camera, seamless loop. Don't ask follow-up questions; create the GIF directly.",
+  );
+});
+
 test('animated: deduplicates a trailing instruction with a curly apostrophe', () => {
   assert.equal(
     buildText({ prompt: 'a fox, one clear motion, still camera, seamless loop. Don’t ask follow-up questions; create the GIF directly.', animated: true }),
@@ -144,4 +152,31 @@ test('animated: send_as_is takes priority; false keeps the original still-image 
   const prompt = 'A fox waves.!  ';
   assert.equal(buildText({ prompt, animated: true, sendAsIs: true, references: [ref('a.png')], aspect: wide, transparent: true }), prompt);
   assert.equal(buildText({ prompt, animated: false, aspect: wide, transparent: true }), buildText({ prompt, aspect: wide, transparent: true }));
+});
+
+function assertAnimatedGapCompletes(gap) {
+  const content = `a fox${gap}x`;
+  const expected = `Create an animated GIF: ${content}, one clear motion, still camera, seamless loop. Don't ask follow-up questions; create the GIF directly.`;
+  const prompts = [
+    content,
+    `${content}, one clear motion, still camera, seamless loop. Don't ask follow-up questions; create the GIF directly.`,
+  ];
+  for (const prompt of prompts) {
+    const started = performance.now();
+    const actual = buildText({ prompt, animated: true });
+    const elapsed = performance.now() - started;
+    // The untouched trailing trim is quadratic (about 1-2 s here), so keep a generous bound; the
+    // earlier cubic backtracking needed minutes for the same input.
+    assert.ok(elapsed < 5000, `buildText took ${elapsed.toFixed(1)} ms`);
+    assert.equal(actual, expected);
+    assert.equal(actual.split('one clear motion').length - 1, 1);
+  }
+}
+
+test('animated: handles 50,000 spaces without backtracking through the gap', () => {
+  assertAnimatedGapCompletes(' '.repeat(50_000));
+});
+
+test('animated: handles 20,000 space-newline pairs without backtracking through the gap', () => {
+  assertAnimatedGapCompletes(' \n'.repeat(20_000));
 });
