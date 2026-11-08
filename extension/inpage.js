@@ -189,13 +189,18 @@
     }));
   }
 
-  // Short status labels ChatGPT shows while it works ("Düşünüyor", "Eskiz çiziliyor %41", "Önizleme").
-  const BUSY_TEXT = /creating image|generating image|image is being|thinking|sketch|preview|görsel oluşturuluyor|görüntü oluşturuluyor|resim oluşturuluyor|görsel hazırlanıyor|düşünüyor|eskiz|önizleme/i;
+  // Short status labels must start the text; file names and later mentions are not busy states.
+  const BUSY_TEXT = /^[\s\p{P}\p{S}]*(?:creating images?|generating images?|image is being|thinking|sketch(?:ing)?|setting the scene|finishing up|preview|görsel önizleme|image preview|görsel oluşturuluyor|görüntü oluşturuluyor|resim oluşturuluyor|görsel hazırlanıyor|düşünüyor|eskiz|son rötuşlar|önizleme)(?![\p{L}\p{N}_])/iu;
+  const FILE_NAME_TEXT = /[^\s/\\]+\.(?:png|jpe?g|webp|gif|svg|avif|bmp|tiff?|ico|zip|pdf|txt|json|csv|md|xml|ya?ml|docx?|xlsx?|pptx?)(?![\p{L}\p{N}_])[\s\p{P}]*$/iu;
   const BUSY_SEL = '[aria-busy="true"], .pulsing-dot, .loading-shimmer, [class*="shimmer"], [role="progressbar"], .result-streaming';
 
   function busyIn(els) {
-    return els.some(el => !inMarkdown(el) && (el.matches(BUSY_SEL) ||
-      (!el.childElementCount && (el.textContent || '').length < 80 && BUSY_TEXT.test(el.textContent || ''))));
+    return els.some(el => {
+      if (inMarkdown(el)) return false;
+      if (el.matches(BUSY_SEL)) return true;
+      const t = squash(el.textContent);
+      return !el.childElementCount && t.length < 80 && !FILE_NAME_TEXT.test(t) && BUSY_TEXT.test(t);
+    });
   }
 
   const ERROR_TEXT = /something went wrong|an error occurred|error in message stream|network error|bir şeyler ters gitti|bir hata oluştu|hata oluştu|ağ hatası/i;
@@ -623,6 +628,6 @@
   globalThis.__cgb = {
     version: VERSION, probe, composerState, clearComposer, setPrompt, clickSend, pressEnter, clickStop,
     dismissDialogs, listProjects, openProject, sidebar, clickLabel, fetchImage, snapshot, counts,
-    attachFiles, attachmentState, removeAttachments, latestEarlierImage, editCheck, replyText,
+    attachFiles, attachmentState, removeAttachments, latestEarlierImage, editCheck, replyText, busyIn,
   };
 })();
