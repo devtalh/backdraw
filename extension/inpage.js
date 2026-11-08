@@ -190,7 +190,7 @@
   }
 
   // Short status labels must start the text; file names and later mentions are not busy states.
-  const BUSY_TEXT = /^[\s\p{P}]*(?:creating image|generating image|image is being|thinking|sketch(?:ing)?|setting the scene|finishing up|preview|görsel oluşturuluyor|görüntü oluşturuluyor|resim oluşturuluyor|görsel hazırlanıyor|düşünüyor|eskiz|son rötuşlar|önizleme)(?![\p{L}\p{N}_])/iu;
+  const BUSY_TEXT = /^[\s\p{P}\p{S}]*(?:creating images?|generating images?|image is being|thinking|sketch(?:ing)?|setting the scene|finishing up|preview|görsel önizleme|image preview|görsel oluşturuluyor|görüntü oluşturuluyor|resim oluşturuluyor|görsel hazırlanıyor|düşünüyor|eskiz|son rötuşlar|önizleme)(?![\p{L}\p{N}_])/iu;
   const FILE_NAME_TEXT = /[^\s/\\]+\.(?:png|jpe?g|webp|gif|svg|avif|bmp|tiff?|ico|zip|pdf|txt|json|csv|md|xml|ya?ml|docx?|xlsx?|pptx?)(?![\p{L}\p{N}_])[\s\p{P}]*$/iu;
   const BUSY_SEL = '[aria-busy="true"], .pulsing-dot, .loading-shimmer, [class*="shimmer"], [role="progressbar"], .result-streaming';
 

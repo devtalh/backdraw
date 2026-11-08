@@ -42,6 +42,10 @@ test('busyIn: file names and non-status text are not busy', () => {
     'önizleme.gif',
     'My sketchbook',
     'Previewing options',
+    'görsel_önizleme.png',
+    'image_preview.svg',
+    'Preview.png',
+    'Creating imagery',
   ]) assert.equal(busyIn([element(text)]), false, text);
 });
 
@@ -64,6 +68,16 @@ test('busyIn: English and Turkish progress labels remain busy', () => {
     'Görsel oluşturuluyor',
     'Önizleme',
     'önizleme',
+    'Creating images',
+    'Generating images…',
+    'Görsel önizleme',
+    'Görsel önizleme %47',
+    'Image preview',
+    '✨ Thinking',
+    '⏳ Düşünüyor',
+    '  Thinking',
+    'THINKING',
+    'Thinking '.padEnd(79, 'x'),
   ]) assert.equal(busyIn([element(text)]), true, text);
 });
 
