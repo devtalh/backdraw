@@ -457,6 +457,177 @@ test('sendPrompt: the first send still accepts navigation from the project to a 
   assert.deepEqual(calls, ['composerState', 'clickSend', 'probe']);
 });
 
+test('runJob: a reused worker never publishes the previous conversation URL', async () => {
+  const PROJECT = 'https://chatgpt.com/g/g-p-0123456789abcdef/project';
+  const PREVIOUS_CHAT = 'https://chatgpt.com/g/g-p-0123456789abcdef/c/11111111-1111-1111-1111-111111111111';
+  const NEW_CHAT = 'https://chatgpt.com/g/g-p-0123456789abcdef/c/22222222-2222-2222-2222-222222222222';
+  const { ctx, posted } = loadWorker();
+  const jobText = 'Create a new animated starfish GIF';
+  let tab = null;
+  let now = 0;
+  let probes = 0;
+
+  ctx.URL = URL;
+  ctx.Date = { now: () => now };
+  ctx.setTimeout = (fn, ms) => { now += ms; return setTimeout(fn, 0); };
+  ctx.chrome.windows.getLastFocused = async () => ({ id: 1, type: 'normal' });
+  ctx.chrome.tabs.create = async ({ url }) => (tab = { id: 7, url, active: false });
+  ctx.chrome.tabs.get = async id => id === 7 ? tab : null;
+  ctx.chrome.tabs.update = async (id, changes) => {
+    assert.equal(id, 7);
+    tab = { ...tab, ...changes };
+    return tab;
+  };
+  ctx.scheduleWorkerClose = () => {};
+  ctx.typePrompt = async () => {};
+  ctx.reloadWorker = async () => {};
+  ctx.downloadImages = async () => [{ data: 'image', mime: 'image/png', width: 12, height: 8 }];
+  ctx.pageCall = async (tabId, fn) => {
+    assert.equal(tabId, 7);
+    if (fn === 'composerState') return { send: { disabled: false } };
+    if (fn === 'clickSend') return { ok: true };
+    assert.equal(fn, 'probe');
+    probes++;
+    if (probes <= 4) {
+      return { url: PREVIOUS_CHAT, composer: true, composerText: 'Previous prompt', counts: { users: 4, images: 1 },
+        userTurns: 0, lastUserText: 'Previous prompt', stop: false, busy: false, images: [], sig: 'previous' };
+    }
+    if (probes === 5) {
+      return { url: PROJECT, composer: true, composerText: '', counts: { users: 0, images: 0 },
+        userTurns: 0, lastUserText: '', stop: false, busy: false, images: [], sig: 'project' };
+    }
+    return { url: NEW_CHAT, composer: true, composerText: '', counts: { users: 1, images: 1 },
+      userTurns: 1, lastUserText: jobText, stop: false, busy: false, images: [{ src: 'result.png', w: 12, h: 8 }],
+      text: 'done', title: 'done', replyCount: 1, done: true, sig: 'new' };
+  };
+
+  await ctx.openWorker(PREVIOUS_CHAT);
+  await ctx.runJob({ id: 'reused_worker', startUrl: PROJECT, text: jobText, mode: 'generate', refs: [] });
+
+  const progress = posted.filter(message => message.type === 'progress');
+  const result = posted.find(message => message.type === 'result');
+  assert.equal(result && result.conversationUrl, NEW_CHAT);
+  const firstNew = progress.findIndex(message => message.conversationUrl === NEW_CHAT);
+  assert.notEqual(firstNew, -1);
+  assert.deepEqual(
+    progress.slice(0, firstNew).filter(message => message.conversationUrl != null),
+    [],
+    'progress before the new chat appears must not contain a conversation URL',
+  );
+  assert.equal(
+    [...progress, result].some(message => message && message.conversationUrl === PREVIOUS_CHAT),
+    false,
+    'the previous conversation URL must never be published',
+  );
+});
+
+const navigationState = (url, extra = {}) => ({
+  url, composer: true, composerText: '', counts: { users: 0, images: 0 }, userTurns: 0,
+  lastUserText: '', stop: false, busy: false, images: [], sig: url, ...extra,
+});
+
+async function runNavigationJob({ startUrl, previousUrl = null, stateAt }) {
+  const { ctx, posted } = loadWorker();
+  const jobText = 'Create a navigation test image';
+  let tab = null;
+  let now = 0;
+  let probes = 0;
+  let created = 0;
+
+  ctx.URL = URL;
+  ctx.Date = { now: () => now };
+  ctx.setTimeout = (fn, ms) => { now += ms; return setTimeout(fn, 0); };
+  ctx.chrome.windows.getLastFocused = async () => ({ id: 1, type: 'normal' });
+  ctx.chrome.tabs.create = async ({ url }) => {
+    created++;
+    return (tab = { id: 7, url, active: false });
+  };
+  ctx.chrome.tabs.get = async id => id === 7 ? tab : null;
+  ctx.chrome.tabs.update = async (id, changes) => {
+    assert.equal(id, 7);
+    tab = { ...tab, ...changes };
+    return tab;
+  };
+  ctx.scheduleWorkerClose = () => {};
+  ctx.typePrompt = async () => {};
+  ctx.reloadWorker = async () => {};
+  ctx.downloadImages = async () => [{ data: 'image', mime: 'image/png', width: 12, height: 8 }];
+  ctx.pageCall = async (tabId, fn) => {
+    assert.equal(tabId, 7);
+    if (fn === 'composerState') return { send: { disabled: false } };
+    if (fn === 'clickSend') return { ok: true };
+    if (fn === 'editCheck') return null;
+    assert.equal(fn, 'probe');
+    return stateAt(++probes, jobText);
+  };
+
+  if (previousUrl) await ctx.openWorker(previousUrl);
+  await ctx.runJob({ id: `navigation_${Math.random()}`, startUrl, text: jobText, mode: 'generate', refs: [] });
+  return {
+    created,
+    probes,
+    progress: posted.filter(message => message.type === 'progress'),
+    result: posted.find(message => message.type === 'result'),
+  };
+}
+
+test('runJob: reusing the same conversation accepts its URL', async () => {
+  const CHAT = 'https://chatgpt.com/g/g-p-0123456789abcdef/c/33333333-3333-3333-3333-333333333333';
+  const run = await runNavigationJob({
+    startUrl: CHAT,
+    previousUrl: CHAT,
+    stateAt: (probe, text) => navigationState(CHAT, probe < 4 ? {
+      counts: { users: 1, images: 1 },
+    } : {
+      counts: { users: 2, images: 2 }, userTurns: 1, lastUserText: text,
+      images: [{ src: 'result.png', w: 12, h: 8 }], text: 'done', title: 'done', replyCount: 1, done: true,
+    }),
+  });
+
+  assert.equal(run.result && run.result.ok, true, run.result && run.result.error);
+  assert.equal(run.result.conversationUrl, CHAT);
+  assert.ok(run.progress.some(message => message.conversationUrl === CHAT));
+});
+
+test('runJob: a stale off-project document does not trigger project_unavailable', async () => {
+  const PROJECT = 'https://chatgpt.com/g/g-p-0123456789abcdef/project';
+  const PREVIOUS_CHAT = 'https://chatgpt.com/g/g-p-fedcba9876543210/c/44444444-4444-4444-4444-444444444444';
+  const NEW_CHAT = 'https://chatgpt.com/g/g-p-0123456789abcdef/c/55555555-5555-5555-5555-555555555555';
+  const run = await runNavigationJob({
+    startUrl: PROJECT,
+    previousUrl: PREVIOUS_CHAT,
+    stateAt: (probe, text) => {
+      if (probe <= 8) return navigationState(PREVIOUS_CHAT, { counts: { users: 3, images: 1 } });
+      if (probe <= 11) return navigationState(PROJECT);
+      return navigationState(NEW_CHAT, {
+        counts: { users: 1, images: 1 }, userTurns: 1, lastUserText: text,
+        images: [{ src: 'result.png', w: 12, h: 8 }], text: 'done', title: 'done', replyCount: 1, done: true,
+      });
+    },
+  });
+
+  assert.ok(run.probes > 11);
+  assert.equal(run.result && run.result.ok, true, run.result && run.result.error);
+  assert.equal(run.result.conversationUrl, NEW_CHAT);
+  assert.equal([...run.progress, run.result].some(message => message.conversationUrl === PREVIOUS_CHAT), false);
+});
+
+test('runJob: a new worker tab keeps the project-to-conversation flow', async () => {
+  const PROJECT = 'https://chatgpt.com/g/g-p-0123456789abcdef/project';
+  const NEW_CHAT = 'https://chatgpt.com/g/g-p-0123456789abcdef/c/66666666-6666-6666-6666-666666666666';
+  const run = await runNavigationJob({
+    startUrl: PROJECT,
+    stateAt: (probe, text) => navigationState(probe < 4 ? PROJECT : NEW_CHAT, probe < 4 ? {} : {
+      counts: { users: 1, images: 1 }, userTurns: 1, lastUserText: text,
+      images: [{ src: 'result.png', w: 12, h: 8 }], text: 'done', title: 'done', replyCount: 1, done: true,
+    }),
+  });
+
+  assert.equal(run.created, 1);
+  assert.equal(run.result && run.result.ok, true, run.result && run.result.error);
+  assert.equal(run.result.conversationUrl, NEW_CHAT);
+});
+
 const TRANSPARENT_PIXELS = new Uint8ClampedArray(4 * 4 * 4);
 for (const index of [5, 6, 9, 10]) TRANSPARENT_PIXELS.set([200, 40, 40, 255], index * 4);
 for (const index of [1, 4, 7, 13]) TRANSPARENT_PIXELS.set([90, 9, 12, 3], index * 4);

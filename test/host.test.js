@@ -198,6 +198,31 @@ test('the host', async t => {
     assert.deepEqual(resultLines(done).slice(1), [`Saved: ${im.path} (1254x1254)`, SHOW_IMAGE]);
   });
 
+  await t.test('conversation URLs stay isolated between consecutive jobs', async () => {
+    const chatA = 'https://chatgpt.com/g/g-p-67a1b2c3d4e5f60718293a4b5c6d7e8f/c/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const chatB = 'https://chatgpt.com/g/g-p-67a1b2c3d4e5f60718293a4b5c6d7e8f/c/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+    const first = await call('generate', { prompt: 'First consecutive job' });
+    await nextFromHost('run');
+    toHost({ type: 'progress', jobId: first.id, step: 'generating', message: 'Generating', conversationUrl: chatA });
+    assert.equal((await call('job', { jobId: first.id })).conversationUrl, chatA);
+    toHost({ type: 'result', jobId: first.id, ok: false, status: 'text_reply', error: 'test complete', conversationUrl: chatA });
+    assert.equal((await finished(first.id)).conversationUrl, chatA);
+
+    const second = await call('generate', { prompt: 'Second consecutive job' });
+    await nextFromHost('run');
+    const running = await call('job', { jobId: second.id });
+    assert.equal(running.status, 'running');
+    assert.equal(running.conversationUrl, null);
+    assert.notEqual(running.conversationUrl, chatA);
+
+    toHost({ type: 'progress', jobId: second.id, step: 'generating', message: 'Generating', conversationUrl: chatB });
+    const updated = await call('job', { jobId: second.id });
+    assert.equal(updated.conversationUrl, chatB);
+    assert.notEqual(updated.conversationUrl, chatA);
+    toHost({ type: 'result', jobId: second.id, ok: false, status: 'text_reply', error: 'test complete', conversationUrl: chatB });
+    assert.equal((await finished(second.id)).conversationUrl, chatB);
+  });
+
   await t.test('an aspect ratio that was already right: no crop, one file', async () => {
     const job = await call('generate', { prompt: 'A landscape', aspect: '16:9' });
     await nextFromHost('run');
