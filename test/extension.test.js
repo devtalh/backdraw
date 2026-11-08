@@ -813,6 +813,64 @@ test('runJob: cancellation after reference decoding closes the bitmap and sends 
   assert.ok(!warned(posted, 'reference preparation failed; using original'));
 });
 
+function opaquePixels(width, height, transparentIndexes = [], alpha = 0) {
+  const pixels = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0; i < pixels.length; i += 4) pixels.set([30, 120, 210, 255], i);
+  for (const index of transparentIndexes) pixels.set([30, 120, 210, alpha], index * 4);
+  return pixels;
+}
+
+test('runJob: a single faint alpha pixel below the 0.5% share leaves the reference untouched', async () => {
+  const pixels = opaquePixels(20, 20, [37], 254); // 1 of 400 pixels = 0.25%
+  const ref = { name: 'edge.png', mime: 'image/png', complete: true, data: rgbaPng(20, 20, pixels).toString('base64') };
+  const { calls, result, posted } = await preparedJob({ refs: [ref] });
+  assert.equal(result.ok, true);
+  assert.equal(calls[0].files[0], ref);
+  assert.equal(calls[0].files[0].data, ref.data);
+  assert.equal(calls[0].text, 'Original prompt');
+  assert.equal(result.referencesTransparent, 0);
+  assert.equal(result.referencesMatted, 0);
+  assert.ok(!warned(posted, 'reference preparation failed; using original'));
+});
+
+test('runJob: exactly 0.5% see-through pixels count as transparent and get the matte and the line', async () => {
+  const pixels = opaquePixels(20, 20, [0, 399], 0); // 2 of 400 pixels = 0.5%
+  pixels.set([77, 88, 99, 0], 0);
+  const ref = { name: 'edge.png', mime: 'image/png', complete: true, data: rgbaPng(20, 20, pixels).toString('base64') };
+  const { calls, result } = await preparedJob({ refs: [ref] });
+  assert.equal(result.ok, true);
+  assert.equal(calls[0].text, 'Original prompt\n\nKeep the background transparent.');
+  assert.equal(result.referencesTransparent, 1);
+  assert.equal(result.referencesMatted, 1);
+  const uploaded = decodePng(Buffer.from(calls[0].files[0].data, 'base64'));
+  assert.deepEqual([uploaded.width, uploaded.height], [20, 20]);
+  for (const index of [0, 399]) {
+    assert.deepEqual(Array.from(uploaded.data.subarray(index * 4, index * 4 + 4)), [255, 255, 255, 0], `pixel ${index}`);
+  }
+  assert.deepEqual(Array.from(uploaded.data.subarray(4, 8)), [30, 120, 210, 255]);
+});
+
+test('runJob: cancellation while the reference PNG is encoded ends the job without uploading', async () => {
+  const width = 8, height = 300; // more than REFERENCE_ENCODE_YIELD_ROWS rows, so the encoder yields
+  const ref = { name: 'tall.png', mime: 'image/png', complete: true,
+    data: rgbaPng(width, height, new Uint8ClampedArray(width * height * 4)).toString('base64') };
+  let yields = 0;
+  const { result, calls, posted } = await preparedJob({ refs: [ref], configure: ctx => {
+    ctx.setTimeout = (fn, ms) => {
+      if (ms === 0) { // the encoder's yield between row batches
+        yields++;
+        vm.runInContext('current.cancelled = true', ctx);
+      }
+      return setTimeout(fn, 0);
+    };
+  } });
+  assert.ok(yields >= 1, 'the encoder never yielded');
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.referencesMatted, 0);
+  assert.equal(calls.length, 0);
+  assert.ok(!warned(posted, 'reference preparation failed; using original'));
+});
+
 test('processImage: GIF first-frame alpha is measured without a transparency request', async () => {
   const { ctx } = loadWorker();
   ctx.nextBitmap = new FakeBitmap(12, 8, x => x < 4 ? 0 : 255);

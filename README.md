@@ -405,10 +405,9 @@ PNG images are drawn over a checkerboard.
 once more for an animated GIF; if the result is still a static image, the tool result warns you.
 For best results, use one subject, one clear motion, a fixed camera and no small text in the scene.
 With a transparent PNG/WebP reference, Backdraw adds `Keep the background transparent.` to animated
-requests (unless `send_as_is: true`). Transparent references are uploaded as PNG copies with their
-RGB mixed over white and alpha kept, so ChatGPT does not see black in their see-through parts.
-The original reference files stay unchanged. If preparation fails, exceeds 4096 x 4096 pixels or
-produces a copy over 20 MB, the original is uploaded instead.
+requests (unless `send_as_is: true`). Reference upload preparation follows the `reference_images`
+behavior under Tools reference. If preparation fails, exceeds 4096 x 4096 pixels or produces a
+copy over 20 MB, the original is uploaded instead.
 
 GIFs are saved without cropping; `aspect_ratio` is not applied to them. Every GIF result reports
 whether its background is transparent or opaque, using the share of transparent pixels measured
@@ -453,7 +452,9 @@ file remains unchanged in your images folder.
 
 - `animated`: request a short animated GIF; if ChatGPT returns a still image, ask once more.
 - `reference_images`: local png / jpg / webp / gif files, up to 16; collection images fill the
-  slots that are left.
+  slots that are left. Transparent PNG/WebP references (at least 0.5% of their pixels are
+  transparent) are uploaded as PNG copies whose RGB is mixed over white while alpha is preserved;
+  the source files stay unchanged.
 - `reference_files`: file names from `list_collections`, to attach only those images of `reference_collection`.
 - `conversation_url`: a `https://chatgpt.com/` chat link. Fine for quick follow-ups; for exact
   edits a fresh chat with `reference_images` works better.

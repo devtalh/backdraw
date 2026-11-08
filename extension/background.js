@@ -694,6 +694,8 @@ function bytesToB64(bytes) {
 const blobToB64 = async blob => bytesToB64(new Uint8Array(await blob.arrayBuffer()));
 
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+const REFERENCE_TRANSPARENT_MIN_SHARE = 0.005; // Ignore isolated antialiasing on otherwise opaque images.
+const REFERENCE_ENCODE_YIELD_ROWS = 64;
 const PNG_CRC = Uint32Array.from({ length: 256 }, (_, n) => {
   for (let k = 0; k < 8; k++) n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1;
   return n >>> 0;
@@ -718,14 +720,21 @@ function paeth(a, b, c) {
 }
 
 // Encode straight RGBA bytes: canvas export would discard RGB at alpha zero again.
-async function encodeReferencePng(width, height, pixels, ctx) {
+async function encodeReferencePng(width, height, pixels, ctx, matte = false) {
   const stride = width * 4;
   const rows = new Uint8Array((stride + 1) * height);
   const trial = new Uint8Array(stride);
   for (let y = 0; y < height; y++) {
+    if (y && y % REFERENCE_ENCODE_YIELD_ROWS === 0) await sleep(0);
     check(ctx);
     const start = y * stride;
     const row = y * (stride + 1);
+    if (matte) {
+      for (let x = start; x < start + stride; x += 4) {
+        const a = pixels[x + 3] / 255;
+        for (let c = 0; c < 3; c++) pixels[x + c] = Math.round(pixels[x + c] * a + 255 * (1 - a));
+      }
+    }
     let best = Infinity;
     for (let filter = 0; filter < 5; filter++) {
       let score = 0;
@@ -779,15 +788,12 @@ async function prepareReferences(ctx) {
         if (bmp.width * bmp.height > 4096 * 4096) throw new Error('reference exceeds 4096 x 4096 pixels');
         const canvas = drawPart(bmp, { x: 0, y: 0, width: bmp.width, height: bmp.height });
         const { data } = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, bmp.width, bmp.height);
-        transparent = false;
-        for (let i = 3; i < data.length; i += 4) if (data[i] < 255) { transparent = true; break; }
+        let transparentPixels = 0;
+        for (let i = 3; i < data.length; i += 4) if (data[i] < 255) transparentPixels++;
+        transparent = transparentPixels / (data.length / 4) >= REFERENCE_TRANSPARENT_MIN_SHARE;
         if (transparent) {
           ctx.referencesTransparent++;
-          for (let i = 0; i < data.length; i += 4) {
-            const a = data[i + 3] / 255;
-            for (let c = 0; c < 3; c++) data[i + c] = Math.round(data[i + c] * a + 255 * (1 - a));
-          }
-          const encoded = await encodeReferencePng(bmp.width, bmp.height, data, ctx);
+          const encoded = await encodeReferencePng(bmp.width, bmp.height, data, ctx, true);
           if (encoded.length > 20 * 1024 * 1024) throw new Error('prepared reference exceeds 20 MB');
           prepared = { ...ref, name: webp ? ref.name.replace(/\.[^.]+$/, '') + '.png' : ref.name,
             mime: 'image/png', data: bytesToB64(encoded) };
