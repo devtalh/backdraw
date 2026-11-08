@@ -276,6 +276,8 @@ function onResult(msg) {
     if (msg.assistantText) job.assistantText = String(msg.assistantText).slice(0, 4000);
     job.reattached = !!msg.reattached;
     job.animatedRetry = !!msg.animatedRetry;
+    job.referencesTransparent = Number.isSafeInteger(msg.referencesTransparent) && msg.referencesTransparent > 0 ? msg.referencesTransparent : 0;
+    job.referencesMatted = Number.isSafeInteger(msg.referencesMatted) && msg.referencesMatted > 0 ? msg.referencesMatted : 0;
     if (msg.ok && Array.isArray(msg.images) && msg.images.length) {
       try {
         const images = saveImages(job, msg.images, msg.title);
@@ -534,6 +536,7 @@ function publicJob(j) {
     conversationUrl: j.conversationUrl, startUrl: j.startUrl, images: j.images, assistantText: j.assistantText,
     error: j.error, reason: j.reason, createdAt: j.createdAt, startedAt: j.startedAt, finishedAt: j.finishedAt,
     references: j.references || [], reattached: !!j.reattached, editCheck: j.editCheck || null,
+    referencesTransparent: j.referencesTransparent || 0, referencesMatted: j.referencesMatted || 0,
     aspect: j.aspect ? j.aspect.target.label : null, transparent: !!j.transparent, animated: !!j.animated, animatedRetry: !!j.animatedRetry,
     copyTo: j.copyTo || null, copies: j.copies || [],
     collection: j.collection || null,

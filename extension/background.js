@@ -256,13 +256,14 @@ function compact(st) {
 
 async function runJob(job) {
   if (current) {
-    post({ type: 'result', jobId: job.id, ok: false, status: 'failed', reason: 'busy', error: 'The extension is busy with another job.' });
+    post({ type: 'result', jobId: job.id, ok: false, status: 'failed', reason: 'busy', error: 'The extension is busy with another job.',
+      referencesTransparent: 0, referencesMatted: 0 });
     return;
   }
   const ctx = current = {
     job, cancelled: false, tabId: null, conversationUrl: null, lastText: '', sent: false, keepTab: false,
     step: 'starting', message: '', deadline: Date.now() + (job.timeoutSec || 600) * 1000, refs: job.refs || [],
-    startedAt: Date.now(),
+    startedAt: Date.now(), referencesTransparent: 0, referencesMatted: 0,
   };
   ctx.progress = (step, message, extra = {}) => {
     ctx.step = step;
@@ -273,6 +274,7 @@ async function runJob(job) {
   remember(job.id, 'running');
   try {
     if (ctx.refs.some(r => !r.complete)) throw fail('ref_transfer', 'A reference image did not arrive completely; please try again.');
+    if (job.mode !== 'collect' && ctx.refs.length) ctx.refs = await prepareReferences(ctx);
     ctx.progress('opening', 'Opening ChatGPT in a background tab');
     ctx.tabId = await openWorker(job.startUrl);
     const ready = await waitUntilReady(ctx);
@@ -304,6 +306,7 @@ async function runJob(job) {
           ? 'ChatGPT could not access the image it should edit and asked for it to be uploaded again.'
           : 'ChatGPT replied with text and did not create an image.',
         conversationUrl: ctx.conversationUrl, assistantText: outcome.text || null, reattached: !!outcome.reattached,
+        referencesTransparent: ctx.referencesTransparent, referencesMatted: ctx.referencesMatted,
       });
       remember(job.id, outcome.kind);
       return;
@@ -348,6 +351,7 @@ async function runJob(job) {
       type: 'result', jobId: job.id, ok: true, status: 'succeeded', conversationUrl: ctx.conversationUrl,
       assistantText: outcome.text, title: outcome.title, images, editCheck, reattached: !!outcome.reattached,
       references: attached.length, animatedRetry: !!ctx.animatedRetry,
+      referencesTransparent: ctx.referencesTransparent, referencesMatted: ctx.referencesMatted,
     });
     remember(job.id, 'succeeded');
   } catch (e) {
@@ -365,6 +369,7 @@ async function runJob(job) {
       type: 'result', jobId: job.id, ok: false, status: cancelled ? 'cancelled' : 'failed',
       reason: cancelled ? 'cancelled' : e.reason || 'error', error: cancelled ? 'Cancelled.' : e.message,
       conversationUrl: ctx.conversationUrl, assistantText: ctx.lastText || null, animatedRetry: !!ctx.animatedRetry,
+      referencesTransparent: ctx.referencesTransparent, referencesMatted: ctx.referencesMatted,
     });
     remember(job.id, cancelled ? 'cancelled' : 'failed');
   } finally {
@@ -686,6 +691,128 @@ function bytesToB64(bytes) {
 
 const blobToB64 = async blob => bytesToB64(new Uint8Array(await blob.arrayBuffer()));
 
+const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+const REFERENCE_TRANSPARENT_MIN_SHARE = 0.005; // Ignore isolated antialiasing on otherwise opaque images.
+const REFERENCE_ENCODE_YIELD_ROWS = 64;
+const PNG_CRC = Uint32Array.from({ length: 256 }, (_, n) => {
+  for (let k = 0; k < 8; k++) n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1;
+  return n >>> 0;
+});
+
+function pngChunk(type, data) {
+  const chunk = new Uint8Array(data.length + 12);
+  const view = new DataView(chunk.buffer);
+  view.setUint32(0, data.length);
+  for (let i = 0; i < 4; i++) chunk[4 + i] = type.charCodeAt(i);
+  chunk.set(data, 8);
+  let crc = 0xffffffff;
+  for (let i = 4; i < chunk.length - 4; i++) crc = PNG_CRC[(crc ^ chunk[i]) & 255] ^ (crc >>> 8);
+  view.setUint32(chunk.length - 4, (crc ^ 0xffffffff) >>> 0);
+  return chunk;
+}
+
+function paeth(a, b, c) {
+  const p = a + b - c;
+  const da = Math.abs(p - a), db = Math.abs(p - b), dc = Math.abs(p - c);
+  return da <= db && da <= dc ? a : db <= dc ? b : c;
+}
+
+// Encode straight RGBA bytes: canvas export would discard RGB at alpha zero again.
+async function encodeReferencePng(width, height, pixels, ctx, matte = false) {
+  const stride = width * 4;
+  const rows = new Uint8Array((stride + 1) * height);
+  const trial = new Uint8Array(stride);
+  for (let y = 0; y < height; y++) {
+    if (y && y % REFERENCE_ENCODE_YIELD_ROWS === 0) await sleep(0);
+    check(ctx);
+    const start = y * stride;
+    const row = y * (stride + 1);
+    if (matte) {
+      for (let x = start; x < start + stride; x += 4) {
+        const a = pixels[x + 3] / 255;
+        for (let c = 0; c < 3; c++) pixels[x + c] = Math.round(pixels[x + c] * a + 255 * (1 - a));
+      }
+    }
+    let best = Infinity;
+    for (let filter = 0; filter < 5; filter++) {
+      let score = 0;
+      for (let x = 0; x < stride; x++) {
+        const a = x >= 4 ? pixels[start + x - 4] : 0;
+        const b = y ? pixels[start + x - stride] : 0;
+        const c = y && x >= 4 ? pixels[start + x - stride - 4] : 0;
+        const predict = filter === 0 ? 0 : filter === 1 ? a : filter === 2 ? b :
+          filter === 3 ? Math.floor((a + b) / 2) : paeth(a, b, c);
+        const value = trial[x] = (pixels[start + x] - predict) & 255;
+        score += Math.abs(value < 128 ? value : value - 256);
+      }
+      if (score < best) {
+        best = score;
+        rows[row] = filter;
+        rows.set(trial, row + 1);
+      }
+    }
+  }
+  const compressed = new Uint8Array(await new Response(
+    new Blob([rows]).stream().pipeThrough(new CompressionStream('deflate'))
+  ).arrayBuffer());
+  check(ctx);
+  const header = new Uint8Array(13);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, width);
+  view.setUint32(4, height);
+  header[8] = 8;
+  header[9] = 6;
+  const chunks = [new Uint8Array(PNG_SIGNATURE), pngChunk('IHDR', header), pngChunk('IDAT', compressed), pngChunk('IEND', new Uint8Array())];
+  const out = new Uint8Array(chunks.reduce((n, chunk) => n + chunk.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) { out.set(chunk, offset); offset += chunk.length; }
+  return out;
+}
+
+async function prepareReferences(ctx) {
+  const refs = [];
+  for (const ref of ctx.refs) {
+    check(ctx);
+    let prepared = ref, bmp = null, transparent = null, oldBytes = null, newBytes = null;
+    try {
+      const bytes = b64ToBytes(ref.data);
+      oldBytes = newBytes = bytes.length;
+      const png = PNG_SIGNATURE.every((b, i) => bytes[i] === b);
+      const webp = bytes.length >= 12 && bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70 &&
+        bytes[8] === 87 && bytes[9] === 69 && bytes[10] === 66 && bytes[11] === 80;
+      if (png || webp) {
+        bmp = await createImageBitmap(new Blob([bytes], { type: png ? 'image/png' : 'image/webp' }));
+        check(ctx);
+        if (bmp.width * bmp.height > 4096 * 4096) throw new Error('reference exceeds 4096 x 4096 pixels');
+        const canvas = drawPart(bmp, { x: 0, y: 0, width: bmp.width, height: bmp.height });
+        const { data } = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, bmp.width, bmp.height);
+        let transparentPixels = 0;
+        for (let i = 3; i < data.length; i += 4) if (data[i] < 255) transparentPixels++;
+        transparent = transparentPixels / (data.length / 4) >= REFERENCE_TRANSPARENT_MIN_SHARE;
+        if (transparent) {
+          ctx.referencesTransparent++;
+          const encoded = await encodeReferencePng(bmp.width, bmp.height, data, ctx, true);
+          if (encoded.length > 20 * 1024 * 1024) throw new Error('prepared reference exceeds 20 MB');
+          prepared = { ...ref, name: webp ? ref.name.replace(/\.[^.]+$/, '') + '.png' : ref.name,
+            mime: 'image/png', data: bytesToB64(encoded) };
+          ctx.referencesMatted++;
+          newBytes = encoded.length;
+        }
+      }
+    } catch (e) {
+      if (e instanceof Cancelled || ctx.cancelled) throw e;
+      log('warn', 'reference preparation failed; using original', { name: ref.name, error: String(e) });
+    } finally {
+      if (ctx.job.debug) log('debug', 'reference prepared', { name: ref.name, width: bmp && bmp.width, height: bmp && bmp.height,
+        transparent, oldBytes, newBytes });
+      if (bmp) bmp.close();
+    }
+    check(ctx);
+    refs.push(prepared);
+  }
+  return refs;
+}
+
 // The part r of the image on a canvas of its own size.
 function drawPart(bmp, r) {
   const canvas = new OffscreenCanvas(r.width, r.height);
@@ -729,7 +856,7 @@ async function makePreview(bmp, r, checker) {
 
 // Decodes a downloaded image once. With an aspect ratio it is cropped from the centre (exported as
 // PNG, which keeps any alpha); a transparent job measures the alpha of the (cropped) image; the
-// preview shows the cropped version. GIFs keep every frame; only their preview uses the first.
+// preview shows the cropped version. GIFs keep every frame; alpha and preview use the first.
 async function processImage(b64, mime, job) {
   const bytes = b64ToBytes(b64);
   const animated = isGifBytes(bytes);
@@ -743,8 +870,8 @@ async function processImage(b64, mime, job) {
       canvas = drawPart(bmp, rect);
       out.crop = { data: await blobToB64(await canvas.convertToBlob({ type: 'image/png' })), mime: 'image/png', width: rect.width, height: rect.height };
     }
-    if (!animated && job.transparent) out.alpha = measureAlpha(canvas || drawPart(bmp, r));
-    out.preview = await makePreview(bmp, r, !!out.alpha && out.alpha.transparentShare > 0)
+    if (animated || job.transparent) out.alpha = measureAlpha(canvas || drawPart(bmp, r));
+    out.preview = await makePreview(bmp, r, !animated && !!out.alpha && out.alpha.transparentShare > 0)
       .catch(e => { log('warn', 'preview failed', String(e)); return null; });
     return out;
   } finally {

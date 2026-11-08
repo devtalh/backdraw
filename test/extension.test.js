@@ -7,8 +7,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const zlib = require('node:zlib');
+const { crc32 } = require('./png-fixture');
 const { gif } = require('./gif-fixture');
-const { png } = require('./png-fixture');
+const { png, rgbaPng, decodePng } = require('./png-fixture');
 
 const EXT = path.join(__dirname, '..', 'extension');
 
@@ -47,13 +49,112 @@ function fakeCanvasClass(made) {
   };
 }
 
+function pixelCanvasClass() {
+  const color = value => {
+    const match = /^#([0-9a-f]{6})$/i.exec(value);
+    if (!match) throw new Error(`Unsupported fill color ${value}`);
+    const n = Number.parseInt(match[1], 16);
+    return [n >> 16, (n >> 8) & 0xff, n & 0xff, 255];
+  };
+  return class PixelCanvas {
+    constructor(width, height) {
+      this.width = width;
+      this.height = height;
+      this.data = new Uint8ClampedArray(width * height * 4);
+    }
+    getContext() {
+      const canvas = this;
+      const write = (x, y, rgba) => {
+        if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) return;
+        const i = (y * canvas.width + x) * 4;
+        const sa = rgba[3] / 255;
+        const da = canvas.data[i + 3] / 255;
+        const outA = sa + da * (1 - sa);
+        for (let c = 0; c < 3; c++) {
+          canvas.data[i + c] = outA ? Math.round((rgba[c] * sa + canvas.data[i + c] * da * (1 - sa)) / outA) : 0;
+        }
+        canvas.data[i + 3] = Math.round(outA * 255);
+        // Browser canvases store premultiplied pixels, so fully transparent RGB cannot survive a write or draw.
+        if (canvas.data[i + 3] === 0) canvas.data.fill(0, i, i + 4);
+      };
+      const sourcePixel = (source, x, y) => {
+        if (source.data) return source.data.subarray((y * source.width + x) * 4, (y * source.width + x + 1) * 4);
+        return source.rgba(x, y);
+      };
+      return {
+        fillStyle: '#000000',
+        fillRect(x, y, width, height) {
+          const rgba = color(this.fillStyle);
+          for (let py = y; py < y + height; py++) for (let px = x; px < x + width; px++) write(px, py, rgba);
+        },
+        drawImage(source, ...args) {
+          let sx = 0;
+          let sy = 0;
+          let sw = source.width;
+          let sh = source.height;
+          let dx;
+          let dy;
+          let dw;
+          let dh;
+          if (args.length === 2) [dx, dy, dw, dh] = [args[0], args[1], sw, sh];
+          else if (args.length === 4) [dx, dy, dw, dh] = args;
+          else if (args.length === 8) [sx, sy, sw, sh, dx, dy, dw, dh] = args;
+          else throw new Error(`Unsupported drawImage argument count ${args.length + 1}`);
+          for (let y = 0; y < dh; y++) {
+            for (let x = 0; x < dw; x++) {
+              const sourceX = Math.min(source.width - 1, sx + Math.floor((x * sw) / dw));
+              const sourceY = Math.min(source.height - 1, sy + Math.floor((y * sh) / dh));
+              write(dx + x, dy + y, sourcePixel(source, sourceX, sourceY));
+            }
+          }
+        },
+        createImageData(width, height) { return { width, height, data: new Uint8ClampedArray(width * height * 4) }; },
+        getImageData(x, y, width, height) {
+          const data = new Uint8ClampedArray(width * height * 4);
+          for (let py = 0; py < height; py++) for (let px = 0; px < width; px++) {
+            const src = ((y + py) * canvas.width + x + px) * 4;
+            data.set(canvas.data.subarray(src, src + 4), (py * width + px) * 4);
+          }
+          return { width, height, data };
+        },
+        putImageData(image, dx, dy) {
+          for (let y = 0; y < image.height; y++) for (let x = 0; x < image.width; x++) {
+            const i = (y * image.width + x) * 4;
+            const rgba = image.data.subarray(i, i + 4);
+            const dst = ((dy + y) * canvas.width + dx + x) * 4;
+            canvas.data.set(rgba, dst);
+            if (canvas.data[dst + 3] === 0) canvas.data.fill(0, dst, dst + 4);
+          }
+        },
+      };
+    }
+    async convertToBlob({ type = 'image/png' } = {}) {
+      return new Blob([rgbaPng(this.width, this.height, this.data)], { type });
+    }
+  };
+}
+
+function loadPixelWorker() {
+  const worker = loadWorker();
+  worker.ctx.OffscreenCanvas = pixelCanvasClass();
+  worker.ctx.createImageBitmap = async blob => {
+    const bytes = Buffer.from(await blob.arrayBuffer());
+    if (!bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+      throw new Error(`Pixel test bitmap decoder only supports PNG, not ${blob.type || 'unknown data'}`);
+    }
+    const decoded = decodePng(bytes);
+    return { ...decoded, close() {} };
+  };
+  return worker;
+}
+
 function loadWorker() {
   const posted = [];
   const event = () => ({ addListener() {} });
   const port = { onMessage: event(), onDisconnect: event(), postMessage: m => posted.push(m) };
   const made = [];
   const sandbox = {
-    console: { log() {}, error() {} }, setTimeout, clearTimeout, atob, btoa, Blob,
+    console: { log() {}, error() {} }, setTimeout, clearTimeout, atob, btoa, Blob, CompressionStream, Response,
     chrome: {
       runtime: { id: 'test', getManifest: () => ({ version: '0.0.0' }), connectNative: () => port, onStartup: event(), onInstalled: event(), onMessage: event() },
       alarms: { create() {}, onAlarm: event() },
@@ -143,7 +244,7 @@ test('processImage: collect jobs crop too, without measuring alpha', async () =>
   assert.equal(out.alpha, null);
 });
 
-test('processImage: GIF signatures skip cropping and alpha measurement despite the MIME and job options', async () => {
+test('processImage: GIF signatures skip cropping and measure first-frame alpha despite the MIME and job options', async () => {
   for (const signature of ['GIF87a', 'GIF89a']) {
     const { ctx, made } = loadWorker();
     const bmp = ctx.nextBitmap = new FakeBitmap(12, 8, () => 0);
@@ -152,14 +253,19 @@ test('processImage: GIF signatures skip cropping and alpha measurement despite t
     const data = image.toString('base64');
     const decoded = [];
     ctx.atob = b64 => { decoded.push(b64); return atob(b64); };
-    ctx.measureAlpha = () => { throw new Error('GIF alpha must not be measured'); };
+    let measurements = 0;
+    const measure = ctx.measureAlpha;
+    ctx.measureAlpha = canvas => { measurements++; return measure(canvas); };
     const out = await ctx.processImage(data, 'image/png', {
       aspect: { w: 4, h: 1, label: '4:1' }, transparent: true, animated: false,
     });
-    assert.deepEqual([out.width, out.height, out.crop, out.alpha, out.animated], [12, 8, null, null, true]);
+    assert.deepEqual([out.width, out.height, out.crop, { ...out.alpha }, out.animated],
+      [12, 8, null, { transparentShare: 1, opaqueShare: 0 }, true]);
+    assert.equal(measurements, 1);
     assert.deepEqual(decode(out.preview), { type: 'image/jpeg', width: 12, height: 8 });
-    assert.equal(made.length, 1);
-    assert.deepEqual(made[0].ops, [['fillRect', '#ffffff', 0, 0, 12, 8], ['drawImage', 0, 0, 12, 8, 0, 0, 12, 8]]);
+    assert.equal(made.length, 2);
+    assert.deepEqual(made[0].ops, [['drawImage', 0, 0, 12, 8, 0, 0, 12, 8]]);
+    assert.deepEqual(made[1].ops, [['fillRect', '#ffffff', 0, 0, 12, 8], ['drawImage', 0, 0, 12, 8, 0, 0, 12, 8]]);
     assert.deepEqual(decoded, [data]);
     assert.equal(bmp.closed, true);
   }
@@ -171,7 +277,10 @@ test('processImage: a large GIF preview keeps the whole first frame within the p
   const out = await ctx.processImage(gif().toString('base64'), 'image/gif', { aspect: { w: 4, h: 1 }, transparent: true });
   assert.equal(out.animated, true);
   assert.deepEqual(decode(out.preview), { type: 'image/jpeg', width: 1024, height: 409 });
-  assert.deepEqual(made[0].ops, [['fillRect', '#ffffff', 0, 0, 1024, 409], ['drawImage', 0, 0, 1983, 793, 0, 0, 1024, 409]]);
+  assert.deepEqual({ ...out.alpha }, { transparentShare: 1, opaqueShare: 0 });
+  const previewCanvas = made.find(canvas => canvas.width === 1024 && canvas.height === 409);
+  assert.ok(previewCanvas);
+  assert.deepEqual(previewCanvas.ops, [['fillRect', '#ffffff', 0, 0, 1024, 409], ['drawImage', 0, 0, 1983, 793, 0, 0, 1024, 409]]);
 });
 
 test('processImage: MIME and embedded text cannot turn PNG bytes into a GIF', async () => {
@@ -270,7 +379,8 @@ test('downloadImages: GIF bytes and animated metadata reach the host, even if de
     ctx.pageCall = async () => ({ data, mime: 'image/png' });
     const [im] = JSON.parse(JSON.stringify(await ctx.downloadImages({ job: BANNER, cancelled: false, tabId: 7 }, [{ src: 'a', w: 12, h: 8 }])));
     assert.equal(im.data, data);
-    assert.deepEqual([im.mime, im.width, im.height, im.crop, im.alpha, im.animated], ['image/png', 12, 8, null, null, true]);
+    assert.deepEqual([im.mime, im.width, im.height, im.crop, im.alpha, im.animated],
+      ['image/png', 12, 8, null, decodeFails ? null : { transparentShare: 1, opaqueShare: 0 }, true]);
     if (decodeFails) {
       assert.equal(im.preview, null);
       assert.ok(warned(posted, 'image processing failed'));
@@ -345,6 +455,83 @@ test('sendPrompt: the first send still accepts navigation from the project to a 
   assert.equal(jobCtx.sent, true);
   assert.equal(jobCtx.conversationUrl, CHAT);
   assert.deepEqual(calls, ['composerState', 'clickSend', 'probe']);
+});
+
+const TRANSPARENT_PIXELS = new Uint8ClampedArray(4 * 4 * 4);
+for (const index of [5, 6, 9, 10]) TRANSPARENT_PIXELS.set([200, 40, 40, 255], index * 4);
+for (const index of [1, 4, 7, 13]) TRANSPARENT_PIXELS.set([90, 9, 12, 3], index * 4);
+
+async function runReferenceJob(refs) {
+  const worker = loadPixelWorker();
+  const { ctx, posted } = worker;
+  let attached;
+  ctx.URL = URL;
+  ctx.setTimeout = fn => setTimeout(fn, 0);
+  ctx.openWorker = async () => 7;
+  ctx.scheduleWorkerClose = () => {};
+  ctx.waitUntilReady = async () => ({ url: CHAT, counts: { users: 0, images: 0 } });
+  ctx.typePrompt = async () => {};
+  ctx.sendPrompt = async jobCtx => { jobCtx.sent = true; jobCtx.conversationUrl = CHAT; };
+  ctx.waitForReply = async () => ({ kind: 'images', images: [{ src: 'result.png', w: 1, h: 1 }], text: 'done', title: 'done' });
+  ctx.pageCall = async (tabId, name, payload) => {
+    assert.equal(tabId, 7);
+    if (name === 'attachFiles') { attached = payload; return { ok: true }; }
+    if (name === 'attachmentState') return { count: refs.length, uploading: false, failed: [] };
+    if (name === 'editCheck') return null;
+    if (name === 'fetchImage') return { data: rgbaPng(1, 1, [1, 2, 3, 255]).toString('base64'), mime: 'image/png' };
+    throw new Error(`Unexpected page call ${name}`);
+  };
+  ctx.fetch = async () => { throw new Error('Unexpected worker fetch'); };
+  const job = { id: `reference_${Date.now()}_${Math.random()}`, startUrl: CHAT, text: 'Edit this image', mode: 'generate', refs };
+  await ctx.runJob(job);
+  const result = posted.find(message => message.type === 'result');
+  assert.equal(result && result.ok, true, result && result.error);
+  return { attached, job };
+}
+
+test('runJob: transparent PNG references keep alpha but upload RGB matted against white', async () => {
+  const reference = rgbaPng(4, 4, TRANSPARENT_PIXELS);
+  const { attached } = await runReferenceJob([{ name: 'transparent.png', mime: 'image/png', data: reference.toString('base64'), complete: true }]);
+  const uploaded = decodePng(Buffer.from(attached[0].data, 'base64'));
+  assert.deepEqual([uploaded.width, uploaded.height], [4, 4]);
+  for (let pixel = 0; pixel < 16; pixel++) {
+    const offset = pixel * 4;
+    assert.equal(uploaded.data[offset + 3], TRANSPARENT_PIXELS[offset + 3], `pixel ${pixel} alpha`);
+    const alpha = TRANSPARENT_PIXELS[offset + 3] / 255;
+    for (let channel = 0; channel < 3; channel++) {
+      const expected = Math.round(TRANSPARENT_PIXELS[offset + channel] * alpha + 255 * (1 - alpha));
+      const actual = uploaded.data[offset + channel];
+      assert.ok(Math.abs(actual - expected) <= 1, `pixel ${pixel} channel ${channel}: expected ${expected}, got ${actual}`);
+    }
+  }
+});
+
+test('runJob: opaque RGBA PNG reference bytes stay unchanged', async () => {
+  const pixels = new Uint8ClampedArray(3 * 2 * 4);
+  for (let i = 0; i < pixels.length; i += 4) pixels.set([20 + i, 80, 140, 255], i);
+  const reference = rgbaPng(3, 2, pixels);
+  const { attached } = await runReferenceJob([{ name: 'opaque.png', mime: 'image/png', data: reference.toString('base64'), complete: true }]);
+  assert.deepEqual(Buffer.from(attached[0].data, 'base64'), reference);
+});
+
+test('runJob: JPEG and GIF reference bytes stay unchanged without bitmap decoding', async () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]);
+  const gifBytes = gif({ width: 2, height: 2 });
+  const refs = [
+    { name: 'photo.jpg', mime: 'image/jpeg', data: jpeg.toString('base64'), complete: true },
+    { name: 'animation.gif', mime: 'image/gif', data: gifBytes.toString('base64'), complete: true },
+  ];
+  const { attached } = await runReferenceJob(refs);
+  assert.deepEqual(Buffer.from(attached[0].data, 'base64'), jpeg);
+  assert.deepEqual(Buffer.from(attached[1].data, 'base64'), gifBytes);
+});
+
+test('runJob: preparing uploaded references does not mutate job reference data', async () => {
+  const reference = rgbaPng(4, 4, TRANSPARENT_PIXELS);
+  const refs = [{ name: 'transparent.png', mime: 'image/png', data: reference.toString('base64'), complete: true }];
+  const before = JSON.parse(JSON.stringify(refs));
+  const { job } = await runReferenceJob(refs);
+  assert.deepEqual(job.refs, before);
 });
 
 // Run the real runJob, sendAndWait, probeTab and downloadImages with scripted page replies.
@@ -491,4 +678,251 @@ test('runJob: GIF retry preserves auto_reattach metadata and skips edit check', 
   const names = calls.map(c => c[0]);
   assert.ok(!names.includes('editCheck'));
   assert.equal(result.editCheck, null);
+});
+
+async function preparedJob({ refs, collect = false, reattach = false,
+  debug = false, configure = () => {}, reply = 'images' }) {
+  const worker = loadPixelWorker();
+  const { ctx, posted } = worker;
+  const calls = [];
+  ctx.setTimeout = (fn, ms) => ms >= 20000 ? null : setTimeout(fn, 0);
+  ctx.openWorker = async () => 7;
+  ctx.scheduleWorkerClose = () => {};
+  ctx.waitUntilReady = async () => ({ url: CHAT, counts: {} });
+  ctx.probeTab = async () => ({ counts: {} });
+  ctx.sendAndWait = async (jobCtx, before, text, files) => {
+    calls.push({ text, files, refs: jobCtx.refs });
+    return { kind: reattach && calls.length === 1 ? 'needs_reference' : reply, images: [] };
+  };
+  ctx.waitForReply = async () => ({ kind: 'images', images: [] });
+  ctx.pageCall = async (tabId, fn, refs) => { calls.push({ fn, refs }); return null; };
+  ctx.downloadImages = async () => [{ animated: true }];
+  configure(ctx);
+  const job = { id: 'prepared', text: 'Original prompt', mode: collect ? 'collect' : 'generate', refs,
+    startUrl: CHAT, animated: true, autoReattach: reattach, debug };
+  await ctx.runJob(job);
+  return { ...worker, calls, job, result: posted.find(m => m.type === 'result') };
+}
+
+const transparentRef = () => ({ name: 'ref.png', mime: 'image/png', complete: true,
+  data: rgbaPng(4, 4, TRANSPARENT_PIXELS).toString('base64') });
+
+test('runJob: transparent references keep the job text and reuse prepared files on reattach', async () => {
+  const ref = transparentRef();
+  const { calls, result, posted } = await preparedJob({ refs: [ref], reattach: true, debug: true });
+  const sends = calls.filter(c => c.text);
+  assert.equal(sends[0].text, 'Original prompt');
+  assert.equal(sends[1].text, 'I attached the image again.\n\nOriginal prompt');
+  assert.equal(sends[0].files, sends[1].files);
+  assert.equal(sends[0].files, sends[0].refs);
+  assert.notEqual(sends[0].files[0].data, ref.data);
+  assert.equal(calls.find(c => c.fn === 'editCheck').refs[0].data, sends[0].files[0].data);
+  assert.equal(result.referencesTransparent, 1);
+  assert.equal(result.referencesMatted, 1);
+  assert.equal(result.reattached, true);
+  const summary = posted.find(m => m.type === 'log' && m.msg === 'reference prepared');
+  assert.deepEqual({ ...summary.data }, { name: 'ref.png', width: 4, height: 4, transparent: true,
+    oldBytes: Buffer.from(ref.data, 'base64').length, newBytes: Buffer.from(sends[0].files[0].data, 'base64').length });
+});
+
+test('runJob: opaque references and no references keep the job text; collect never prepares refs', async () => {
+  const opaque = { ...transparentRef(), data: rgbaPng(1, 1, [10, 20, 30, 255]).toString('base64') };
+  for (const options of [{ refs: [opaque] }, { refs: [] }]) {
+    const { calls, result, posted } = await preparedJob(options);
+    assert.equal(calls[0].text, 'Original prompt');
+    assert.equal(result.referencesTransparent, 0);
+    assert.equal(result.referencesMatted, 0);
+    assert.ok(!posted.some(m => m.type === 'log' && m.level === 'debug'));
+    if (options.refs[0] === opaque) assert.equal(calls[0].files[0], opaque);
+  }
+  const { calls, result } = await preparedJob({ refs: [transparentRef()], collect: true,
+    configure: ctx => { ctx.createImageBitmap = async () => { throw new Error('collect must not decode'); }; } });
+  assert.equal(calls.length, 0);
+  assert.equal(result.referencesTransparent, 0);
+  assert.equal(result.referencesMatted, 0);
+});
+
+test('runJob: byte signatures select PNG/WebP regardless of MIME; transparent WebP uploads as PNG', async () => {
+  const webp = { ...transparentRef(), name: 'sprite.WEBP', mime: 'image/jpeg', data: Buffer.from('RIFFxxxxWEBP').toString('base64') };
+  const { calls, result } = await preparedJob({ refs: [webp], configure: ctx => {
+    ctx.createImageBitmap = async blob => {
+      assert.equal(blob.type, 'image/webp');
+      return { width: 1, height: 1, data: new Uint8ClampedArray([0, 0, 0, 0]), close() {} };
+    };
+  } });
+  const uploaded = calls[0].files[0];
+  assert.equal(uploaded.name, 'sprite.png');
+  assert.equal(uploaded.mime, 'image/png');
+  assert.deepEqual(Array.from(decodePng(Buffer.from(uploaded.data, 'base64')).data), [255, 255, 255, 0]);
+  assert.equal(result.referencesTransparent, 1);
+  assert.equal(result.referencesMatted, 1);
+  const pngRef = { ...transparentRef(), mime: 'image/gif' };
+  const pngResult = await preparedJob({ refs: [pngRef] });
+  assert.equal(pngResult.calls[0].files[0].mime, 'image/png');
+  const unknown = { ...webp, data: Buffer.from('not an image').toString('base64') };
+  const passed = await preparedJob({ refs: [unknown], configure: ctx => {
+    ctx.createImageBitmap = async () => { throw new Error('unknown bytes must not decode'); };
+  } });
+  assert.equal(passed.calls[0].files[0], unknown);
+  assert.ok(!warned(passed.posted, 'reference preparation failed; using original'));
+});
+
+test('runJob: preparation errors and safety limits upload originals and warn without failing the job', async () => {
+  for (const failure of ['decode', 'encode', 'pixels', 'bytes']) {
+    const ref = transparentRef();
+    let closed = false;
+    const { calls, result, posted } = await preparedJob({ refs: [ref], configure: ctx => {
+      if (failure === 'decode') ctx.createImageBitmap = async () => { throw new Error('decode failed'); };
+      if (failure === 'encode') ctx.encodeReferencePng = async () => { throw new Error('encode failed'); };
+      if (failure === 'bytes') ctx.encodeReferencePng = async () => new Uint8Array(20 * 1024 * 1024 + 1);
+      if (failure === 'pixels') {
+        ctx.createImageBitmap = async () => ({ width: 4097, height: 4096, close() { closed = true; } });
+        ctx.OffscreenCanvas = class { constructor() { assert.fail('oversized reference must not allocate a canvas'); } };
+      }
+    } });
+    assert.equal(result.ok, true, failure);
+    assert.equal(calls[0].files[0], ref, failure);
+    assert.equal(result.referencesTransparent, ['encode', 'bytes'].includes(failure) ? 1 : 0);
+    assert.equal(result.referencesMatted, 0);
+    assert.ok(warned(posted, 'reference preparation failed; using original'), failure);
+    if (failure === 'pixels') assert.equal(closed, true);
+  }
+});
+
+test('runJob: failed replies retain the transparent reference count', async () => {
+  const { result } = await preparedJob({ refs: [transparentRef(), transparentRef()], reply: 'text_reply' });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'text_reply');
+  assert.equal(result.referencesTransparent, 2);
+  assert.equal(result.referencesMatted, 2);
+});
+
+test('runJob: cancellation after reference decoding closes the bitmap and sends no prompt', async () => {
+  let closed = false;
+  const { result, calls, posted } = await preparedJob({ refs: [transparentRef()], configure: ctx => {
+    ctx.createImageBitmap = async () => {
+      vm.runInContext('current.cancelled = true', ctx);
+      return { width: 4, height: 4, close() { closed = true; } };
+    };
+  } });
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.referencesTransparent, 0);
+  assert.equal(result.referencesMatted, 0);
+  assert.equal(calls.length, 0);
+  assert.equal(closed, true);
+  assert.ok(!warned(posted, 'reference preparation failed; using original'));
+});
+
+function opaquePixels(width, height, transparentIndexes = [], alpha = 0) {
+  const pixels = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0; i < pixels.length; i += 4) pixels.set([30, 120, 210, 255], i);
+  for (const index of transparentIndexes) pixels.set([30, 120, 210, alpha], index * 4);
+  return pixels;
+}
+
+test('runJob: a single faint alpha pixel below the 0.5% share leaves the reference untouched', async () => {
+  const pixels = opaquePixels(20, 20, [37], 254); // 1 of 400 pixels = 0.25%
+  const ref = { name: 'edge.png', mime: 'image/png', complete: true, data: rgbaPng(20, 20, pixels).toString('base64') };
+  const { calls, result, posted } = await preparedJob({ refs: [ref] });
+  assert.equal(result.ok, true);
+  assert.equal(calls[0].files[0], ref);
+  assert.equal(calls[0].files[0].data, ref.data);
+  assert.equal(calls[0].text, 'Original prompt');
+  assert.equal(result.referencesTransparent, 0);
+  assert.equal(result.referencesMatted, 0);
+  assert.ok(!warned(posted, 'reference preparation failed; using original'));
+});
+
+test('runJob: exactly 0.5% see-through pixels get the matte without changing the job text', async () => {
+  const pixels = opaquePixels(20, 20, [0, 399], 0); // 2 of 400 pixels = 0.5%
+  pixels.set([77, 88, 99, 0], 0);
+  const ref = { name: 'edge.png', mime: 'image/png', complete: true, data: rgbaPng(20, 20, pixels).toString('base64') };
+  const { calls, result } = await preparedJob({ refs: [ref] });
+  assert.equal(result.ok, true);
+  assert.equal(calls[0].text, 'Original prompt');
+  assert.equal(result.referencesTransparent, 1);
+  assert.equal(result.referencesMatted, 1);
+  const uploaded = decodePng(Buffer.from(calls[0].files[0].data, 'base64'));
+  assert.deepEqual([uploaded.width, uploaded.height], [20, 20]);
+  for (const index of [0, 399]) {
+    assert.deepEqual(Array.from(uploaded.data.subarray(index * 4, index * 4 + 4)), [255, 255, 255, 0], `pixel ${index}`);
+  }
+  assert.deepEqual(Array.from(uploaded.data.subarray(4, 8)), [30, 120, 210, 255]);
+});
+
+test('runJob: cancellation while the reference PNG is encoded ends the job without uploading', async () => {
+  const width = 8, height = 300; // more than REFERENCE_ENCODE_YIELD_ROWS rows, so the encoder yields
+  const ref = { name: 'tall.png', mime: 'image/png', complete: true,
+    data: rgbaPng(width, height, new Uint8ClampedArray(width * height * 4)).toString('base64') };
+  let yields = 0;
+  const { result, calls, posted } = await preparedJob({ refs: [ref], configure: ctx => {
+    ctx.setTimeout = (fn, ms) => {
+      if (ms === 0) { // the encoder's yield between row batches
+        yields++;
+        vm.runInContext('current.cancelled = true', ctx);
+      }
+      return setTimeout(fn, 0);
+    };
+  } });
+  assert.ok(yields >= 1, 'the encoder never yielded');
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.referencesMatted, 0);
+  assert.equal(calls.length, 0);
+  assert.ok(!warned(posted, 'reference preparation failed; using original'));
+});
+
+test('processImage: GIF first-frame alpha is measured without a transparency request', async () => {
+  const { ctx } = loadWorker();
+  ctx.nextBitmap = new FakeBitmap(12, 8, x => x < 4 ? 0 : 255);
+  const out = await ctx.processImage(gif().toString('base64'), 'image/gif', {});
+  assert.equal(out.crop, null);
+  assert.deepEqual({ ...out.alpha }, { transparentShare: 0.3333, opaqueShare: 0.6667 });
+});
+
+test('reference PNG encoder: CRCs, RGBA bytes and adaptive signed-byte scores round-trip', async () => {
+  const { ctx } = loadWorker();
+  const width = 9, height = 40, stride = width * 4;
+  const pixels = new Uint8ClampedArray(stride * height);
+  let seed = 23;
+  for (let i = 0; i < pixels.length; i++) { seed = (seed * 1664525 + 1013904223) >>> 0; pixels[i] = seed >>> 24; }
+  pixels.fill(0, 0, stride);
+  pixels.fill(255, stride, 2 * stride);
+  pixels.copyWithin(2 * stride, stride, 2 * stride);
+  const bytes = Buffer.from(await ctx.encodeReferencePng(width, height, pixels, { cancelled: false }));
+  const decoded = decodePng(bytes);
+  assert.equal(decoded.colorType, 6);
+  assert.deepEqual([decoded.width, decoded.height], [width, height]);
+  assert.deepEqual(decoded.data, pixels);
+  const types = [], payloads = [];
+  for (let pos = 8; pos < bytes.length;) {
+    const length = bytes.readUInt32BE(pos);
+    const type = bytes.toString('ascii', pos + 4, pos + 8);
+    types.push(type);
+    assert.equal(bytes.readUInt32BE(pos + length + 8), crc32(bytes.subarray(pos + 4, pos + length + 8)), type);
+    if (type === 'IDAT') payloads.push(bytes.subarray(pos + 8, pos + 8 + length));
+    pos += length + 12;
+  }
+  assert.deepEqual(types, ['IHDR', 'IDAT', 'IEND']);
+  const rows = zlib.inflateSync(Buffer.concat(payloads));
+  const selected = new Set();
+  for (let y = 0; y < height; y++) {
+    const scores = Array(5).fill(0);
+    for (let x = 0; x < stride; x++) {
+      const i = y * stride + x;
+      const a = x >= 4 ? pixels[i - 4] : 0, b = y ? pixels[i - stride] : 0;
+      const c = y && x >= 4 ? pixels[i - stride - 4] : 0;
+      const p = a + b - c;
+      const distances = [a, b, c].map(v => Math.abs(p - v));
+      const paeth = [a, b, c][distances.indexOf(Math.min(...distances))];
+      const predictions = [0, a, b, Math.floor((a + b) / 2), paeth];
+      for (let f = 0; f < 5; f++) {
+        const value = (pixels[i] - predictions[f] + 256) % 256;
+        scores[f] += Math.min(value, 256 - value);
+      }
+    }
+    const filter = rows[y * (stride + 1)];
+    selected.add(filter);
+    assert.equal(filter, scores.indexOf(Math.min(...scores)), `row ${y}`);
+  }
+  assert.deepEqual([...selected].sort(), [0, 1, 2, 3, 4]);
 });

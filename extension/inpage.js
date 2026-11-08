@@ -413,8 +413,8 @@
 
   // ------------------------------------------------------------ edit check
 
-  // 32x32 grayscale thumbnail of an <img> or of {data, mime} bytes. Images are decoded from their
-  // bytes: img.decode() can stall for minutes in a background tab that is never painted.
+  // Aspect-preserving 32x32 grayscale thumbnail on white. Images are decoded from their bytes:
+  // img.decode() can stall for minutes in a background tab that is never painted.
   async function signature(source) {
     const blob = source instanceof HTMLImageElement
       ? await (await fetch(source.currentSrc || source.src)).blob()
@@ -426,7 +426,14 @@
     const g = canvas.getContext('2d', { willReadFrequently: true });
     g.imageSmoothingEnabled = true;
     g.imageSmoothingQuality = 'high';
-    g.drawImage(bitmap, 0, 0, 32, 32);
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, 0, 32, 32);
+    const scale = 32 / Math.max(bitmap.width, bitmap.height);
+    const dw = Math.max(1, Math.round(bitmap.width * scale));
+    const dh = Math.max(1, Math.round(bitmap.height * scale));
+    const dx = Math.floor((32 - dw) / 2);
+    const dy = Math.floor((32 - dh) / 2);
+    g.drawImage(bitmap, dx, dy, dw, dh);
     if (bitmap.close) bitmap.close();
     const d = g.getImageData(0, 0, 32, 32).data;
     const gray = new Array(1024);
@@ -628,6 +635,6 @@
   globalThis.__cgb = {
     version: VERSION, probe, composerState, clearComposer, setPrompt, clickSend, pressEnter, clickStop,
     dismissDialogs, listProjects, openProject, sidebar, clickLabel, fetchImage, snapshot, counts,
-    attachFiles, attachmentState, removeAttachments, latestEarlierImage, editCheck, replyText, busyIn,
+    attachFiles, attachmentState, removeAttachments, latestEarlierImage, signature, similarity, editCheck, replyText, busyIn,
   };
 })();

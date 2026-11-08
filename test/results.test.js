@@ -70,6 +70,15 @@ test('editCheckLines: only collection images attached is never a failed edit', (
   assert.match(editCheckLines(job(withOwn))[0], /EDIT CHECK \(edited: false\)/);
 });
 
+test('editCheckLines: animated jobs report similarity without an edit verdict', () => {
+  const line = pct => `Similarity to ref1.png: ${pct}% (animated GIF: ChatGPT redraws the subject for the animation, so a low score is expected; this is not an edit check).`;
+  const fields = { animated: true, prompt: 'Edit the image: only change the eyes' };
+  assert.deepEqual(editCheckLines(job({ ...fields, editCheck: check(0.9) })), [line(90)]);
+  assert.deepEqual(editCheckLines(job({ ...fields, editCheck: check(0.1) })), [line(10)]);
+  assert.match(editCheckLines(job({ prompt: fields.prompt, editCheck: check(0.9) }))[0], /edited: true/);
+  assert.match(editCheckLines(job({ prompt: fields.prompt, editCheck: check(0.1) }))[0], /EDIT CHECK \(edited: false\)/);
+});
+
 test('editCheckLines: the least similar output decides', () => {
   const [line] = editCheckLines(job({ prompt: 'edit it', editCheck: check(0.97, 0.5, 0.9) }));
   assert.match(line, /EDIT CHECK \(edited: false\): only 50% of the image matches ref2\.png/);
@@ -382,6 +391,7 @@ test('imageLines: GIF frames, duration, loop counts and truncation follow the Sa
     for (const truncated of [false, true]) {
       assert.deepEqual(imageLines(job({}), { path: 'a.gif', gif: { ...gif, truncated } }), [
         'Saved: a.gif', line + (truncated ? ' (the file looks truncated)' : ''),
+        'Background: opaque \u2014 the GIF has no transparent color; transparent pixels could not be measured.',
       ]);
     }
   }
@@ -393,16 +403,25 @@ test('imageLines: a GIF reports the requested aspect ratio without claiming it w
   assert.equal(imageLines(job({}), { ...im, width: 12, height: 8 })[2], `${aspect} Saved at 12x8.`);
   assert.equal(imageLines(job({}), im)[2], aspect);
   assert.equal(imageLines(job({}), { ...im, width: 12 })[2], aspect);
-  assert.equal(imageLines(job({}), { ...im, aspect: null }).length, 2);
+  const background = 'Background: opaque \u2014 the GIF has no transparent color; transparent pixels could not be measured.';
+  assert.equal(imageLines(job({}), { ...im, width: 12, height: 8 })[3], background);
+  assert.equal(imageLines(job({}), im)[3], background);
+  assert.equal(imageLines(job({}), { ...im, width: 12 })[3], background);
+  assert.deepEqual(imageLines(job({}), { ...im, aspect: null }), [
+    'Saved: a.gif',
+    'Animated GIF: 3 frames, 600 ms per loop, loops forever; the attached preview shows only the first frame.',
+    background,
+  ]);
 });
 
-test('imageLines: GIF transparency uses the per-frame flag rather than measured alpha', () => {
+test('imageLines: GIF transparency uses the measured first frame and falls back to the per-frame flag', () => {
   const im = { path: 'a.gif', gif: { frames: 3, durationMs: 600, loop: 0, transparent: true, transparentFrames: 2 } };
   assert.equal(imageLines(job({ transparent: true }), { ...im, alpha: alpha(0) })[2],
-    'Transparent background: GIF with a transparent color in 2 of 3 frames; how much of it is transparent could not be measured.');
+    `⚠ TRANSPARENT BACKGROUND MISSING: Background: opaque \u2014 the first frame has no transparent pixels (the GIF defines a transparent color but does not use it). ${RETRY}`);
   assert.equal(imageLines(job({ transparent: true }), { ...im, gif: { ...im.gif, transparent: false, transparentFrames: 0 }, alpha: alpha(1) })[2],
-    `⚠ TRANSPARENT BACKGROUND MISSING: ChatGPT returned a GIF without a transparent color, so the background is not transparent. ${RETRY}`);
-  assert.equal(imageLines(job({ transparent: false }), im).length, 2);
+    "Background: transparent \u2014 100% of the first frame's pixels are transparent.");
+  assert.equal(imageLines(job({ transparent: false }), im)[2],
+    'Transparent background: GIF with a transparent color in 2 of 3 frames; how much of it is transparent could not be measured.');
 });
 
 test('fetched (collect) images are cropped without blaming ChatGPT for the shape', () => {
@@ -443,4 +462,50 @@ test('resultLines: only a success with saved images asks to show the image to th
   for (const status of ['failed', 'cancelled', 'text_reply', 'needs_reference', 'needs_human', 'queued', 'running']) {
     assert.ok(!resultLines(job({ status, images: [{ path: 'a.png' }] })).includes(SHOW_IMAGE), status);
   }
+});
+
+test('imageLines: every GIF reports one background line from its first-frame measurement', () => {
+  const im = { path: 'a.gif', gif: { frames: 3, durationMs: 600, loop: 0, transparent: true, transparentFrames: 2 } };
+  const line = (image, options = {}) => {
+    const lines = imageLines(job(options), image);
+    assert.equal(lines.length, 3);
+    return lines[2];
+  };
+  assert.equal(line({ ...im, alpha: alpha(0.6123) }),
+    "Background: transparent \u2014 61% of the first frame's pixels are transparent.");
+  assert.equal(line({ ...im, alpha: alpha(0) }),
+    'Background: opaque \u2014 the first frame has no transparent pixels (the GIF defines a transparent color but does not use it).');
+  assert.equal(line({ ...im, gif: { ...im.gif, transparent: false }, alpha: alpha(0) }),
+    'Background: opaque \u2014 the first frame has no transparent pixels.');
+  assert.equal(line(im),
+    'Transparent background: GIF with a transparent color in 2 of 3 frames; how much of it is transparent could not be measured.');
+  assert.equal(line({ ...im, gif: { ...im.gif, transparent: false } }),
+    'Background: opaque \u2014 the GIF has no transparent color; transparent pixels could not be measured.');
+  for (const share of [0, 0.02]) {
+    const image = { ...im, alpha: alpha(share) };
+    const background = line(image);
+    assert.equal(line(image, { transparent: true, referencesTransparent: 1 }),
+      `⚠ TRANSPARENT BACKGROUND MISSING: ${background} ${RETRY}`);
+    const referenceInfo = line(image, { referencesTransparent: 1 });
+    assert.equal(referenceInfo,
+      `${background} The reference image was transparent; ChatGPT's animated GIFs do not reliably keep a transparent background.`);
+    assert.doesNotMatch(referenceInfo, /⚠|retry/i);
+  }
+  assert.doesNotMatch(line({ ...im, alpha: alpha(0.021) }, { transparent: true, referencesTransparent: 1 }), /⚠|retry/i);
+  assert.match(line({ ...im, gif: { ...im.gif, transparent: false } }, { transparent: true }), /^⚠ TRANSPARENT BACKGROUND MISSING:/);
+  const unmeasuredReferenceInfo = line({ ...im, gif: { ...im.gif, transparent: false } }, { referencesTransparent: 1 });
+  assert.equal(unmeasuredReferenceInfo,
+    "Background: opaque — the GIF has no transparent color; transparent pixels could not be measured. The reference image was transparent; ChatGPT's animated GIFs do not reliably keep a transparent background.");
+  assert.doesNotMatch(unmeasuredReferenceInfo, /⚠|retry/i);
+});
+
+test('referenceLines: transparent reference preparation reports complete, partial and failed matte results', () => {
+  const complete = 'Transparent reference image(s): 2; their see-through parts were uploaded over white (alpha kept), so ChatGPT does not see a black background.';
+  const partial = 'Transparent reference image(s): 2; 1 uploaded over white (alpha kept), the others as they were.';
+  const failed = 'Transparent reference image(s): 2; they were uploaded as they were (preparing a white-backed copy failed).';
+  assert.deepEqual(referenceLines(job({ referencesTransparent: 2, referencesMatted: 2 })), [complete]);
+  assert.deepEqual(referenceLines(job({ referencesTransparent: 2, referencesMatted: 1 })), [partial]);
+  assert.deepEqual(referenceLines(job({ referencesTransparent: 2, referencesMatted: 0 })), [failed]);
+  assert.deepEqual(referenceLines(job({ referencesTransparent: 0 })), []);
+  assert.ok(resultLines(job({ status: 'failed', referencesTransparent: 2, referencesMatted: 2 })).includes(complete));
 });

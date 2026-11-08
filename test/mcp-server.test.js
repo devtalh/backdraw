@@ -256,7 +256,7 @@ test('animated schema and instructions describe GIF prompts without assuming PNG
     assert.ok(props.animated.description.includes(part), part);
   }
   assert.doesNotMatch(props.transparent_background.description, /Ask for a PNG/);
-  assert.match(props.transparent_background.description, /PNG is checked for transparent pixels; a GIF for a transparent color/);
+  assert.match(props.transparent_background.description, /A PNG is checked for transparent pixels; a GIF's first frame too \(GIF requests do not ask ChatGPT for transparency\)\./);
   const { result: init } = await request('initialize', { protocolVersion: '2025-06-18' });
   assert.match(init.instructions, /animation, GIF or moving image, pass animated=true/);
   assert.match(init.instructions, /one subject, one clear motion, a still camera and no small text.*aspect_ratio is not applied to the GIF/);

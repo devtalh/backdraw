@@ -414,11 +414,15 @@ PNG görsellerinin önizlemeleri dama tahtası deseni üzerinde çizilir.
 `animated: true`, ChatGPT'den kısa bir animasyonlu GIF ister. Durağan bir görsel gelirse Backdraw
 bir kez daha animasyonlu GIF ister; sonuç hâlâ durağansa araç sonucunda uyarı verir.
 İyi sonuç için tek özne, tek net hareket, sabit kamera kullan ve sahnede küçük yazı bulundurma.
-Animasyon isteklerinde Backdraw şeffaflık için ayrıca bir şey istemez; `transparent_background: true` yalnızca sonuçtaki şeffaflık bayrağını raporlatır.
+Referans yükleme hazırlığı, Araç başvurusu altındaki `reference_images` davranışını izler. Hazırlama
+başarısız olursa, görsel 4096 x 4096 piksel sınırını aşarsa ya da kopya 20 MB'tan büyük olursa
+orijinal yüklenir.
 
 GIF'ler hiç kırpılmadan kaydedilir; `aspect_ratio` onlara uygulanmaz.
-`transparent_background: true` ile şeffaflık, GIF'in transparent color bayrağından ve bu bayrağı
-taşıyan kare sayısından raporlanır; saydam piksellerin oranı ölçülmez.
+Her GIF sonucunda zeminin şeffaf mı opak mı olduğu, ilk karede ölçülen saydam piksel oranıyla
+raporlanır. Ölçüm yapılamazsa GIF'in transparent color bayrağı kullanılır.
+ChatGPT'nin animasyonlu GIF'leri şeffaf arka planı güvenilir biçimde korumaz. Opak sonuçta
+`transparent_background: true` için uyarı verilir; şeffaf referans kullanıldıysa yalnızca bilgi verilir.
 Eklenen önizleme yalnızca ilk kareyi gösterir. Örnek bir sonuç satırı:
 
 ```
@@ -458,7 +462,8 @@ dosyanın tam hâli görsel klasöründe değişmeden durur.
 
 - `animated`: kısa bir animasyonlu GIF ister; ChatGPT durağan bir görsel döndürürse bir kez daha sorar.
 - `reference_images`: yerel png / jpg / webp / gif dosyaları, en fazla 16; koleksiyon görselleri
-  kalan yerleri doldurur.
+  kalan yerleri doldurur. Şeffaf PNG/WebP referanslar (piksellerinin en az %0,5'i saydam), alfa
+  korunup RGB beyazla karıştırılarak PNG kopyaları halinde yüklenir; kaynak dosyalar değişmez.
 - `reference_files`: `list_collections`'taki dosya adları; `reference_collection`'dan yalnızca bu
   görselleri ekler.
 - `conversation_url`: bir `https://chatgpt.com/` sohbet bağlantısı. Kısa ek istekler için uygundur;

@@ -68,7 +68,7 @@ const TOOLS = [
         },
         transparent_background: {
           type: 'boolean', default: false,
-          description: 'Ask for a transparent background (stickers, logos, icons, sprites). A PNG is checked for transparent pixels; a GIF for a transparent color.',
+          description: "Ask for a transparent background (stickers, logos, icons, sprites). A PNG is checked for transparent pixels; a GIF's first frame too (GIF requests do not ask ChatGPT for transparency).",
         },
         reference_images: {
           type: 'array', items: { type: 'string' }, maxItems: MAX_REFS,
