@@ -2,11 +2,22 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { buildText } = require('../lib/prompt');
+const { transparentReferenceLine } = require('../lib/prompt');
 const { aspectOption } = require('../lib/aspect');
 
 const CHAT_URL = 'https://chatgpt.com/g/g-p-67a1b2c3d4e5f60718293a4b5c6d7e8f-images/c/6812a3b4-1c2d-8000-9e8f-0123456789ab';
 const PROJECT_URL = 'https://chatgpt.com/g/g-p-67a1b2c3d4e5f60718293a4b5c6d7e8f-images/project';
 const ref = name => ({ name, bytes: 1000 });
+
+test('transparent reference line: only animated, wrapped prompts with references qualify', () => {
+  const job = { prompt: 'A fox', animated: true, references: [ref('fox.png')] };
+  assert.equal(transparentReferenceLine(job), 'Keep the background transparent.');
+  assert.equal(transparentReferenceLine({ ...job, sendAsIs: true }), null);
+  assert.equal(transparentReferenceLine({ ...job, animated: false }), null);
+  assert.equal(transparentReferenceLine({ ...job, references: [] }), null);
+  assert.equal(transparentReferenceLine({ ...job, references: undefined }), null);
+  assert.doesNotMatch(buildText(job), /Keep the background transparent/);
+});
 
 test('send_as_is: the prompt goes out verbatim, whatever else is set', () => {
   assert.equal(buildText({ prompt: 'Yes, 16:9 please.', sendAsIs: true }), 'Yes, 16:9 please.');

@@ -404,11 +404,16 @@ PNG images are drawn over a checkerboard.
 `animated: true` asks ChatGPT for a short animated GIF. If it returns a still image, Backdraw asks
 once more for an animated GIF; if the result is still a static image, the tool result warns you.
 For best results, use one subject, one clear motion, a fixed camera and no small text in the scene.
-For animated requests, Backdraw makes no additional request for transparency; `transparent_background: true` only reports the resulting transparency flag.
+With a transparent PNG/WebP reference, Backdraw adds `Keep the background transparent.` to animated
+requests (unless `send_as_is: true`). Transparent references are uploaded as PNG copies with their
+RGB mixed over white and alpha kept, so ChatGPT does not see black in their see-through parts.
+The original reference files stay unchanged. If preparation fails, exceeds 4096 x 4096 pixels or
+produces a copy over 20 MB, the original is uploaded instead.
 
-GIFs are saved without cropping; `aspect_ratio` is not applied to them. With
-`transparent_background: true`, transparency is reported from the GIF's transparent color flag
-and the number of frames that set it; the share of transparent pixels is not measured.
+GIFs are saved without cropping; `aspect_ratio` is not applied to them. Every GIF result reports
+whether its background is transparent or opaque, using the share of transparent pixels measured
+in the first frame. If measurement fails, the GIF's transparent color flag is reported instead.
+An opaque result warns you if `transparent_background: true` or a transparent reference was used.
 The attached preview shows only the first frame. For example, a result line can be:
 
 ```

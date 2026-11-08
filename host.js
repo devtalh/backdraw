@@ -12,7 +12,7 @@ const identity = require('./identity');
 const shared = require('./shared');
 const { stamp, slugify, sniffExt } = require('./lib/naming');
 const { normName, parseProjectUrl, pickProject } = require('./lib/projects');
-const { buildText } = require('./lib/prompt');
+const { buildText, transparentReferenceLine } = require('./lib/prompt');
 const { aspectOption } = require('./lib/aspect');
 const { pngInfo } = require('./lib/png');
 const { gifInfo } = require('./lib/gif');
@@ -236,6 +236,7 @@ function pump() {
       id: job.id, mode: job.mode, text: job.mode === 'collect' ? '' : buildText(job), startUrl: job.startUrl || job.project.url,
       timeoutSec: job.timeoutSec, debug: config.debug, autoReattach: job.autoReattach,
       aspect: job.aspect ? job.aspect.target : null, transparent: !!job.transparent, animated: !!job.animated,
+      transparentReferenceLine: transparentReferenceLine(job),
     },
   });
   clearTimeout(watchdog);
@@ -276,6 +277,8 @@ function onResult(msg) {
     if (msg.assistantText) job.assistantText = String(msg.assistantText).slice(0, 4000);
     job.reattached = !!msg.reattached;
     job.animatedRetry = !!msg.animatedRetry;
+    job.referencesTransparent = Number.isSafeInteger(msg.referencesTransparent) && msg.referencesTransparent > 0 ? msg.referencesTransparent : 0;
+    job.referencesMatted = Number.isSafeInteger(msg.referencesMatted) && msg.referencesMatted > 0 ? msg.referencesMatted : 0;
     if (msg.ok && Array.isArray(msg.images) && msg.images.length) {
       try {
         const images = saveImages(job, msg.images, msg.title);
@@ -534,6 +537,7 @@ function publicJob(j) {
     conversationUrl: j.conversationUrl, startUrl: j.startUrl, images: j.images, assistantText: j.assistantText,
     error: j.error, reason: j.reason, createdAt: j.createdAt, startedAt: j.startedAt, finishedAt: j.finishedAt,
     references: j.references || [], reattached: !!j.reattached, editCheck: j.editCheck || null,
+    referencesTransparent: j.referencesTransparent || 0, referencesMatted: j.referencesMatted || 0,
     aspect: j.aspect ? j.aspect.target.label : null, transparent: !!j.transparent, animated: !!j.animated, animatedRetry: !!j.animatedRetry,
     copyTo: j.copyTo || null, copies: j.copies || [],
     collection: j.collection || null,

@@ -379,4 +379,43 @@ test('the host', async t => {
     assert.deepEqual(im.gif, { frames: 65, durationMs: 1300, delaysMs: Array(64).fill(20), loop: null,
       transparent: false, transparentFrames: 0, truncated: true });
   });
+
+  await t.test('transparent reference line is sent only for wrapped animated requests with references', async () => {
+    const refs = [{ name: 'ref.png', mime: 'image/png', data: b64(png(6)) }];
+    for (const options of [{ animated: true, references: refs }, { animated: true, references: refs, sendAsIs: true },
+      { references: refs }, { animated: true }]) {
+      const job = await call('generate', { prompt: 'A fox waves', ...options });
+      assert.equal(job.referencesTransparent, 0);
+      assert.equal(job.referencesMatted, 0);
+      const { job: run } = await nextFromHost('run');
+      assert.equal(run.transparentReferenceLine,
+        options.animated && !options.sendAsIs && options.references ? 'Keep the background transparent.' : null);
+      assert.equal(run.text, buildText({ prompt: 'A fox waves', ...options, startUrl: PROJECT.url }));
+      assert.doesNotMatch(run.text, /Keep the background transparent/);
+      toHost({ type: 'result', jobId: job.id, ok: false, status: 'text_reply', referencesTransparent: 1, referencesMatted: 1 });
+      const done = await finished(job.id);
+      assert.equal(done.referencesTransparent, 1);
+      assert.equal(done.referencesMatted, 1);
+      assert.equal(done.status, 'text_reply');
+      assert.equal((await call('job', { jobId: job.id })).referencesTransparent, 1);
+      assert.equal((await call('job', { jobId: job.id })).referencesMatted, 1);
+    }
+  });
+
+  await t.test('GIF alpha and transparent reference counts survive saving and public job summaries', async () => {
+    const job = await call('generate', { prompt: 'A fox waves', animated: true });
+    await nextFromHost('run');
+    const alpha = { transparentShare: 0.6, opaqueShare: 0.4 };
+    toHost({ type: 'result', jobId: job.id, ok: true, referencesTransparent: 2, referencesMatted: 1,
+      images: [{ data: b64(gif({ width: 12, height: 8, frames: [{}, {}, {}] })), mime: 'image/gif', alpha }] });
+    const done = await finished(job.id);
+    assert.equal(done.status, 'succeeded');
+    assert.equal(done.referencesTransparent, 2);
+    assert.equal(done.referencesMatted, 1);
+    assert.deepEqual(done.images[0].alpha, alpha);
+    const stored = JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8')).find(j => j.id === job.id);
+    assert.equal(stored.referencesTransparent, 2);
+    assert.equal(stored.referencesMatted, 1);
+    assert.deepEqual(stored.images[0].alpha, alpha);
+  });
 });
