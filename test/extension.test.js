@@ -680,7 +680,7 @@ test('runJob: GIF retry preserves auto_reattach metadata and skips edit check', 
   assert.equal(result.editCheck, null);
 });
 
-async function preparedJob({ refs, line = 'Keep the background transparent.', collect = false, reattach = false,
+async function preparedJob({ refs, collect = false, reattach = false,
   debug = false, configure = () => {}, reply = 'images' }) {
   const worker = loadPixelWorker();
   const { ctx, posted } = worker;
@@ -699,7 +699,7 @@ async function preparedJob({ refs, line = 'Keep the background transparent.', co
   ctx.downloadImages = async () => [{ animated: true }];
   configure(ctx);
   const job = { id: 'prepared', text: 'Original prompt', mode: collect ? 'collect' : 'generate', refs,
-    startUrl: CHAT, animated: true, autoReattach: reattach, transparentReferenceLine: line, debug };
+    startUrl: CHAT, animated: true, autoReattach: reattach, debug };
   await ctx.runJob(job);
   return { ...worker, calls, job, result: posted.find(m => m.type === 'result') };
 }
@@ -707,12 +707,12 @@ async function preparedJob({ refs, line = 'Keep the background transparent.', co
 const transparentRef = () => ({ name: 'ref.png', mime: 'image/png', complete: true,
   data: rgbaPng(4, 4, TRANSPARENT_PIXELS).toString('base64') });
 
-test('runJob: transparent references append the optional line and reuse prepared files and text on reattach', async () => {
+test('runJob: transparent references keep the job text and reuse prepared files on reattach', async () => {
   const ref = transparentRef();
   const { calls, result, posted } = await preparedJob({ refs: [ref], reattach: true, debug: true });
   const sends = calls.filter(c => c.text);
-  assert.equal(sends[0].text, 'Original prompt\n\nKeep the background transparent.');
-  assert.equal(sends[1].text, `I attached the image again.\n\n${sends[0].text}`);
+  assert.equal(sends[0].text, 'Original prompt');
+  assert.equal(sends[1].text, 'I attached the image again.\n\nOriginal prompt');
   assert.equal(sends[0].files, sends[1].files);
   assert.equal(sends[0].files, sends[0].refs);
   assert.notEqual(sends[0].files[0].data, ref.data);
@@ -725,13 +725,13 @@ test('runJob: transparent references append the optional line and reuse prepared
     oldBytes: Buffer.from(ref.data, 'base64').length, newBytes: Buffer.from(sends[0].files[0].data, 'base64').length });
 });
 
-test('runJob: opaque references and absent line leave the prompt unchanged; collect never prepares refs', async () => {
+test('runJob: opaque references and no references keep the job text; collect never prepares refs', async () => {
   const opaque = { ...transparentRef(), data: rgbaPng(1, 1, [10, 20, 30, 255]).toString('base64') };
-  for (const options of [{ refs: [opaque] }, { refs: [transparentRef()], line: null }, { refs: [] }]) {
+  for (const options of [{ refs: [opaque] }, { refs: [] }]) {
     const { calls, result, posted } = await preparedJob(options);
     assert.equal(calls[0].text, 'Original prompt');
-    assert.equal(result.referencesTransparent, options.line === null ? 1 : 0);
-    assert.equal(result.referencesMatted, options.line === null ? 1 : 0);
+    assert.equal(result.referencesTransparent, 0);
+    assert.equal(result.referencesMatted, 0);
     assert.ok(!posted.some(m => m.type === 'log' && m.level === 'debug'));
     if (options.refs[0] === opaque) assert.equal(calls[0].files[0], opaque);
   }
@@ -833,13 +833,13 @@ test('runJob: a single faint alpha pixel below the 0.5% share leaves the referen
   assert.ok(!warned(posted, 'reference preparation failed; using original'));
 });
 
-test('runJob: exactly 0.5% see-through pixels count as transparent and get the matte and the line', async () => {
+test('runJob: exactly 0.5% see-through pixels get the matte without changing the job text', async () => {
   const pixels = opaquePixels(20, 20, [0, 399], 0); // 2 of 400 pixels = 0.5%
   pixels.set([77, 88, 99, 0], 0);
   const ref = { name: 'edge.png', mime: 'image/png', complete: true, data: rgbaPng(20, 20, pixels).toString('base64') };
   const { calls, result } = await preparedJob({ refs: [ref] });
   assert.equal(result.ok, true);
-  assert.equal(calls[0].text, 'Original prompt\n\nKeep the background transparent.');
+  assert.equal(calls[0].text, 'Original prompt');
   assert.equal(result.referencesTransparent, 1);
   assert.equal(result.referencesMatted, 1);
   const uploaded = decodePng(Buffer.from(calls[0].files[0].data, 'base64'));

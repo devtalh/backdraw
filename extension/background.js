@@ -275,8 +275,6 @@ async function runJob(job) {
   try {
     if (ctx.refs.some(r => !r.complete)) throw fail('ref_transfer', 'A reference image did not arrive completely; please try again.');
     if (job.mode !== 'collect' && ctx.refs.length) ctx.refs = await prepareReferences(ctx);
-    const text = ctx.referencesTransparent && job.transparentReferenceLine
-      ? `${job.text}\n\n${job.transparentReferenceLine}` : job.text;
     ctx.progress('opening', 'Opening ChatGPT in a background tab');
     ctx.tabId = await openWorker(job.startUrl);
     const ready = await waitUntilReady(ctx);
@@ -288,7 +286,7 @@ async function runJob(job) {
       if (isChatUrl(ready.url)) ctx.conversationUrl = cleanUrl(ready.url);
       outcome = await waitForReply(ctx, { users: 0, images: 0 });
     } else {
-      outcome = await sendAndWait(ctx, ready, text, attached);
+      outcome = await sendAndWait(ctx, ready, job.text, attached);
       // In long chats ChatGPT can lose track of earlier images and asks for them to be uploaded
       // again instead of editing. With auto_reattach: attach it (or the given references) once.
       if (outcome.kind === 'needs_reference' && job.autoReattach) {
@@ -296,7 +294,7 @@ async function runJob(job) {
         if (attached.length) {
           ctx.progress('reattaching', 'ChatGPT asked for the image again: attaching it and asking once more', { conversationUrl: ctx.conversationUrl });
           const now = (await probeTab(ctx, null)) || { counts: { users: 0, images: 0 } };
-          outcome = await sendAndWait(ctx, now, `I attached the image again.\n\n${text}`, attached);
+          outcome = await sendAndWait(ctx, now, `I attached the image again.\n\n${job.text}`, attached);
           outcome.reattached = true;
         }
       }

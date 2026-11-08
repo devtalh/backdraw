@@ -414,15 +414,15 @@ PNG görsellerinin önizlemeleri dama tahtası deseni üzerinde çizilir.
 `animated: true`, ChatGPT'den kısa bir animasyonlu GIF ister. Durağan bir görsel gelirse Backdraw
 bir kez daha animasyonlu GIF ister; sonuç hâlâ durağansa araç sonucunda uyarı verir.
 İyi sonuç için tek özne, tek net hareket, sabit kamera kullan ve sahnede küçük yazı bulundurma.
-Şeffaf PNG/WebP referansı varsa Backdraw animasyon isteminin sonuna `Keep the background transparent.`
-ekler (`send_as_is: true` hariç). Referans yükleme hazırlığı, Araç başvurusu altındaki
-`reference_images` davranışını izler. Hazırlama başarısız olursa, görsel 4096 x 4096 piksel sınırını
-aşarsa ya da kopya 20 MB'tan büyük olursa orijinal yüklenir.
+Referans yükleme hazırlığı, Araç başvurusu altındaki `reference_images` davranışını izler. Hazırlama
+başarısız olursa, görsel 4096 x 4096 piksel sınırını aşarsa ya da kopya 20 MB'tan büyük olursa
+orijinal yüklenir.
 
 GIF'ler hiç kırpılmadan kaydedilir; `aspect_ratio` onlara uygulanmaz.
 Her GIF sonucunda zeminin şeffaf mı opak mı olduğu, ilk karede ölçülen saydam piksel oranıyla
 raporlanır. Ölçüm yapılamazsa GIF'in transparent color bayrağı kullanılır.
-`transparent_background: true` ya da şeffaf referans kullanılmışsa opak sonuçta uyarı verilir.
+ChatGPT'nin animasyonlu GIF'leri şeffaf arka planı güvenilir biçimde korumaz. Opak sonuçta
+`transparent_background: true` için uyarı verilir; şeffaf referans kullanıldıysa yalnızca bilgi verilir.
 Eklenen önizleme yalnızca ilk kareyi gösterir. Örnek bir sonuç satırı:
 
 ```

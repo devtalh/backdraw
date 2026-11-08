@@ -380,7 +380,7 @@ test('the host', async t => {
       transparent: false, transparentFrames: 0, truncated: true });
   });
 
-  await t.test('transparent reference line is sent only for wrapped animated requests with references', async () => {
+  await t.test('run messages never include a transparent reference prompt line', async () => {
     const refs = [{ name: 'ref.png', mime: 'image/png', data: b64(png(6)) }];
     for (const options of [{ animated: true, references: refs }, { animated: true, references: refs, sendAsIs: true },
       { references: refs }, { animated: true }]) {
@@ -388,8 +388,7 @@ test('the host', async t => {
       assert.equal(job.referencesTransparent, 0);
       assert.equal(job.referencesMatted, 0);
       const { job: run } = await nextFromHost('run');
-      assert.equal(run.transparentReferenceLine,
-        options.animated && !options.sendAsIs && options.references ? 'Keep the background transparent.' : null);
+      assert.equal('transparentReferenceLine' in run, false);
       assert.equal(run.text, buildText({ prompt: 'A fox waves', ...options, startUrl: PROJECT.url }));
       assert.doesNotMatch(run.text, /Keep the background transparent/);
       toHost({ type: 'result', jobId: job.id, ok: false, status: 'text_reply', referencesTransparent: 1, referencesMatted: 1 });

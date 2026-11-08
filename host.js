@@ -12,7 +12,7 @@ const identity = require('./identity');
 const shared = require('./shared');
 const { stamp, slugify, sniffExt } = require('./lib/naming');
 const { normName, parseProjectUrl, pickProject } = require('./lib/projects');
-const { buildText, transparentReferenceLine } = require('./lib/prompt');
+const { buildText } = require('./lib/prompt');
 const { aspectOption } = require('./lib/aspect');
 const { pngInfo } = require('./lib/png');
 const { gifInfo } = require('./lib/gif');
@@ -236,7 +236,6 @@ function pump() {
       id: job.id, mode: job.mode, text: job.mode === 'collect' ? '' : buildText(job), startUrl: job.startUrl || job.project.url,
       timeoutSec: job.timeoutSec, debug: config.debug, autoReattach: job.autoReattach,
       aspect: job.aspect ? job.aspect.target : null, transparent: !!job.transparent, animated: !!job.animated,
-      transparentReferenceLine: transparentReferenceLine(job),
     },
   });
   clearTimeout(watchdog);

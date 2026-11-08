@@ -486,12 +486,17 @@ test('imageLines: every GIF reports one background line from its first-frame mea
     const background = line(image);
     assert.equal(line(image, { transparent: true, referencesTransparent: 1 }),
       `⚠ TRANSPARENT BACKGROUND MISSING: ${background} ${RETRY}`);
-    assert.equal(line(image, { referencesTransparent: 1 }),
-      `⚠ BACKGROUND NOT TRANSPARENT: the reference image was transparent but the GIF background is opaque. ${background} ${RETRY}`);
+    const referenceInfo = line(image, { referencesTransparent: 1 });
+    assert.equal(referenceInfo,
+      `${background} The reference image was transparent; ChatGPT's animated GIFs do not reliably keep a transparent background.`);
+    assert.doesNotMatch(referenceInfo, /⚠|retry/i);
   }
   assert.doesNotMatch(line({ ...im, alpha: alpha(0.021) }, { transparent: true, referencesTransparent: 1 }), /⚠|retry/i);
   assert.match(line({ ...im, gif: { ...im.gif, transparent: false } }, { transparent: true }), /^⚠ TRANSPARENT BACKGROUND MISSING:/);
-  assert.match(line({ ...im, gif: { ...im.gif, transparent: false } }, { referencesTransparent: 1 }), /^⚠ BACKGROUND NOT TRANSPARENT:/);
+  const unmeasuredReferenceInfo = line({ ...im, gif: { ...im.gif, transparent: false } }, { referencesTransparent: 1 });
+  assert.equal(unmeasuredReferenceInfo,
+    "Background: opaque — the GIF has no transparent color; transparent pixels could not be measured. The reference image was transparent; ChatGPT's animated GIFs do not reliably keep a transparent background.");
+  assert.doesNotMatch(unmeasuredReferenceInfo, /⚠|retry/i);
 });
 
 test('referenceLines: transparent reference preparation reports complete, partial and failed matte results', () => {

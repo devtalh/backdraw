@@ -2,22 +2,11 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { buildText } = require('../lib/prompt');
-const { transparentReferenceLine } = require('../lib/prompt');
 const { aspectOption } = require('../lib/aspect');
 
 const CHAT_URL = 'https://chatgpt.com/g/g-p-67a1b2c3d4e5f60718293a4b5c6d7e8f-images/c/6812a3b4-1c2d-8000-9e8f-0123456789ab';
 const PROJECT_URL = 'https://chatgpt.com/g/g-p-67a1b2c3d4e5f60718293a4b5c6d7e8f-images/project';
 const ref = name => ({ name, bytes: 1000 });
-
-test('transparent reference line: only animated, wrapped prompts with references qualify', () => {
-  const job = { prompt: 'A fox', animated: true, references: [ref('fox.png')] };
-  assert.equal(transparentReferenceLine(job), 'Keep the background transparent.');
-  assert.equal(transparentReferenceLine({ ...job, sendAsIs: true }), null);
-  assert.equal(transparentReferenceLine({ ...job, animated: false }), null);
-  assert.equal(transparentReferenceLine({ ...job, references: [] }), null);
-  assert.equal(transparentReferenceLine({ ...job, references: undefined }), null);
-  assert.doesNotMatch(buildText(job), /Keep the background transparent/);
-});
 
 test('send_as_is: the prompt goes out verbatim, whatever else is set', () => {
   assert.equal(buildText({ prompt: 'Yes, 16:9 please.', sendAsIs: true }), 'Yes, 16:9 please.');
@@ -91,16 +80,20 @@ test('no aspect and no transparency: the message is unchanged', () => {
 test('animated: trims trailing spaces, dots and exclamation marks and skips aspect/background lines', () => {
   const expected = "Create an animated GIF: A fox waves, one clear motion, still camera, seamless loop. Don't ask follow-up questions; create the GIF directly.";
   for (const ending of ['.', '!!!', ' .! \n']) {
-    assert.equal(buildText({ prompt: `A fox waves${ending}`, animated: true, aspect: wide, transparent: true, startUrl: CHAT_URL }), expected);
+    const text = buildText({ prompt: `A fox waves${ending}`, animated: true, aspect: wide, transparent: true, startUrl: CHAT_URL });
+    assert.equal(text, expected);
+    assert.doesNotMatch(text, /Keep the background transparent/);
   }
 });
 
 test('animated: references precede the GIF prompt with one blank line', () => {
   const expected = buildText({ prompt: 'A fox waves.', animated: true });
-  assert.equal(buildText({ prompt: 'A fox waves.', animated: true, references: [ref('a.png')], startUrl: CHAT_URL }),
-    `The attached image is the reference.\n\n${expected}`);
-  assert.equal(buildText({ prompt: 'A fox waves.', animated: true, references: [ref('a.png'), ref('b.png')] }),
-    `The attached images are references.\n\n${expected}`);
+  const one = buildText({ prompt: 'A fox waves.', animated: true, references: [ref('a.png')], startUrl: CHAT_URL });
+  const several = buildText({ prompt: 'A fox waves.', animated: true, references: [ref('a.png'), ref('b.png')] });
+  assert.equal(one, `The attached image is the reference.\n\n${expected}`);
+  assert.equal(several, `The attached images are references.\n\n${expected}`);
+  assert.doesNotMatch(one, /Keep the background transparent/);
+  assert.doesNotMatch(several, /Keep the background transparent/);
 });
 
 test('animated: send_as_is takes priority; false keeps the original still-image prompt', () => {
