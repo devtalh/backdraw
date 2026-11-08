@@ -13,6 +13,7 @@ const { spawn } = require('node:child_process');
 const test = require('node:test');
 const identity = require('../identity');
 const { buildText } = require('../lib/prompt');
+const { MOTION_NAMES } = require('../lib/motion');
 const { SHOW_IMAGE, resultLines } = require('../lib/results');
 const { MAX_COLLECTION_BYTES } = require('../lib/limits');
 const { png } = require('./png-fixture');
@@ -31,6 +32,12 @@ fs.mkdirSync(DIR);
 for (const f of ['host.js', 'shared.js', 'identity.js', 'package.json', 'lib', 'platform']) fs.cpSync(path.join(ROOT, f), path.join(DIR, f), { recursive: true });
 fs.mkdirSync(path.join(DIR, 'data'));
 fs.writeFileSync(path.join(DIR, 'data', 'config.json'), JSON.stringify({ outputDir: IMAGES, collectionsDir: REFS, project: PROJECT }));
+// An old history entry has no motion field; both public summary paths should return null.
+const LEGACY_JOB_ID = 'img_1e9ac000';
+fs.writeFileSync(path.join(DIR, 'data', 'jobs.json'), JSON.stringify([{
+  id: LEGACY_JOB_ID, mode: 'generate', prompt: 'An older image', status: 'succeeded', images: [], references: [],
+  createdAt: '2026-01-01T00:00:00.000Z', conversationUrl: null,
+}]));
 
 const child = spawn(process.execPath, [path.join(DIR, 'host.js')], { cwd: DIR, env: { ...process.env, [identity.PIPE_ENV]: PIPE }, stdio: ['pipe', 'pipe', 'ignore'] });
 const exited = new Promise(resolve => child.once('exit', resolve));
@@ -118,6 +125,25 @@ test('the host', async t => {
   await t.test('a bad aspect_ratio is refused before a job exists', async () => {
     await assert.rejects(call('generate', { prompt: 'x', aspect: '9:1' }), { code: 'BAD_REQUEST', message: /aspect_ratio 9:1 is outside the supported range 1:4 to 4:1/ });
     await assert.rejects(call('generate', { prompt: 'x', aspect: '1.5:1' }), { code: 'BAD_REQUEST', message: /use 3:2 instead/ });
+    assert.deepEqual((await call('status')).queued, []);
+  });
+
+  await t.test('history entries without motion remain readable as null', async () => {
+    assert.equal((await call('job', { jobId: LEGACY_JOB_ID })).motion, null);
+    assert.equal((await call('status')).recent.find(j => j.id === LEGACY_JOB_ID).motion, null);
+  });
+
+  await t.test('unknown motion and collect with motion are refused before a job exists', async () => {
+    const before = JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8')).length;
+    for (const motion of ['fly', 'WALK', ' ', 'toString', '__proto__', 7, false, ['walk'], {}]) {
+      await assert.rejects(call('generate', { prompt: 'A fox', motion }), {
+        code: 'BAD_REQUEST', message: `Unknown motion. Use: ${MOTION_NAMES.join(', ')}.`,
+      });
+    }
+    await assert.rejects(call('generate', { mode: 'collect', startUrl: CHAT_URL, motion: 'walk' }), {
+      code: 'BAD_REQUEST', message: 'motion cannot be used when only fetching images.',
+    });
+    assert.equal(JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8')).length, before);
     assert.deepEqual((await call('status')).queued, []);
   });
 
@@ -327,6 +353,38 @@ test('the host', async t => {
     const prompt = 'Ekteki referans görselleri incele ve aynı tarzda bir tilki maskotu çiz';
     assert.match(await saved({ prompt, filenameHint: '  Kırmızı tilki maskotu  ' }), /^\d{8}-\d{6}_kirmizi-tilki-maskotu\.png$/);
     assert.match(await saved({ prompt, filenameHint: '   ' }), /^\d{8}-\d{6}_ekteki-referans-gorselleri-incele-ve-ayni-tarzda\.png$/);
+  });
+
+  await t.test('motion alone enables animation, survives summaries and storage, without changing the extension protocol', async () => {
+    for (const motion of MOTION_NAMES) {
+      const refs = [{ name: 'ref.png', mime: 'image/png', data: b64(png(6)) }];
+      const references = motion === 'walk' ? refs : [];
+      const job = await call('generate', { prompt: 'A pixel fox.', motion, animated: false, references });
+      assert.equal(job.motion, motion);
+      assert.equal(job.animated, true);
+      const { job: run } = await nextFromHost('run');
+      assert.equal(run.animated, true);
+      assert.equal(Object.hasOwn(run, 'motion'), false);
+      assert.equal(run.text, buildText({ prompt: 'A pixel fox.', animated: true, motion, references }));
+      const status = await call('status');
+      assert.equal(status.running.motion, motion);
+      assert.equal(status.recent.find(j => j.id === job.id).motion, motion);
+      assert.equal((await call('job', { jobId: job.id })).motion, motion);
+      toHost({ type: 'result', jobId: job.id, ok: false, status: 'text_reply' });
+      assert.equal((await finished(job.id)).motion, motion);
+      const stored = JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8')).find(j => j.id === job.id);
+      assert.equal(stored.motion, motion);
+      assert.equal(stored.animated, true);
+    }
+    for (const motion of [undefined, null, '']) {
+      const job = await call('generate', { prompt: 'A fox.', motion });
+      assert.equal(job.motion, null);
+      assert.equal(job.animated, false);
+      const { job: run } = await nextFromHost('run');
+      assert.equal(run.text, buildText({ prompt: 'A fox.' }));
+      toHost({ type: 'result', jobId: job.id, ok: false, status: 'text_reply' });
+      await finished(job.id);
+    }
   });
 
   await t.test('animated jobs carry the GIF prompt and retain animatedRetry in job summaries', async () => {

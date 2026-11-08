@@ -429,6 +429,31 @@ Eklenen önizleme yalnızca ilk kareyi gösterir. Örnek bir sonuç satırı:
 Animated GIF: 12 frames, 1200 ms per loop, loops forever; the attached preview shows only the first frame.
 ```
 
+### Hazır hareketler
+
+Hareket seçmek için `motion` ver; örneğin `prompt: "Piksel sanatı bir tilki"`, `motion: "walk"`.
+İstem özneyi ve stili tarif eder; `motion` hareketi verir ve `animated` verilmemiş veya false olsa
+da animasyonu açar. Tutarlı karakter, ortalanmış kadraj, sabit kamera ve açık renk düz zemin için
+kısa bir tarif ekler. Referansların çizilmiş görünümü korunur.
+Aşağıdaki kare sayıları ve süreler ipucudur; ChatGPT farklı değerler üretebilir.
+`send_as_is: true`, istemini hazır hareket metni eklemeden olduğu gibi gönderir.
+
+| Hareket | Ne yapar | Kare / süre ipucu |
+|---|---|---|
+| `idle` | Hafifçe nefes alır ve bir kez göz kırpar | 8 kare, her biri 150 ms |
+| `walk` | Yandan görünümle yerinde yürür | 8 kare, her biri 100 ms |
+| `run` | Yandan görünümle yerinde koşar | 8 kare, her biri 80 ms |
+| `jump` | Çömelir, yerinde zıplar ve yere iner | 10 kare, her biri 90 ms |
+| `wave` | Gövdesi sabitken tek eliyle el sallar | 8 kare, her biri 100 ms |
+| `dance` | Kollarını sallayıp sekerek sola ve sağa adım atar | 10 kare, her biri 100 ms |
+| `bounce` | Yerinde seker, inişte sıkışır ve yükselirken uzar | 8 kare, her biri 90 ms |
+| `wiggle` | Ortadan geçerek sola ve sağa eğilir | 8 kare, her biri 100 ms |
+| `spin` | Yerinde tam bir tur döner | 12 kare, her biri 80 ms |
+
+[kiki-pixel-gif](https://github.com/Mayzmei/kiki-pixel-gif) (MIT) ve
+[sprite-gen](https://github.com/aldegad/sprite-gen) (Apache-2.0) projelerindeki fikirlerden
+esinlenildi; kod, istem metni veya tablo kopyalanmadı.
+
 ## Galeri yan paneli
 
 Açılır pencerede **Galeriyi aç**'a tıkla; Backdraw'ın yan paneli bulunduğun sayfanın yanında açılır.
@@ -452,7 +477,7 @@ dosyanın tam hâli görsel klasöründe değişmeden durur.
 
 | Araç | Parametreler (varsayılan) | Ne yapar |
 |---|---|---|
-| `generate_image` | `prompt` (zorunlu), `animated` (false), `aspect_ratio`, `transparent_background` (false), `reference_images`, `reference_collection`, `reference_files`, `conversation_url`, `auto_reattach` (false), `send_as_is` (false), `output_dir`, `filename_hint`, `wait_seconds` (45), `include_preview` (true) | Projende yeni bir sohbet başlatır (ya da `conversation_url`'deki sohbete devam eder) ve görsel üretir veya düzenler. |
+| `generate_image` | `prompt` (zorunlu), `animated` (false), `motion`, `aspect_ratio`, `transparent_background` (false), `reference_images`, `reference_collection`, `reference_files`, `conversation_url`, `auto_reattach` (false), `send_as_is` (false), `output_dir`, `filename_hint`, `wait_seconds` (45), `include_preview` (true) | Projende yeni bir sohbet başlatır (ya da `conversation_url`'deki sohbete devam eder) ve görsel üretir veya düzenler. |
 | `job_status` | `job_id`, `wait_seconds` (45), `include_preview` (true) | Bir işi bekler ve durumunu bildirir. `job_id` olmadan köprünün durumunu verir (Chrome bağlı mı, seçili Proje, görsel klasörü, kuyruk, son işler). |
 | `cancel_job` | `job_id` (zorunlu) | Kuyruktaki ya da çalışan bir işi iptal eder. ChatGPT üretmeye başladıysa arka plan sekmesinde Durdur'a basar. |
 | `fetch_images` | `conversation_url` (zorunlu), `aspect_ratio`, `output_dir`, `wait_seconds` (45), `include_preview` (true) | Var olan bir sohbetin son cevabındaki görselleri, hiçbir şey göndermeden indirir. |
@@ -461,6 +486,8 @@ dosyanın tam hâli görsel klasöründe değişmeden durur.
 | `list_collections` | – | Referans koleksiyonlarını görsel sayıları, klasörleri ve dosyalarıyla (en yenisi önce) listeler. |
 
 - `animated`: kısa bir animasyonlu GIF ister; ChatGPT durağan bir görsel döndürürse bir kez daha sorar.
+- `motion`: isteğe bağlı GIF hareketi (`idle`, `walk`, `run`, `jump`, `wave`, `dance`, `bounce`,
+  `wiggle`, `spin`); `animated`'ı açar. Kare/süre ipuçları için [Hazır hareketler](#hazır-hareketler) bölümüne bak.
 - `reference_images`: yerel png / jpg / webp / gif dosyaları, en fazla 16; koleksiyon görselleri
   kalan yerleri doldurur. Şeffaf PNG/WebP referanslar (piksellerinin en az %0,5'i saydam), alfa
   korunup RGB beyazla karıştırılarak PNG kopyaları halinde yüklenir; kaynak dosyalar değişmez.
