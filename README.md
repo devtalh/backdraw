@@ -413,11 +413,38 @@ whether its background is transparent or opaque, using the share of transparent 
 in the first frame. If measurement fails, the GIF's transparent color flag is reported instead.
 ChatGPT's animated GIFs do not reliably keep a transparent background. An opaque result warns you
 if `transparent_background: true`; with a transparent reference, it only reports this as information.
-The attached preview shows only the first frame. For example, a result line can be:
+The attached preview shows all frames in a numbered grid (16 evenly spaced frames if there are
+more than 16), with transparent areas over a checkerboard. If decoding fails, only the first
+frame is shown. Fetching existing images keeps the first-frame preview. For example, a result line can be:
 
 ```
-Animated GIF: 12 frames, 1200 ms per loop, loops forever; the attached preview shows only the first frame.
+Animated GIF: 12 frames, 1200 ms per loop, loops forever; the attached preview shows all 12 frames in order, numbered from 1. Check that the subject keeps the same look, size and position from frame to frame.
 ```
+
+### Motion presets
+
+Pass `motion` to choose a movement; for example, `prompt: "A pixel-art fox"`, `motion: "walk"`.
+The prompt describes the subject and style; `motion` supplies the movement and enables `animated`
+even when it is omitted or false. It adds a short request for a consistent character, a centered
+frame, a still camera and a plain light background. References keep their drawn appearance.
+Frame counts and timing below are hints; ChatGPT may produce different values.
+`send_as_is: true` sends your prompt verbatim, without the preset text.
+
+| Motion | Movement | Frame / timing hint |
+|---|---|---|
+| `idle` | Gentle breathing and one blink | 8 frames, 150 ms each |
+| `walk` | Walk in place, viewed from the side | 8 frames, 100 ms each |
+| `run` | Run in place, viewed from the side | 8 frames, 80 ms each |
+| `jump` | Crouch, jump and land in place | 10 frames, 90 ms each |
+| `wave` | Wave one hand while the body stays still | 8 frames, 100 ms each |
+| `dance` | Step left and right with bounces and swinging arms | 10 frames, 100 ms each |
+| `bounce` | Bounce in place, squashing on landing and stretching upward | 8 frames, 90 ms each |
+| `wiggle` | Lean left and right through the center | 8 frames, 100 ms each |
+| `spin` | Turn a full circle in place | 12 frames, 80 ms each |
+
+Inspired by ideas from [kiki-pixel-gif](https://github.com/Mayzmei/kiki-pixel-gif) (MIT) and
+[sprite-gen](https://github.com/aldegad/sprite-gen) (Apache-2.0); no code, prompt text or tables
+were copied.
 
 ## Gallery side panel
 
@@ -442,7 +469,7 @@ file remains unchanged in your images folder.
 
 | Tool | Parameters (default) | What it does |
 |---|---|---|
-| `generate_image` | `prompt` (required), `animated` (false), `aspect_ratio`, `transparent_background` (false), `reference_images`, `reference_collection`, `reference_files`, `conversation_url`, `auto_reattach` (false), `send_as_is` (false), `output_dir`, `filename_hint`, `wait_seconds` (45), `include_preview` (true) | Starts a new chat in your Project (or continues `conversation_url`) and generates or edits an image. |
+| `generate_image` | `prompt` (required), `animated` (false), `motion`, `aspect_ratio`, `transparent_background` (false), `reference_images`, `reference_collection`, `reference_files`, `conversation_url`, `auto_reattach` (false), `send_as_is` (false), `output_dir`, `filename_hint`, `wait_seconds` (45), `include_preview` (true) | Starts a new chat in your Project (or continues `conversation_url`) and generates or edits an image. |
 | `job_status` | `job_id`, `wait_seconds` (45), `include_preview` (true) | Waits for a job and reports it. Without `job_id`: the bridge status (Chrome connected, selected Project, images folder, queue, recent jobs). |
 | `cancel_job` | `job_id` (required) | Cancels a queued or running job. If ChatGPT is already generating, it presses Stop in the background tab. |
 | `fetch_images` | `conversation_url` (required), `aspect_ratio`, `output_dir`, `wait_seconds` (45), `include_preview` (true) | Downloads the images of the latest answer in an existing chat, without sending anything. |
@@ -451,6 +478,8 @@ file remains unchanged in your images folder.
 | `list_collections` | – | Lists your reference collections with image counts, folders and files (newest first). |
 
 - `animated`: request a short animated GIF; if ChatGPT returns a still image, ask once more.
+- `motion`: optional GIF movement (`idle`, `walk`, `run`, `jump`, `wave`, `dance`, `bounce`,
+  `wiggle`, `spin`); enables `animated`. See [Motion presets](#motion-presets) for frame/timing hints.
 - `reference_images`: local png / jpg / webp / gif files, up to 16; collection images fill the
   slots that are left. Transparent PNG/WebP references (at least 0.5% of their pixels are
   transparent) are uploaded as PNG copies whose RGB is mixed over white while alpha is preserved;

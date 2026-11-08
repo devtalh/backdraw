@@ -13,6 +13,7 @@ const { spawn } = require('node:child_process');
 const test = require('node:test');
 const identity = require('../identity');
 const { buildText } = require('../lib/prompt');
+const { MOTION_NAMES } = require('../lib/motion');
 const { SHOW_IMAGE, resultLines } = require('../lib/results');
 const { MAX_COLLECTION_BYTES } = require('../lib/limits');
 const { png } = require('./png-fixture');
@@ -31,6 +32,12 @@ fs.mkdirSync(DIR);
 for (const f of ['host.js', 'shared.js', 'identity.js', 'package.json', 'lib', 'platform']) fs.cpSync(path.join(ROOT, f), path.join(DIR, f), { recursive: true });
 fs.mkdirSync(path.join(DIR, 'data'));
 fs.writeFileSync(path.join(DIR, 'data', 'config.json'), JSON.stringify({ outputDir: IMAGES, collectionsDir: REFS, project: PROJECT }));
+// An old history entry has no motion field; both public summary paths should return null.
+const LEGACY_JOB_ID = 'img_1e9ac000';
+fs.writeFileSync(path.join(DIR, 'data', 'jobs.json'), JSON.stringify([{
+  id: LEGACY_JOB_ID, mode: 'generate', prompt: 'An older image', status: 'succeeded', images: [], references: [],
+  createdAt: '2026-01-01T00:00:00.000Z', conversationUrl: null,
+}]));
 
 const child = spawn(process.execPath, [path.join(DIR, 'host.js')], { cwd: DIR, env: { ...process.env, [identity.PIPE_ENV]: PIPE }, stdio: ['pipe', 'pipe', 'ignore'] });
 const exited = new Promise(resolve => child.once('exit', resolve));
@@ -121,6 +128,25 @@ test('the host', async t => {
     assert.deepEqual((await call('status')).queued, []);
   });
 
+  await t.test('history entries without motion remain readable as null', async () => {
+    assert.equal((await call('job', { jobId: LEGACY_JOB_ID })).motion, null);
+    assert.equal((await call('status')).recent.find(j => j.id === LEGACY_JOB_ID).motion, null);
+  });
+
+  await t.test('unknown motion and collect with motion are refused before a job exists', async () => {
+    const before = JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8')).length;
+    for (const motion of ['fly', 'WALK', ' ', 'toString', '__proto__', 7, false, ['walk'], {}]) {
+      await assert.rejects(call('generate', { prompt: 'A fox', motion }), {
+        code: 'BAD_REQUEST', message: `Unknown motion. Use: ${MOTION_NAMES.join(', ')}.`,
+      });
+    }
+    await assert.rejects(call('generate', { mode: 'collect', startUrl: CHAT_URL, motion: 'walk' }), {
+      code: 'BAD_REQUEST', message: 'motion cannot be used when only fetching images.',
+    });
+    assert.equal(JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8')).length, before);
+    assert.deepEqual((await call('status')).queued, []);
+  });
+
   await t.test('aspect + transparent: the run message, then both files saved for each cropped image', async () => {
     const legacy = path.join(DIR, 'legacy-out');
     const job = await call('generate', { prompt: 'A wide banner', aspect: '4:1', transparent: true, outputDir: legacy });
@@ -153,7 +179,7 @@ test('the host', async t => {
     assert.deepEqual(fs.readFileSync(a.path), cropped);
     assert.deepEqual(fs.readFileSync(a.full.path), original);
     assert.deepEqual({ ...a, path: 0, preview: 0, full: { ...a.full, path: 0 } }, {
-      path: 0, width: 1983, height: 496, bytes: cropped.length, preview: 0,
+      path: 0, width: 1983, height: 496, bytes: cropped.length, preview: 0, previewFrames: null,
       full: { path: 0, width: 1983, height: 793, bytes: original.length },
       aspect: '4:1', png: { colorType: 2, alphaChannel: false, trns: false }, alpha: { transparentShare: 0, opaqueShare: 1 }, gif: null,
     });
@@ -191,7 +217,7 @@ test('the host', async t => {
     assert.equal(done.images.length, 1);
     const [im] = done.images;
     assert.deepEqual({ ...im, path: 0 }, {
-      path: 0, width: 1254, height: 1254, bytes: image.length, preview: null, full: null, aspect: null,
+      path: 0, width: 1254, height: 1254, bytes: image.length, preview: null, previewFrames: null, full: null, aspect: null,
       png: { colorType: 6, alphaChannel: true, trns: false }, alpha: null, gif: null,
     });
     assert.deepEqual(fs.readFileSync(im.path), image);
@@ -329,6 +355,38 @@ test('the host', async t => {
     assert.match(await saved({ prompt, filenameHint: '   ' }), /^\d{8}-\d{6}_ekteki-referans-gorselleri-incele-ve-ayni-tarzda\.png$/);
   });
 
+  await t.test('motion alone enables animation, survives summaries and storage, without changing the extension protocol', async () => {
+    for (const motion of MOTION_NAMES) {
+      const refs = [{ name: 'ref.png', mime: 'image/png', data: b64(png(6)) }];
+      const references = motion === 'walk' ? refs : [];
+      const job = await call('generate', { prompt: 'A pixel fox.', motion, animated: false, references });
+      assert.equal(job.motion, motion);
+      assert.equal(job.animated, true);
+      const { job: run } = await nextFromHost('run');
+      assert.equal(run.animated, true);
+      assert.equal(Object.hasOwn(run, 'motion'), false);
+      assert.equal(run.text, buildText({ prompt: 'A pixel fox.', animated: true, motion, references }));
+      const status = await call('status');
+      assert.equal(status.running.motion, motion);
+      assert.equal(status.recent.find(j => j.id === job.id).motion, motion);
+      assert.equal((await call('job', { jobId: job.id })).motion, motion);
+      toHost({ type: 'result', jobId: job.id, ok: false, status: 'text_reply' });
+      assert.equal((await finished(job.id)).motion, motion);
+      const stored = JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8')).find(j => j.id === job.id);
+      assert.equal(stored.motion, motion);
+      assert.equal(stored.animated, true);
+    }
+    for (const motion of [undefined, null, '']) {
+      const job = await call('generate', { prompt: 'A fox.', motion });
+      assert.equal(job.motion, null);
+      assert.equal(job.animated, false);
+      const { job: run } = await nextFromHost('run');
+      assert.equal(run.text, buildText({ prompt: 'A fox.' }));
+      toHost({ type: 'result', jobId: job.id, ok: false, status: 'text_reply' });
+      await finished(job.id);
+    }
+  });
+
   await t.test('animated jobs carry the GIF prompt and retain animatedRetry in job summaries', async () => {
     const job = await call('generate', { prompt: 'A fox waves.', animated: true, aspect: '4:1', transparent: true });
     assert.equal(job.animated, true);
@@ -441,5 +499,58 @@ test('the host', async t => {
     assert.equal(stored.referencesTransparent, 2);
     assert.equal(stored.referencesMatted, 1);
     assert.deepEqual(stored.images[0].alpha, alpha);
+  });
+
+  await t.test('GIF contact sheet metadata survives storage and reaches results, gallery and collections', async () => {
+    const inspect = ' Check that the subject keeps the same look, size and position from frame to frame.';
+    for (const [frames, previewFrames, suffix] of [
+      [9, { shown: 9, total: 9, ignored: 'discard' }, 'all 9 frames in order, numbered from 1.' + inspect],
+      [40, { shown: 16, total: 40 }, '16 of 40 frames, evenly spaced and numbered by frame.' + inspect],
+      [9, null, 'only the first frame.'],
+    ]) {
+      const job = await call('generate', { prompt: 'A walking fox', motion: 'walk' });
+      await nextFromHost('run');
+      const image = gif({ width: 12, height: 8, loop: 0, frames: Array.from({ length: frames }, () => ({ delayCs: 10 })) });
+      toHost({ type: 'result', jobId: job.id, ok: true, images: [{ data: b64(image), mime: 'image/gif', preview: b64(JPEG), previewFrames }] });
+      const done = await finished(job.id);
+      const [im] = done.images;
+      const expected = previewFrames ? { shown: previewFrames.shown, total: frames } : null;
+      assert.deepEqual(im.previewFrames, expected);
+      assert.deepEqual(fs.readFileSync(im.path), image);
+      const lines = resultLines(done);
+      const at = lines.indexOf(`Animated GIF: ${frames} frames, ${frames * 100} ms per loop, loops forever; the attached preview shows ${suffix}`);
+      assert.ok(at > 0);
+      assert.equal(lines[at + 1], 'Requested motion: walk (hint: about 8 frames at 100 ms; ChatGPT may use a different count).');
+      const stored = JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8')).find(j => j.id === job.id);
+      assert.deepEqual(stored.images[0].previewFrames, expected);
+      assert.deepEqual(await call('gallery_thumb', { jobId: job.id, n: 1 }), { data: b64(JPEG), mime: 'image/jpeg' });
+      assert.deepEqual(await call('gallery_animation', { jobId: job.id, n: 1 }), { data: b64(image), mime: 'image/gif' });
+      const added = await call('collection_add_job_image', { jobId: job.id, n: 1, collection: 'Contact sheets', create: true });
+      assert.deepEqual(fs.readFileSync(path.join(REFS, 'Contact sheets', 'thumbs', `${added.file}.jpg`)), JPEG);
+      assert.deepEqual(fs.readFileSync(path.join(REFS, 'Contact sheets', added.file)), image);
+    }
+  });
+
+  await t.test('previewFrames accepts only small integer counts matching a complete GIF and an attached preview', async () => {
+    const job = await call('generate', { prompt: 'Metadata validation' });
+    await nextFromHost('run');
+    const animation = gif({ width: 12, height: 8, frames: [{}, {}, {}] });
+    const invalid = [undefined, null, {}, { shown: '3', total: 3 }, { shown: 3, total: '3' },
+      { shown: 1, total: 3 }, { shown: 2, total: 3 }, { shown: 17, total: 40 },
+      { shown: 3.5, total: 3 }, { shown: 3, total: 513 }, { shown: 4, total: 3 },
+      { shown: 3, total: 4 }, { shown: -1, total: -1 }];
+    const images = invalid.map(previewFrames => ({ data: b64(animation), mime: 'image/gif', preview: b64(JPEG), previewFrames }));
+    images.push(
+      { data: b64(animation), mime: 'image/gif', previewFrames: { shown: 3, total: 3 } },
+      { data: b64(png(6, { width: 256, height: 256 })), mime: 'image/png', preview: b64(JPEG), previewFrames: { shown: 3, total: 3 } },
+      { data: b64(animation.subarray(0, -1)), mime: 'image/gif', preview: b64(JPEG), previewFrames: { shown: 3, total: 3 } },
+    );
+    toHost({ type: 'result', jobId: job.id, ok: true, images });
+    const done = await finished(job.id);
+    assert.equal(done.status, 'succeeded', done.error);
+    assert.equal(done.images.length, images.length);
+    for (const im of done.images) assert.equal(im.previewFrames, null);
+    const stored = JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8')).find(j => j.id === job.id);
+    for (const im of stored.images) assert.equal(im.previewFrames, null);
   });
 });

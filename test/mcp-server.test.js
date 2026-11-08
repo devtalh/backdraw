@@ -12,6 +12,7 @@ const identity = require('../identity');
 const { aspectOption } = require('../lib/aspect');
 const { MAX_REFS } = require('../lib/limits');
 const { LEGACY_VERSIONS } = require('../lib/protocol');
+const { MOTION_NAMES } = require('../lib/motion');
 
 const SERVER = path.join(__dirname, '..', 'mcp-server.js');
 const TAG = `backdraw-test-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
@@ -264,6 +265,19 @@ test('animated schema and instructions describe GIF prompts without assuming PNG
 
 // ---------------------------------------------------------------- modern (2026-07-28) clients
 
+test('motion schema shares the preset enum and describes automatic animation and frame hints', async () => {
+  const { result } = await request('tools/list', {});
+  const props = result.tools.find(t => t.name === 'generate_image').inputSchema.properties;
+  assert.equal(props.motion.type, 'string');
+  assert.deepEqual(props.motion.enum, MOTION_NAMES);
+  for (const name of MOTION_NAMES) assert.ok(props.motion.description.includes(name));
+  assert.match(props.motion.description, /enables animated when omitted or false/);
+  assert.match(props.motion.description, /frame count is only a hint/);
+  assert.match(props.animated.description, /Pass motion for a preset movement/);
+  const { result: init } = await request('initialize', { protocolVersion: '2025-06-18' });
+  assert.ok(init.instructions.includes(`For a common motion (${MOTION_NAMES.join(', ')}) pass motion; describe the subject and style in the prompt.`));
+});
+
 test('modern server/discover: versions, capabilities, serverInfo and caching', async () => {
   const { result } = await request('server/discover', { _meta: MODERN });
   assert.equal(result.resultType, 'complete');
@@ -345,6 +359,22 @@ test('with a fake host', async t => {
       assert.equal(res.result.isError, false);
     }
     assert.deepEqual(sent.map(p => p.animated), [true, false, false]);
+  });
+
+  await t.test('motion is passed unchanged and enables animated even when false', async () => {
+    const sent = [];
+    handlers = { generate: p => { sent.push(p); return fakeJob(); }, job: () => fakeJob() };
+    for (const motion of MOTION_NAMES) {
+      for (const animated of [undefined, false, true]) {
+        const res = await callTool('generate_image', { prompt: 'A pixel fox', motion, animated, wait_seconds: 0 });
+        assert.equal(res.result.isError, false);
+        assert.equal(sent.at(-1).motion, motion);
+        assert.equal(sent.at(-1).animated, true);
+      }
+    }
+    await callTool('generate_image', { prompt: 'A fox', wait_seconds: 0 });
+    assert.equal(sent.at(-1).motion, undefined);
+    assert.equal(sent.at(-1).animated, false);
   });
 
   await t.test('queued job: QUEUED with its position and how to keep waiting', async () => {

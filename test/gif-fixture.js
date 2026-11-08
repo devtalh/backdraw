@@ -58,3 +58,94 @@ function gif({ width = 4, height = 3, frames = [{}], loop, globalTable = true } 
 }
 
 module.exports = { gif };
+
+// A standard dictionary encoder for pixel fixtures. Unlike imageData above this exercises code
+// growth, repeated strings (including KwKwK), and a full dictionary with or without a clear.
+function encodeLzw(indices, minimum = 2, { clearWhenFull = false, stats = {} } = {}) {
+  const clear = 1 << minimum, end = clear + 1;
+  let dictionary, next, size;
+  const reset = () => {
+    dictionary = new Map(Array.from({ length: clear }, (_, i) => [String(i), i]));
+    next = end + 1; size = minimum + 1;
+  };
+  reset();
+  const bytes = [];
+  let bit = 0;
+  const emit = code => {
+    stats.maxCodeSize = Math.max(stats.maxCodeSize || 0, size);
+    for (let i = 0; i < size; i++, bit++) {
+      const offset = bit >> 3;
+      bytes[offset] = (bytes[offset] || 0) | (((code >> i) & 1) << (bit & 7));
+    }
+    // The decoder adds its dictionary entry after reading this code, one entry behind us.
+    if (next === (1 << size) && size < 12) size++;
+  };
+  emit(clear);
+  if (indices.length) {
+    let word = String(indices[0]);
+    for (let i = 1; i < indices.length; i++) {
+      const symbol = String(indices[i]), joined = `${word},${symbol}`;
+      if (dictionary.has(joined)) { word = joined; continue; }
+      emit(dictionary.get(word));
+      if (next < 4096) dictionary.set(joined, next++);
+      else {
+        stats.full = true;
+        if (clearWhenFull) { emit(clear); reset(); stats.cleared = true; }
+      }
+      word = symbol;
+    }
+    emit(dictionary.get(word));
+  }
+  emit(end);
+  return Buffer.from(bytes);
+}
+
+// Independent flexible fixture builder. Existing gif() output and callers remain unchanged.
+function rasterGif({ width = 4, height = 3, palette = [[0, 0, 0], [255, 255, 255]], frames = [], extensions = [] } = {}) {
+  const colorTable = colors => {
+    const bits = Math.max(1, Math.ceil(Math.log2(colors.length)));
+    const data = Buffer.alloc(3 * (1 << bits));
+    colors.forEach((color, i) => data.set(color, i * 3));
+    return { data, packed: 128 | (bits - 1), minimum: Math.max(2, bits) };
+  };
+  const global = palette && colorTable(palette);
+  const header = Buffer.alloc(13);
+  header.write('GIF89a'); header.writeUInt16LE(width, 6); header.writeUInt16LE(height, 8);
+  header[10] = global ? global.packed : 0;
+  const parts = [header];
+  if (global) parts.push(global.data);
+  parts.push(...extensions);
+  for (const frame of frames) {
+    const { x = 0, y = 0, w = width, h = height, disposal = 1, transparentIndex, delayCs = 0, interlace = false } = frame;
+    const local = frame.palette && colorTable(frame.palette);
+    const gce = Buffer.from([0x21, 0xf9, 4, (disposal << 2) | (transparentIndex === undefined ? 0 : 1),
+      delayCs & 255, delayCs >> 8, transparentIndex ?? 0, 0]);
+    const descriptor = Buffer.alloc(10);
+    descriptor[0] = 0x2c; descriptor.writeUInt16LE(x, 1); descriptor.writeUInt16LE(y, 3);
+    descriptor.writeUInt16LE(w, 5); descriptor.writeUInt16LE(h, 7);
+    descriptor[9] = (local ? local.packed : 0) | (interlace ? 64 : 0);
+    parts.push(gce, descriptor);
+    if (local) parts.push(local.data);
+    let indices = frame.indices || new Uint8Array(w * h);
+    if (interlace) {
+      const ordered = [];
+      for (const [start, step] of [[0, 8], [4, 8], [2, 4], [1, 2]]) {
+        for (let row = start; row < h; row += step) ordered.push(...indices.slice(row * w, (row + 1) * w));
+      }
+      indices = ordered;
+    }
+    const minimum = (local || global || { minimum: 2 }).minimum;
+    const data = frame.compressed || encodeLzw(indices, minimum, frame.encoder);
+    parts.push(Buffer.from([minimum]));
+    for (let offset = 0; offset < data.length; offset += 255) {
+      const block = data.subarray(offset, offset + 255);
+      parts.push(Buffer.from([block.length]), block);
+    }
+    parts.push(Buffer.from([0]));
+  }
+  parts.push(Buffer.from([0x3b]));
+  return Buffer.concat(parts);
+}
+
+module.exports.encodeLzw = encodeLzw;
+module.exports.rasterGif = rasterGif;

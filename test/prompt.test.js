@@ -4,6 +4,7 @@ const { performance } = require('node:perf_hooks');
 const test = require('node:test');
 const { buildText } = require('../lib/prompt');
 const { aspectOption } = require('../lib/aspect');
+const { MOTIONS, MOTION_NAMES, motionText } = require('../lib/motion');
 
 const CHAT_URL = 'https://chatgpt.com/g/g-p-67a1b2c3d4e5f60718293a4b5c6d7e8f-images/c/6812a3b4-1c2d-8000-9e8f-0123456789ab';
 const PROJECT_URL = 'https://chatgpt.com/g/g-p-67a1b2c3d4e5f60718293a4b5c6d7e8f-images/project';
@@ -178,4 +179,73 @@ test('animated: handles 10,000 spaces without backtracking through the gap', () 
 
 test('animated: handles 5,000 space-newline pairs without backtracking through the gap', () => {
   assertAnimatedGapCompletes(' \n'.repeat(5_000));
+});
+
+test('motion presets: the table is immutable and unknown names throw', () => {
+  assert.deepEqual(MOTION_NAMES, ['idle', 'walk', 'run', 'jump', 'wave', 'dance', 'bounce', 'wiggle', 'spin']);
+  assert.equal(Object.isFrozen(MOTIONS), true);
+  assert.equal(Object.isFrozen(MOTION_NAMES), true);
+  for (const preset of Object.values(MOTIONS)) {
+    assert.equal(Object.isFrozen(preset), true);
+    assert.ok(Number.isInteger(preset.frames) && preset.frames >= 6 && preset.frames <= 12);
+    assert.ok(Number.isInteger(preset.frameMs) && preset.frameMs >= 60 && preset.frameMs <= 160);
+  }
+  for (const name of ['fly', 'WALK', 'toString', '__proto__', '', null, undefined]) {
+    assert.throws(() => motionText(name, false), { name: 'RangeError', message: `Unknown motion. Use: ${MOTION_NAMES.join(', ')}.` });
+  }
+});
+
+for (const name of MOTION_NAMES) {
+  for (const hasReferences of [false, true]) {
+    test(`motion ${name}, references=${hasReferences}: three short sentences with matching timing and safe wording`, () => {
+      const references = hasReferences ? [ref('a.png')] : [];
+      const prefix = `${hasReferences ? 'The attached image is the reference.\n\n' : ''}Create an animated GIF: A pixel fox. `;
+      const suffix = " Don't ask follow-up questions; create the GIF directly.";
+      const text = buildText({ prompt: 'A pixel fox.', animated: true, motion: name, references, aspect: wide, transparent: true });
+      assert.ok(text.startsWith(prefix));
+      assert.ok(text.endsWith(suffix));
+      const added = text.slice(prefix.length, -suffix.length);
+      assert.equal(added, motionText(name, hasReferences));
+      assert.ok(added.length <= 330, `${added.length} characters: ${added}`);
+      assert.equal(added.split(/[.!?]/u).filter(s => s.trim()).length, 3);
+      assert.doesNotMatch(added, /make sure|verify|check|really|must|exactly|file|transparen|code|python|script|sheet|grid|download/iu);
+      assert.ok(added.includes(`about ${MOTIONS[name].frames} frames at ${MOTIONS[name].frameMs} ms`));
+      assert.ok(added.includes(MOTIONS[name].poses));
+      assert.ok(added.includes('same size and position') || added.includes('Same character, size and position'));
+      assert.match(added, /centered with margin, still camera\./);
+      assert.match(added, /Plain light solid background, no scene, ground, shadow or text\.$/);
+      if (hasReferences) assert.match(added, /Animate the reference character as drawn, no redesign/);
+      else assert.match(added, /Same character/);
+      for (const phrase of ['still camera', 'seamless loop']) assert.equal(text.split(phrase).length - 1, 1);
+      assert.doesNotMatch(text, /one clear motion|Aspect ratio:|Background:/);
+    });
+  }
+}
+
+test('motion: full walk message, wrapper removal and multiple references', () => {
+  const expected = "Create an animated GIF: A pixel fox. Motion: walk in place, side view: contact, down, passing, up per leg; about 8 frames at 100 ms, seamless loop. Same character, size and position in every frame, centered with margin, still camera. Plain light solid background, no scene, ground, shadow or text. Don't ask follow-up questions; create the GIF directly.";
+  assert.equal(buildText({ prompt: 'A pixel fox.', animated: true, motion: 'walk' }), expected);
+  assert.equal(buildText({ prompt: 'A pixel fox.', motion: 'walk' }), expected);
+  assert.equal(buildText({ prompt: "Create an animated GIF: A pixel fox, one clear motion, still camera, seamless loop. Don't ask follow-up questions; create the GIF directly.", motion: 'walk' }), expected);
+  assert.equal(buildText({ prompt: 'A pixel fox.', motion: 'walk', references: [ref('a.png'), ref('b.png')] }),
+    `The attached images are references.\n\nCreate an animated GIF: A pixel fox. ${motionText('walk', true)} Don't ask follow-up questions; create the GIF directly.`);
+});
+
+test('motion: send_as_is wins over movement, references and animation', () => {
+  const prompt = 'Yes, go ahead.!  ';
+  assert.equal(buildText({ prompt, sendAsIs: true, animated: true, motion: 'jump', references: [ref('a.png')], aspect: wide, transparent: true }), prompt);
+});
+
+test('without motion: representative main outputs stay character-for-character identical', () => {
+  for (const motion of [undefined, null, '']) {
+    for (const prompt of ['A cat.', 'A pixel fox!!!  ', "Create an animated GIF: A pixel fox, one clear motion, still camera, seamless loop. Don't ask follow-up questions; create the GIF directly."]) {
+      const subject = prompt === 'A cat.' ? 'A cat' : 'A pixel fox';
+      const expected = `Create an animated GIF: ${subject}, one clear motion, still camera, seamless loop. Don't ask follow-up questions; create the GIF directly.`;
+      assert.equal(buildText({ prompt, animated: true, motion }), expected);
+      assert.equal(buildText({ prompt, animated: true, motion, references: [ref('a.png')] }), `The attached image is the reference.\n\n${expected}`);
+    }
+    assert.equal(buildText({ prompt: 'A cat.', motion }), "Generate an image from the description below. Don't ask follow-up questions; create the image directly.\n\nA cat.");
+    assert.equal(buildText({ prompt: 'Change the eyes.', motion, references: [ref('a.png')] }), "The attached image is the reference. Follow the instructions below; when they ask for an edit, change only what is asked and keep everything else identical. Don't ask follow-up questions; generate the image directly.\n\nChange the eyes.");
+    assert.equal(buildText({ prompt: 'Make it night.', motion, startUrl: CHAT_URL }), 'Update the image with the changes below and generate the new image directly, without follow-up questions.\n\nMake it night.');
+  }
 });

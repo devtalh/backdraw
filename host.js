@@ -13,6 +13,7 @@ const shared = require('./shared');
 const { stamp, slugify, sniffExt } = require('./lib/naming');
 const { normName, parseProjectUrl, pickProject } = require('./lib/projects');
 const { buildText } = require('./lib/prompt');
+const { MOTION_NAMES } = require('./lib/motion');
 const { aspectOption } = require('./lib/aspect');
 const { pngInfo } = require('./lib/png');
 const { gifInfo } = require('./lib/gif');
@@ -165,6 +166,13 @@ function findJob(id) {
 function createJob(p) {
   // mode "collect" only downloads the images of an existing conversation; nothing is sent.
   const mode = p.mode === 'collect' ? 'collect' : 'generate';
+  const motion = p.motion == null || p.motion === '' ? null : p.motion;
+  if (motion !== null && !MOTION_NAMES.includes(motion)) {
+    throw new shared.BridgeError(`Unknown motion. Use: ${MOTION_NAMES.join(', ')}.`, 'BAD_REQUEST');
+  }
+  if (mode === 'collect' && motion !== null) {
+    throw new shared.BridgeError('motion cannot be used when only fetching images.', 'BAD_REQUEST');
+  }
   const prompt = String(p.prompt || '').trim();
   if (!prompt && mode === 'generate') throw new shared.BridgeError('The prompt is empty.', 'BAD_REQUEST');
   const startUrl = p.startUrl ? String(p.startUrl).trim() : null;
@@ -196,7 +204,7 @@ function createJob(p) {
   const job = {
     id: `img_${crypto.randomBytes(4).toString('hex')}`,
     mode, status: 'queued', step: 'queued', message: 'Waiting for its turn',
-    prompt, sendAsIs: !!p.sendAsIs, aspect, transparent: !!p.transparent, animated: !!p.animated, startUrl, project: startUrl ? null : config.project,
+    prompt, sendAsIs: !!p.sendAsIs, aspect, transparent: !!p.transparent, animated: !!p.animated || motion !== null, motion, startUrl, project: startUrl ? null : config.project,
     // outputDir: legacy clients, the host writes a copy there. copyTo: the MCP server copies itself
     // (it runs in the caller's context, so the copy lands where the caller can see it).
     outputDir: p.outputDir || null, copyTo: p.copyTo || null, copies: [],
@@ -369,10 +377,14 @@ function saveImages(job, images, title) {
     // From ChatGPT's own bytes: a cropped copy is always RGBA, so only the original tells whether
     // ChatGPT sent an alpha channel.
     const info = pngInfo(buf);
+    const pf = img.previewFrames;
+    const previewFrames = preview && gif && !gif.truncated && pf && Number.isInteger(pf.shown) && Number.isInteger(pf.total) &&
+      pf.shown >= 2 && pf.shown <= 16 && pf.total >= pf.shown && pf.total <= 512 &&
+      pf.total === gif.frames && pf.shown === Math.min(16, pf.total) ? { shown: pf.shown, total: pf.total } : null;
     return {
       path: file, width: (crop ? img.crop.width : img.width) || (gif && gif.width) || null,
       height: (crop ? img.crop.height : img.height) || (gif && gif.height) || null,
-      bytes: main.length, preview, full, aspect: job.aspect ? job.aspect.target.label : null,
+      bytes: main.length, preview, previewFrames, full, aspect: job.aspect ? job.aspect.target.label : null,
       png: info && { colorType: info.colorType, alphaChannel: info.alphaChannel, trns: info.trns }, alpha: img.alpha || null,
       gif: gif && { frames: gif.frames, durationMs: gif.durationMs, delaysMs: gif.delaysMs.slice(0, 64), loop: gif.loop,
         transparent: gif.transparent, transparentFrames: gif.transparentFrames, truncated: gif.truncated },
@@ -537,7 +549,7 @@ function publicJob(j) {
     error: j.error, reason: j.reason, createdAt: j.createdAt, startedAt: j.startedAt, finishedAt: j.finishedAt,
     references: j.references || [], reattached: !!j.reattached, editCheck: j.editCheck || null,
     referencesTransparent: j.referencesTransparent || 0, referencesMatted: j.referencesMatted || 0,
-    aspect: j.aspect ? j.aspect.target.label : null, transparent: !!j.transparent, animated: !!j.animated, animatedRetry: !!j.animatedRetry,
+    aspect: j.aspect ? j.aspect.target.label : null, transparent: !!j.transparent, animated: !!j.animated, animatedRetry: !!j.animatedRetry, motion: j.motion || null,
     copyTo: j.copyTo || null, copies: j.copies || [],
     collection: j.collection || null,
     chatImages: j.status === 'needs_reference' || j.status === 'text_reply' ? imagesFromChat(j) : undefined,
@@ -556,7 +568,7 @@ function statusInfo() {
     running: publicJob(jobs.find(j => j.id === runningId)),
     queued: jobs.filter(j => j.status === 'queued').map(j => j.id),
     recent: jobs.slice(-5).reverse().map(j => ({
-      id: j.id, status: j.status, createdAt: j.createdAt, prompt: j.prompt.slice(0, 80), conversationUrl: j.conversationUrl, animated: !!j.animated,
+      id: j.id, status: j.status, createdAt: j.createdAt, prompt: j.prompt.slice(0, 80), conversationUrl: j.conversationUrl, animated: !!j.animated, motion: j.motion || null,
     })),
   };
 }

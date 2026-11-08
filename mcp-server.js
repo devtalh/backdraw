@@ -10,6 +10,7 @@ const protocol = require('./lib/protocol');
 const { FINAL, DEFAULT_WAIT, waitSeconds, resultLines } = require('./lib/results');
 const { MAX_REFS } = require('./lib/limits');
 const { describeCollections } = require('./lib/collections');
+const { MOTION_NAMES } = require('./lib/motion');
 
 const SERVER_INFO = { name: identity.MCP_NAME, title: identity.PRODUCT, version: bridge.VERSION };
 
@@ -18,7 +19,7 @@ const INSTRUCTIONS = `Generates images with the user's own ChatGPT account (alre
 - generate_image and fetch_images return within about ${DEFAULT_WAIT} seconds. Generating usually takes 1-3 minutes, so the first result is often STILL RUNNING or QUEUED with a job id: keep calling job_status(job_id, wait_seconds=${DEFAULT_WAIT}) until it reports a final status. Do not call generate_image again for the same request while its job is still running.
 - To EDIT an image or keep a character consistent, pass the image file(s) in reference_images (e.g. a file saved by an earlier call). A fresh chat with reference_images is the most reliable way to edit; long revision chains via conversation_url make ChatGPT lose track of earlier images.
 - For a specific shape (banner, avatar, phone wallpaper) pass aspect_ratio instead of describing the size in the prompt; for stickers/logos/icons that need a see-through background pass transparent_background=true and read the transparency line in the result.
-- When the user asks for an animation, GIF or moving image, pass animated=true. Use one subject, one clear motion, a still camera and no small text in the scene; aspect_ratio is not applied to the GIF.
+- When the user asks for an animation, GIF or moving image, pass animated=true. Use one subject, one clear motion, a still camera and no small text in the scene; aspect_ratio is not applied to the GIF. For a common motion (${MOTION_NAMES.join(', ')}) pass motion; describe the subject and style in the prompt.
 - When the user mentions one of their Backdraw collections (reference images they saved from the web in Chrome), call list_collections if needed and pass reference_collection to generate_image.
 - The saved file is named after the start of the prompt. When the prompt opens with something other than the subject (e.g. instructions about the reference images), pass filename_hint with a few words naming what the user asked for.
 - Read every result line: NEEDS REFERENCE IMAGE means ChatGPT could not reach the image to edit; CHATGPT REPLIED WITHOUT AN IMAGE shows ChatGPT's own text. Never resend the identical prompt in a loop; follow the next step given in the result.
@@ -58,7 +59,11 @@ const TOOLS = [
         animated: {
           type: 'boolean', default: false,
           description: 'Ask for a short animation (animated GIF). For best results use one subject, one clear motion, a still camera and no small text in the scene. ' +
-            'aspect_ratio is not applied to the GIF. The result reports the frame count and duration.',
+            'aspect_ratio is not applied to the GIF. The result reports the frame count and duration. Pass motion for a preset movement.',
+        },
+        motion: {
+          type: 'string', enum: MOTION_NAMES,
+          description: `Preset GIF movement: ${MOTION_NAMES.join(', ')}. Also enables animated when omitted or false; frame count is only a hint.`,
         },
         aspect_ratio: {
           type: 'string',
@@ -313,7 +318,7 @@ async function generateImage(args, call) {
   const references = bridge.readReferences(args.reference_images);
   const job = await bridge.call('generate', {
     prompt, references, autoReattach: !!args.auto_reattach, sendAsIs: !!args.send_as_is,
-    aspect: args.aspect_ratio, transparent: !!args.transparent_background, animated: !!args.animated,
+    aspect: args.aspect_ratio, transparent: !!args.transparent_background, animated: !!args.animated || !!args.motion, motion: args.motion,
     copyTo: args.output_dir ? path.resolve(String(args.output_dir)) : undefined,
     filenameHint: args.filename_hint ? String(args.filename_hint) : undefined,
     startUrl: args.conversation_url ? String(args.conversation_url) : undefined,
