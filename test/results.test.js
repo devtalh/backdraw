@@ -70,6 +70,15 @@ test('editCheckLines: only collection images attached is never a failed edit', (
   assert.match(editCheckLines(job(withOwn))[0], /EDIT CHECK \(edited: false\)/);
 });
 
+test('editCheckLines: animated jobs report similarity without an edit verdict', () => {
+  const line = pct => `Similarity to ref1.png: ${pct}% (animated GIF: ChatGPT redraws the subject for the animation, so a low score is expected; this is not an edit check).`;
+  const fields = { animated: true, prompt: 'Edit the image: only change the eyes' };
+  assert.deepEqual(editCheckLines(job({ ...fields, editCheck: check(0.9) })), [line(90)]);
+  assert.deepEqual(editCheckLines(job({ ...fields, editCheck: check(0.1) })), [line(10)]);
+  assert.match(editCheckLines(job({ prompt: fields.prompt, editCheck: check(0.9) }))[0], /edited: true/);
+  assert.match(editCheckLines(job({ prompt: fields.prompt, editCheck: check(0.1) }))[0], /EDIT CHECK \(edited: false\)/);
+});
+
 test('editCheckLines: the least similar output decides', () => {
   const [line] = editCheckLines(job({ prompt: 'edit it', editCheck: check(0.97, 0.5, 0.9) }));
   assert.match(line, /EDIT CHECK \(edited: false\): only 50% of the image matches ref2\.png/);
