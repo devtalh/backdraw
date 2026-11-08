@@ -9,7 +9,8 @@ const test = require('node:test');
 const vm = require('node:vm');
 const zlib = require('node:zlib');
 const { crc32 } = require('./png-fixture');
-const { gif } = require('./gif-fixture');
+const { gif, rasterGif } = require('./gif-fixture');
+const { contactLayout } = require('../extension/gifframes');
 const { png, rgbaPng, decodePng } = require('./png-fixture');
 
 const EXT = path.join(__dirname, '..', 'extension');
@@ -32,6 +33,12 @@ function fakeCanvasClass(made) {
       const c = this;
       return {
         fillStyle: '#000000',
+        fillText(text, x, y) { c.ops.push(['fillText', text, x, y, this.font, this.textBaseline]); },
+        createImageData(width, height) { return { width, height, data: new Uint8ClampedArray(width * height * 4) }; },
+        putImageData(image, x, y) {
+          assert.deepEqual([x, y, image.width, image.height], [0, 0, c.width, c.height]);
+          c.data.set(image.data);
+        },
         fillRect(x, y, w, h) { c.ops.push(['fillRect', this.fillStyle, x, y, w, h]); },
         drawImage(src, sx, sy, sw, sh, dx, dy, dw, dh) {
           c.ops.push(['drawImage', sx, sy, sw, sh, dx, dy, dw, dh]);
@@ -45,6 +52,7 @@ function fakeCanvasClass(made) {
         getImageData(x, y, w, h) { assert.deepEqual([x, y, w, h], [0, 0, c.width, c.height]); return { data: c.data }; },
       };
     }
+    rgba(x, y) { return this.data.subarray((y * this.width + x) * 4, (y * this.width + x + 1) * 4); }
     async convertToBlob(opts) { return new Blob([JSON.stringify({ type: opts.type, width: this.width, height: this.height })]); }
   };
 }
@@ -61,6 +69,7 @@ function pixelCanvasClass() {
       this.width = width;
       this.height = height;
       this.data = new Uint8ClampedArray(width * height * 4);
+      this.labels = [];
     }
     getContext() {
       const canvas = this;
@@ -83,6 +92,7 @@ function pixelCanvasClass() {
       };
       return {
         fillStyle: '#000000',
+        fillText(text, x, y) { canvas.labels.push({ text, x, y, font: this.font, baseline: this.textBaseline }); },
         fillRect(x, y, width, height) {
           const rgba = color(this.fillStyle);
           for (let py = y; py < y + height; py++) for (let px = x; px < x + width; px++) write(px, py, rgba);
@@ -183,6 +193,8 @@ test('the service worker loads aspect.js through importScripts and connects', ()
   const { ctx, posted } = loadWorker();
   assert.equal(typeof ctx.BackdrawAspect.cropRect, 'function');
   assert.equal(ctx.BackdrawAspect.TOLERANCE, 0.01);
+  assert.equal(typeof ctx.BackdrawGif.decodeGifFrames, 'function');
+  assert.equal(typeof ctx.BackdrawGif.contactLayout, 'function');
   assert.equal(posted[0].type, 'hello');
 });
 
@@ -195,6 +207,7 @@ test('processImage: no aspect, no transparency: just the size and a white-backed
   assert.equal(out.crop, null);
   assert.equal(out.alpha, null);
   assert.equal(out.animated, false);
+  assert.equal(out.previewFrames, null);
   assert.deepEqual(decode(out.preview), { type: 'image/jpeg', width: 1024, height: 409 });
   assert.equal(made.length, 1);
   assert.deepEqual(made[0].ops, [['fillRect', '#ffffff', 0, 0, 1024, 409], ['drawImage', 0, 0, 1983, 793, 0, 0, 1024, 409]]);
@@ -262,10 +275,21 @@ test('processImage: GIF signatures skip cropping and measure first-frame alpha d
     assert.deepEqual([out.width, out.height, out.crop, { ...out.alpha }, out.animated],
       [12, 8, null, { transparentShare: 1, opaqueShare: 0 }, true]);
     assert.equal(measurements, 1);
-    assert.deepEqual(decode(out.preview), { type: 'image/jpeg', width: 12, height: 8 });
-    assert.equal(made.length, 2);
+    assert.deepEqual(decode(out.preview), { type: 'image/jpeg', width: 1024, height: 738 });
+    assert.deepEqual({ ...out.previewFrames }, { shown: 3, total: 3 });
+    assert.equal(made.length, 3);
     assert.deepEqual(made[0].ops, [['drawImage', 0, 0, 12, 8, 0, 0, 12, 8]]);
-    assert.deepEqual(made[1].ops, [['fillRect', '#ffffff', 0, 0, 12, 8], ['drawImage', 0, 0, 12, 8, 0, 0, 12, 8]]);
+    assert.deepEqual(made[1].ops[0], ['fillRect', '#ffffff', 0, 0, 1024, 738]);
+    assert.deepEqual(made[1].ops.filter(op => op[0] === 'drawImage'), [
+      ['drawImage', 0, 0, 12, 8, 8, 32, 500, 333],
+      ['drawImage', 0, 0, 12, 8, 516, 32, 500, 333],
+      ['drawImage', 0, 0, 12, 8, 8, 397, 500, 333],
+    ]);
+    assert.deepEqual(made[1].ops.filter(op => op[0] === 'fillText'), [
+      ['fillText', '1', 12, 12, 'bold 16px sans-serif', 'top'],
+      ['fillText', '2', 520, 12, 'bold 16px sans-serif', 'top'],
+      ['fillText', '3', 12, 377, 'bold 16px sans-serif', 'top'],
+    ]);
     assert.deepEqual(decoded, [data]);
     assert.equal(bmp.closed, true);
   }
@@ -276,11 +300,110 @@ test('processImage: a large GIF preview keeps the whole first frame within the p
   ctx.nextBitmap = new FakeBitmap(1983, 793, () => 0);
   const out = await ctx.processImage(gif().toString('base64'), 'image/gif', { aspect: { w: 4, h: 1 }, transparent: true });
   assert.equal(out.animated, true);
+  assert.equal(out.previewFrames, null);
   assert.deepEqual(decode(out.preview), { type: 'image/jpeg', width: 1024, height: 409 });
   assert.deepEqual({ ...out.alpha }, { transparentShare: 1, opaqueShare: 0 });
   const previewCanvas = made.find(canvas => canvas.width === 1024 && canvas.height === 409);
   assert.ok(previewCanvas);
   assert.deepEqual(previewCanvas.ops, [['fillRect', '#ffffff', 0, 0, 1024, 409], ['drawImage', 0, 0, 1983, 793, 0, 0, 1024, 409]]);
+});
+
+test('processImage: three colored GIF frames appear in order over a checkerboard, with numbered labels', async () => {
+  const { ctx } = loadPixelWorker();
+  const canvases = [];
+  const Canvas = ctx.OffscreenCanvas;
+  ctx.OffscreenCanvas = class extends Canvas {
+    constructor(w, h) { super(w, h); canvases.push(this); }
+  };
+  const first = new Uint8ClampedArray(4 * 4 * 4);
+  ctx.createImageBitmap = async () => ({ width: 4, height: 4, data: first, close() {} });
+  const image = rasterGif({ width: 4, height: 4,
+    palette: [[255, 0, 0], [0, 255, 0], [0, 0, 255], [0, 0, 0]],
+    frames: [0, 1, 2].map(color => ({ indices: Array.from({ length: 16 }, (_, i) => i < 8 ? 3 : color),
+      transparentIndex: 3, disposal: 2 })) });
+  const encoded = [];
+  const convert = Canvas.prototype.convertToBlob;
+  ctx.OffscreenCanvas.prototype.convertToBlob = function(opts) { encoded.push({ ...opts }); return convert.call(this, opts); };
+  const out = await ctx.processImage(image.toString('base64'), 'image/gif', {});
+  const preview = decodePng(Buffer.from(out.preview, 'base64'));
+  const l = contactLayout(4, 4, 3);
+  assert.deepEqual([preview.width, preview.height], [l.width, l.height]);
+  assert.deepEqual({ ...out.previewFrames }, { shown: 3, total: 3 });
+  assert.deepEqual(encoded, [{ type: 'image/jpeg', quality: 0.86 }]);
+  const px = (x, y) => [...preview.data.subarray((y * preview.width + x) * 4, (y * preview.width + x + 1) * 4)];
+  const sheet = canvases.find(c => c.labels.length === 3);
+  assert.ok(sheet);
+  for (let i = 0; i < 3; i++) {
+    const x = l.gap + (i % l.columns) * (l.cellWidth + l.gap);
+    const y = l.gap + Math.floor(i / l.columns) * (l.cellHeight + l.gap);
+    const top = y + l.label;
+    const color = [0, 0, 0, 255]; color[i] = 255;
+    assert.deepEqual(px(x + Math.floor(l.imageWidth / 2), top + Math.floor(l.imageHeight * 0.75)), color);
+    assert.deepEqual(px(x + 2, top + 2), [226, 226, 226, 255]);
+    assert.deepEqual(px(x + 18, top + 2), [255, 255, 255, 255]);
+    assert.deepEqual(sheet.labels[i], { text: String(i + 1), x: x + 4, y: y + 4,
+      font: 'bold 16px sans-serif', baseline: 'top' });
+  }
+  assert.deepEqual(px(0, 0), [255, 255, 255, 255]);
+});
+
+test('processImage: sampled GIF labels use the real frame numbers and metadata', async () => {
+  const { ctx, made } = loadWorker();
+  ctx.nextBitmap = new FakeBitmap(1, 1, () => 255);
+  const data = rasterGif({ width: 1, height: 1, frames: Array(40).fill({}) }).toString('base64');
+  const out = await ctx.processImage(data, 'image/gif', {});
+  assert.deepEqual({ ...out.previewFrames }, { shown: 16, total: 40 });
+  const l = contactLayout(1, 1, 16);
+  assert.deepEqual(decode(out.preview), { type: 'image/jpeg', width: l.width, height: l.height });
+  const labels = made.flatMap(c => c.ops.filter(op => op[0] === 'fillText').map(op => op[1]));
+  assert.deepEqual(labels, Array.from({ length: 16 }, (_, i) => String(Math.round(i * 39 / 15) + 1)));
+});
+
+test('processImage: corrupt GIF decoding and contact sheet export failures fall back to the first frame', async () => {
+  for (const failure of ['truncated', 'decode', 'export']) {
+    const { ctx, posted } = loadWorker();
+    const bmp = ctx.nextBitmap = new FakeBitmap(12, 8, () => 0);
+    const image = gif({ width: 12, height: 8, frames: [{}, {}, {}] });
+    if (failure === 'decode') ctx.BackdrawGif.decodeGifFrames = () => { throw new Error('LZW failed'); };
+    const Canvas = ctx.OffscreenCanvas;
+    ctx.OffscreenCanvas = class extends Canvas {
+      async convertToBlob(opts) {
+        if (this.width > 12) throw new Error('Contact sheet export failed');
+        return super.convertToBlob(opts);
+      }
+    };
+    const out = await ctx.processImage((failure === 'truncated' ? image.subarray(0, -1) : image).toString('base64'), 'image/gif', {});
+    assert.deepEqual(decode(out.preview), { type: 'image/jpeg', width: 12, height: 8 });
+    assert.equal(out.previewFrames, null);
+    assert.deepEqual({ ...out.alpha }, { transparentShare: 1, opaqueShare: 0 });
+    assert.ok(warned(posted, 'contact sheet failed'));
+    assert.equal(bmp.closed, true);
+  }
+});
+
+test('processImage: single-frame GIF and collect mode retain the first frame preview', async () => {
+  for (const [frames, job] of [[1, {}], [3, { mode: 'collect' }]]) {
+    const { ctx, posted } = loadWorker();
+    ctx.nextBitmap = new FakeBitmap(12, 8, () => 0);
+    if (job.mode === 'collect') ctx.BackdrawGif.decodeGifFrames = () => { throw new Error('collect must not decode frames'); };
+    const out = await ctx.processImage(gif({ width: 12, height: 8, frames: Array(frames).fill({}) }).toString('base64'), 'image/gif', job);
+    assert.deepEqual(decode(out.preview), { type: 'image/jpeg', width: 12, height: 8 });
+    assert.equal(out.previewFrames, null);
+    assert.ok(!warned(posted, 'contact sheet failed'));
+  }
+});
+
+test('processImage: PNG, JPEG and WebP keep their static preview behavior', async () => {
+  for (const mime of ['image/png', 'image/jpeg', 'image/webp']) {
+    const { ctx } = loadWorker();
+    ctx.nextBitmap = new FakeBitmap(80, 40, () => 255);
+    ctx.BackdrawGif.decodeGifFrames = () => { throw new Error('static image must not decode frames'); };
+    const out = await ctx.processImage(btoa('static'), mime, {});
+    assert.deepEqual(decode(out.preview), { type: 'image/jpeg', width: 80, height: 40 });
+    assert.equal(out.previewFrames, null);
+    assert.equal(out.alpha, null);
+    assert.equal(out.animated, false);
+  }
 });
 
 test('processImage: MIME and embedded text cannot turn PNG bytes into a GIF', async () => {
@@ -334,7 +457,8 @@ test('downloadImages: each image carries ChatGPT\'s bytes, the crop and the alph
   const images = await download(ctx, BANNER, [{ src: 'https://chatgpt.com/files/a.png', w: 1983, h: 793 }]);
   assert.equal(images.length, 1);
   const [im] = images;
-  assert.deepEqual(Object.keys(im).sort(), ['alpha', 'animated', 'crop', 'data', 'height', 'mime', 'preview', 'width']);
+  assert.deepEqual(Object.keys(im).sort(), ['alpha', 'animated', 'crop', 'data', 'height', 'mime', 'preview', 'previewFrames', 'width']);
+  assert.equal(im.previewFrames, null);
   assert.equal(im.animated, false);
   assert.equal(Buffer.from(im.data, 'base64').toString(), 'bytes of https://chatgpt.com/files/a.png');
   assert.deepEqual([im.mime, im.width, im.height], ['image/png', 1983, 793]);
@@ -383,9 +507,11 @@ test('downloadImages: GIF bytes and animated metadata reach the host, even if de
       ['image/png', 12, 8, null, decodeFails ? null : { transparentShare: 1, opaqueShare: 0 }, true]);
     if (decodeFails) {
       assert.equal(im.preview, null);
+      assert.equal(im.previewFrames, null);
       assert.ok(warned(posted, 'image processing failed'));
     } else {
-      assert.deepEqual(decode(im.preview), { type: 'image/jpeg', width: 12, height: 8 });
+      assert.deepEqual(decode(im.preview), { type: 'image/jpeg', width: 1024, height: 738 });
+      assert.deepEqual(im.previewFrames, { shown: 3, total: 3 });
     }
   }
 });

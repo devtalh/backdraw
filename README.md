@@ -413,10 +413,12 @@ whether its background is transparent or opaque, using the share of transparent 
 in the first frame. If measurement fails, the GIF's transparent color flag is reported instead.
 ChatGPT's animated GIFs do not reliably keep a transparent background. An opaque result warns you
 if `transparent_background: true`; with a transparent reference, it only reports this as information.
-The attached preview shows only the first frame. For example, a result line can be:
+The attached preview shows all frames in a numbered grid (16 evenly spaced frames if there are
+more than 16), with transparent areas over a checkerboard. If decoding fails, only the first
+frame is shown. Fetching existing images keeps the first-frame preview. For example, a result line can be:
 
 ```
-Animated GIF: 12 frames, 1200 ms per loop, loops forever; the attached preview shows only the first frame.
+Animated GIF: 12 frames, 1200 ms per loop, loops forever; the attached preview shows all 12 frames in order, numbered from 1. Check that the subject keeps the same look, size and position from frame to frame.
 ```
 
 ### Motion presets

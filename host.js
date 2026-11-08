@@ -377,10 +377,14 @@ function saveImages(job, images, title) {
     // From ChatGPT's own bytes: a cropped copy is always RGBA, so only the original tells whether
     // ChatGPT sent an alpha channel.
     const info = pngInfo(buf);
+    const pf = img.previewFrames;
+    const previewFrames = preview && gif && !gif.truncated && pf && Number.isInteger(pf.shown) && Number.isInteger(pf.total) &&
+      pf.shown >= 2 && pf.shown <= 16 && pf.total >= pf.shown && pf.total <= 512 &&
+      pf.total === gif.frames && pf.shown === Math.min(16, pf.total) ? { shown: pf.shown, total: pf.total } : null;
     return {
       path: file, width: (crop ? img.crop.width : img.width) || (gif && gif.width) || null,
       height: (crop ? img.crop.height : img.height) || (gif && gif.height) || null,
-      bytes: main.length, preview, full, aspect: job.aspect ? job.aspect.target.label : null,
+      bytes: main.length, preview, previewFrames, full, aspect: job.aspect ? job.aspect.target.label : null,
       png: info && { colorType: info.colorType, alphaChannel: info.alphaChannel, trns: info.trns }, alpha: img.alpha || null,
       gif: gif && { frames: gif.frames, durationMs: gif.durationMs, delaysMs: gif.delaysMs.slice(0, 64), loop: gif.loop,
         transparent: gif.transparent, transparentFrames: gif.transparentFrames, truncated: gif.truncated },

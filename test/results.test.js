@@ -8,6 +8,29 @@ const job = fields => ({ id: 'img_1a2b3c4d', prompt: 'a void mage', images: [], 
 const check = (...similarities) => ({ results: similarities.map((similarity, i) => ({ similarity, against: `ref${i + 1}.png` })) });
 const text = j => resultLines(j).join('\n');
 
+test('imageLines: all, sampled and first-frame GIF preview text and motion hints', () => {
+  const { MOTIONS } = require('../lib/motion');
+  const inspect = ' Check that the subject keeps the same look, size and position from frame to frame.';
+  for (const [frames, previewFrames, expected] of [
+    [9, { shown: 9, total: 9 }, 'all 9 frames in order, numbered from 1.' + inspect],
+    [40, { shown: 16, total: 40 }, '16 of 40 frames, evenly spaced and numbered by frame.' + inspect],
+    [9, null, 'only the first frame.'],
+  ]) {
+    const im = { path: 'a.gif', gif: { frames, durationMs: 900, loop: 0 }, previewFrames };
+    const expectedLine = `Animated GIF: ${frames} frames, 900 ms per loop, loops forever; the attached preview shows ${expected}`;
+    assert.equal(imageLines(job({}), im)[1], expectedLine);
+    for (const [motion, hint] of Object.entries(MOTIONS)) {
+      const lines = imageLines(job({ motion }), im);
+      assert.equal(lines[1], expectedLine);
+      assert.equal(lines[2], `Requested motion: ${motion} (hint: about ${hint.frames} frames at ${hint.frameMs} ms; ChatGPT may use a different count).`);
+    }
+    for (const motion of [undefined, null, 'fly', 'toString', '__proto__']) {
+      assert.ok(!imageLines(job({ motion }), im).some(line => line.startsWith('Requested motion:')));
+    }
+  }
+  assert.ok(!imageLines(job({ motion: 'walk' }), { path: 'a.png' }).some(line => line.startsWith('Requested motion:')));
+});
+
 test('final statuses and the default wait', () => {
   assert.deepEqual([...FINAL].sort(), ['cancelled', 'failed', 'needs_reference', 'succeeded', 'text_reply']);
   assert.equal(DEFAULT_WAIT, 45);

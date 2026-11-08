@@ -119,7 +119,7 @@ test('manifest: right-click menu, every site for images and the toast, English d
 test('every script the pages and the worker load exists', () => {
   const [, list] = read('background.js').match(/importScripts\(([^)]*)\)/);
   const scripts = list.match(/'[^']+'/g).map(s => s.slice(1, -1));
-  assert.deepEqual(scripts, ['aspect.js', 'i18n.js', 'menus.js', 'collections.js']);
+  assert.deepEqual(scripts, ['aspect.js', 'gifframes.js', 'i18n.js', 'menus.js', 'collections.js']);
   for (const f of ['popup.html', 'collection.html']) for (const [, src] of read(f).matchAll(/<script src="([^"]+)"/g)) scripts.push(src);
   for (const s of scripts) assert.ok(fs.existsSync(path.join(EXT, s)), s);
   assert.ok(read('popup.html').indexOf('i18n.js') < read('popup.html').indexOf('popup.js'));

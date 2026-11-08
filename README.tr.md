@@ -423,10 +423,12 @@ Her GIF sonucunda zeminin şeffaf mı opak mı olduğu, ilk karede ölçülen sa
 raporlanır. Ölçüm yapılamazsa GIF'in transparent color bayrağı kullanılır.
 ChatGPT'nin animasyonlu GIF'leri şeffaf arka planı güvenilir biçimde korumaz. Opak sonuçta
 `transparent_background: true` için uyarı verilir; şeffaf referans kullanıldıysa yalnızca bilgi verilir.
-Eklenen önizleme yalnızca ilk kareyi gösterir. Örnek bir sonuç satırı:
+Eklenen önizleme tüm kareleri numaralı bir ızgarada gösterir (16'dan fazlaysa eşit aralıklı 16 kare);
+şeffaf alanlar dama deseni üzerinde görünür. Çözme başarısız olursa yalnız ilk kare gösterilir.
+Mevcut görselleri getirme işleminde ilk kare önizlemesi korunur. Örnek bir sonuç satırı:
 
 ```
-Animated GIF: 12 frames, 1200 ms per loop, loops forever; the attached preview shows only the first frame.
+Animated GIF: 12 frames, 1200 ms per loop, loops forever; the attached preview shows all 12 frames in order, numbered from 1. Check that the subject keeps the same look, size and position from frame to frame.
 ```
 
 ### Hazır hareketler

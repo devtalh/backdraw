@@ -2,7 +2,7 @@
 // tab it opens in the background: the tab is never activated and no window is ever focused.
 // Only prompts, reference images, progress, chat links and image bytes cross the bridge; cookies,
 // tokens and passwords are never read.
-importScripts('aspect.js', 'i18n.js', 'menus.js', 'collections.js'); // crop maths; right-click reference collections
+importScripts('aspect.js', 'gifframes.js', 'i18n.js', 'menus.js', 'collections.js'); // image helpers; right-click reference collections
 
 const { cropRect } = self.BackdrawAspect;
 const HOST = 'io.github.muhammedtalha04.backdraw'; // identity.js HOST_NAME
@@ -862,15 +862,47 @@ async function makePreview(bmp, r, checker) {
   return blobToB64(await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.86 }));
 }
 
+async function makeContactPreview(decoded) {
+  const layout = self.BackdrawGif.contactLayout(decoded.width, decoded.height, decoded.frames.length);
+  const canvas = new OffscreenCanvas(layout.width, layout.height);
+  const g = canvas.getContext('2d');
+  g.fillStyle = '#ffffff';
+  g.fillRect(0, 0, canvas.width, canvas.height);
+  // Reuse one full-size canvas for all sampled frames.
+  const source = new OffscreenCanvas(decoded.width, decoded.height);
+  const pixels = source.getContext('2d');
+  const image = pixels.createImageData(decoded.width, decoded.height);
+  for (let i = 0; i < decoded.frames.length; i++) {
+    const frame = decoded.frames[i];
+    const x = layout.gap + (i % layout.columns) * (layout.cellWidth + layout.gap);
+    const y = layout.gap + Math.floor(i / layout.columns) * (layout.cellHeight + layout.gap);
+    const top = y + layout.label;
+    const w = layout.imageWidth, h = layout.imageHeight;
+    const left = x + Math.floor((layout.cellWidth - w) / 2);
+    g.fillStyle = '#e2e2e2';
+    for (let cy = 0; cy < h; cy += 16) for (let cx = (cy / 16) % 2 ? 16 : 0; cx < w; cx += 32) {
+      g.fillRect(left + cx, top + cy, Math.min(16, w - cx), Math.min(16, h - cy));
+    }
+    image.data.set(frame.rgba);
+    pixels.putImageData(image, 0, 0);
+    g.drawImage(source, 0, 0, decoded.width, decoded.height, left, top, w, h);
+    g.fillStyle = '#000000';
+    g.font = 'bold 16px sans-serif';
+    g.textBaseline = 'top';
+    g.fillText(String(frame.index + 1), x + 4, y + 4);
+  }
+  return blobToB64(await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.86 }));
+}
+
 // Decodes a downloaded image once. With an aspect ratio it is cropped from the centre (exported as
 // PNG, which keeps any alpha); a transparent job measures the alpha of the (cropped) image; the
-// preview shows the cropped version. GIFs keep every frame; alpha and preview use the first.
+// preview shows the cropped version. GIFs keep every frame; alpha still uses only the first.
 async function processImage(b64, mime, job) {
   const bytes = b64ToBytes(b64);
   const animated = isGifBytes(bytes);
   const bmp = await createImageBitmap(new Blob([bytes], { type: mime || 'image/png' }));
   try {
-    const out = { width: bmp.width, height: bmp.height, crop: null, alpha: null, preview: null, animated };
+    const out = { width: bmp.width, height: bmp.height, crop: null, alpha: null, preview: null, previewFrames: null, animated };
     const rect = !animated && job.aspect ? cropRect(bmp.width, bmp.height, job.aspect.w, job.aspect.h) : null;
     const r = rect || { x: 0, y: 0, width: bmp.width, height: bmp.height };
     let canvas = null;
@@ -879,7 +911,16 @@ async function processImage(b64, mime, job) {
       out.crop = { data: await blobToB64(await canvas.convertToBlob({ type: 'image/png' })), mime: 'image/png', width: rect.width, height: rect.height };
     }
     if (animated || job.transparent) out.alpha = measureAlpha(canvas || drawPart(bmp, r));
-    out.preview = await makePreview(bmp, r, !animated && !!out.alpha && out.alpha.transparentShare > 0)
+    if (animated && job.mode !== 'collect') {
+      try {
+        const decoded = self.BackdrawGif.decodeGifFrames(bytes, { maxFrames: 16 });
+        if (decoded.total >= 2) {
+          out.preview = await makeContactPreview(decoded);
+          out.previewFrames = { shown: decoded.frames.length, total: decoded.total };
+        }
+      } catch (e) { log('warn', 'contact sheet failed', String(e)); }
+    }
+    if (!out.preview) out.preview = await makePreview(bmp, r, !animated && !!out.alpha && out.alpha.transparentShare > 0)
       .catch(e => { log('warn', 'preview failed', String(e)); return null; });
     return out;
   } finally {
@@ -913,7 +954,7 @@ async function downloadImages(ctx, images) {
     } catch (e) { log('warn', 'image processing failed', String(e)); }
     out.push({
       data: r.data, mime: r.mime, width: meta.width || im.w || null, height: meta.height || im.h || null, preview: meta.preview || null,
-      crop: meta.crop || null, alpha: meta.alpha || null, animated: !!meta.animated,
+      crop: meta.crop || null, alpha: meta.alpha || null, animated: !!meta.animated, previewFrames: meta.previewFrames || null,
     });
   }
   if (!out.length) throw fail('download_failed', `The image was generated but could not be downloaded. Open the chat: ${ctx.conversationUrl}`);
