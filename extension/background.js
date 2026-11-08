@@ -152,10 +152,14 @@ async function createBackgroundTab(url) {
   return tab;
 }
 
-async function openWorker(url) {
+async function openWorker(url, ctx = null) {
   clearTimeout(closeTimer);
   let tab = null;
   if (workerTabId !== null) tab = await chrome.tabs.get(workerTabId).catch(() => null);
+  if (ctx) {
+    const currentUrl = tab && isChatUrl(tab.url) ? cleanUrl(tab.url) : null;
+    ctx.staleUrl = currentUrl && currentUrl !== cleanUrl(url) ? currentUrl : null;
+  }
   if (tab) {
     await chrome.tabs.update(tab.id, { url });
   } else {
@@ -230,6 +234,7 @@ async function probeTab(ctx, baseline) {
 
 const isChatUrl = url => /\/c\/[0-9a-f-]{8,}/i.test(url || '');
 const cleanUrl = url => { const u = new URL(url); return u.origin + u.pathname; };
+const isStaleUrl = (ctx, url) => !!ctx.staleUrl && isChatUrl(url) && cleanUrl(url) === ctx.staleUrl;
 const comparable = s => String(s || '').replace(/[^\p{L}\p{N}]+/gu, '').toLowerCase();
 
 // Is the newest user message in the chat the one we sent? (Same opening text.)
@@ -261,7 +266,7 @@ async function runJob(job) {
     return;
   }
   const ctx = current = {
-    job, cancelled: false, tabId: null, conversationUrl: null, lastText: '', sent: false, keepTab: false,
+    job, cancelled: false, tabId: null, conversationUrl: null, staleUrl: null, lastText: '', sent: false, keepTab: false,
     step: 'starting', message: '', deadline: Date.now() + (job.timeoutSec || 600) * 1000, refs: job.refs || [],
     startedAt: Date.now(), referencesTransparent: 0, referencesMatted: 0,
   };
@@ -276,7 +281,7 @@ async function runJob(job) {
     if (ctx.refs.some(r => !r.complete)) throw fail('ref_transfer', 'A reference image did not arrive completely; please try again.');
     if (job.mode !== 'collect' && ctx.refs.length) ctx.refs = await prepareReferences(ctx);
     ctx.progress('opening', 'Opening ChatGPT in a background tab');
-    ctx.tabId = await openWorker(job.startUrl);
+    ctx.tabId = await openWorker(job.startUrl, ctx);
     const ready = await waitUntilReady(ctx);
     let outcome;
     let attached = ctx.refs;
@@ -432,14 +437,15 @@ async function waitUntilReady(ctx) {
         await sleep(2000);
         continue;
       }
+      const stale = isStaleUrl(ctx, st.url);
       const onTarget = !projectId || st.url.includes(projectId);
-      if (st.composer && onTarget) {
+      if (!stale && st.composer && onTarget) {
         if (!readySince) readySince = Date.now();
         else if (Date.now() - readySince >= 1500) return st;
       } else {
         readySince = 0;
       }
-      if (st.composer && !onTarget) {
+      if (!stale && st.composer && !onTarget) {
         if (!offTargetSince) offTargetSince = Date.now();
         else if (Date.now() - offTargetSince > 6000) {
           throw fail('project_unavailable', `ChatGPT did not open the project (it went to ${st.url}). Was it deleted or renamed? Select it again with select_project.`);
@@ -545,6 +551,7 @@ async function sendPrompt(ctx, baseline, withFiles) {
       check(ctx);
       const st = await probeTab(ctx, baseline);
       if (!st) continue;
+      if (isStaleUrl(ctx, st.url)) continue;
       const moved = isChatUrl(st.url) && new URL(st.url).pathname !== startPath;
       if (st.userTurns > 0 || st.stop || moved) {
         ctx.sent = true;
@@ -596,6 +603,7 @@ async function waitForReply(ctx, baseline) {
     }
     const st = await probeTab(ctx, baseline);
     if (!st) { await sleep(1500); continue; }
+    if (isStaleUrl(ctx, st.url)) { await sleep(1500); continue; }
     if (st.challenge || st.login) {
       await humanGate(ctx, st);
       await reloadWorker(ctx);
