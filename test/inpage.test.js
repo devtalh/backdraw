@@ -18,13 +18,61 @@ function loadPage() {
 }
 
 function element(text, options = {}) {
-  return { className: '', childElementCount: 0, closest() { return null; }, textContent: text, innerText: text, ...options };
+  return { className: '', childElementCount: 0, closest() { return null; }, matches() { return false; }, textContent: text, innerText: text, ...options };
 }
 
 test('inpage loads without accessing the DOM or location', () => {
   const page = loadPage();
   assert.equal(page.version, '2.0.0');
   assert.equal(typeof page.replyText, 'function');
+  assert.equal(typeof page.busyIn, 'function');
+});
+
+test('busyIn: file names and non-status text are not busy', () => {
+  const { busyIn } = loadPage();
+  assert.equal(busyIn([
+    element('koi_flat_logo_preview.png'),
+    element('Open preview of koi_flat_logo.svg'),
+    element('Download file'),
+  ]), false);
+  for (const text of [
+    'thinking_notes.txt',
+    'sketch.svg',
+    'eskiz_taslak.png',
+    'önizleme.gif',
+    'My sketchbook',
+    'Previewing options',
+  ]) assert.equal(busyIn([element(text)]), false, text);
+});
+
+test('busyIn: English and Turkish progress labels remain busy', () => {
+  const { busyIn } = loadPage();
+  for (const text of [
+    'Creating image',
+    'Generating image…',
+    'Image is being generated',
+    'Thinking',
+    'Thinking…',
+    'Sketching it out',
+    'Setting the scene',
+    'Finishing up',
+    'Preview',
+    'Düşünüyor',
+    'Eskiz çiziliyor',
+    'Eskiz çiziliyor %41',
+    'Son rötuşlar yapılıyor',
+    'Görsel oluşturuluyor',
+    'Önizleme',
+    'önizleme',
+  ]) assert.equal(busyIn([element(text)]), true, text);
+});
+
+test('busyIn: markdown, child and length guards remain while busy selectors win', () => {
+  const { busyIn } = loadPage();
+  assert.equal(busyIn([element('Thinking', { closest: selector => selector.includes('markdown') ? {} : null })]), false);
+  assert.equal(busyIn([element('Thinking', { childElementCount: 1 })]), false);
+  assert.equal(busyIn([element('Thinking '.padEnd(80, 'x'))]), false);
+  assert.equal(busyIn([element('Not a text status', { matches: selector => selector.includes('[aria-busy="true"]') })]), true);
 });
 
 test('replyText: a feedback survey alone leaves no assistant text', () => {
