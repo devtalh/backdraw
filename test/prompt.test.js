@@ -96,6 +96,50 @@ test('animated: references precede the GIF prompt with one blank line', () => {
   assert.doesNotMatch(several, /Keep the background transparent/);
 });
 
+const ANIMATED_STARFISH = "Create an animated GIF: this starfish wiggling, one clear motion, still camera, seamless loop. Don't ask follow-up questions; create the GIF directly.";
+
+for (const [name, prompt] of [
+  ['the complete wrapper', ANIMATED_STARFISH],
+  ['the leading instruction only', 'Create an animated GIF: this starfish wiggling.'],
+  ['the trailing instruction only', "this starfish wiggling, one clear motion, still camera, seamless loop. Don't ask follow-up questions; create the GIF directly."],
+  ['a case-insensitive leading instruction', 'create an animated gif: this starfish wiggling.'],
+  ['a trailing instruction without final punctuation', "this starfish wiggling, one clear motion, still camera, seamless loop. Don't ask follow-up questions; create the GIF directly"],
+  ['a trailing instruction ending in an exclamation mark', "this starfish wiggling, one clear motion, still camera, seamless loop. Don't ask follow-up questions; create the GIF directly!"],
+  ['a trailing instruction with extra whitespace', "this starfish wiggling, one clear motion, still camera, seamless loop. Don't ask follow-up questions; create the GIF directly.   \n"],
+]) {
+  test(`animated: deduplicates ${name}`, () => {
+    assert.equal(buildText({ prompt, animated: true }), ANIMATED_STARFISH);
+  });
+}
+
+test('animated: deduplicates the wrapper after the reference lead', () => {
+  assert.equal(
+    buildText({ prompt: ANIMATED_STARFISH, animated: true, references: [ref('a.png')] }),
+    `The attached image is the reference.\n\n${ANIMATED_STARFISH}`,
+  );
+});
+
+test('animated: leaves wrapper wording in the middle of the prompt', () => {
+  assert.equal(
+    buildText({ prompt: 'a fox, one clear motion, still camera, seamless loop, then a bird', animated: true }),
+    "Create an animated GIF: a fox, one clear motion, still camera, seamless loop, then a bird, one clear motion, still camera, seamless loop. Don't ask follow-up questions; create the GIF directly.",
+  );
+});
+
+test('animated: deduplicates a trailing instruction with a curly apostrophe', () => {
+  assert.equal(
+    buildText({ prompt: 'a fox, one clear motion, still camera, seamless loop. Don’t ask follow-up questions; create the GIF directly.', animated: true }),
+    "Create an animated GIF: a fox, one clear motion, still camera, seamless loop. Don't ask follow-up questions; create the GIF directly.",
+  );
+});
+
+test('animated: preserves the existing output when the prompt only contains the lead', () => {
+  assert.equal(
+    buildText({ prompt: 'Create an animated GIF:', animated: true }),
+    "Create an animated GIF: Create an animated GIF:, one clear motion, still camera, seamless loop. Don't ask follow-up questions; create the GIF directly.",
+  );
+});
+
 test('animated: send_as_is takes priority; false keeps the original still-image prompt', () => {
   const prompt = 'A fox waves.!  ';
   assert.equal(buildText({ prompt, animated: true, sendAsIs: true, references: [ref('a.png')], aspect: wide, transparent: true }), prompt);
