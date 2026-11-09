@@ -44,6 +44,17 @@ function nativePixelSprite(edge) {
   return { width: edge, height: edge, rgba, colors };
 }
 
+function outlinedSprite(edge) {
+  const outline = [24, 56, 96, 255], fill = [232, 88, 32, 255];
+  const rgba = new Uint8Array(edge * edge * 4);
+  const left = Math.floor((edge - 12) / 2), top = Math.floor((edge - 9) / 2);
+  for (let y = top; y < top + 9; y++) for (let x = left; x < left + 12; x++) {
+    const boundary = x === left || x === left + 11 || y === top || y === top + 8;
+    rgba.set(boundary ? outline : fill, (y * edge + x) * 4);
+  }
+  return { width: edge, height: edge, rgba, outline, fill };
+}
+
 const render = (source, motion, size = 144) => renderLightMotion(source, { motion, size, background: 'transparent' });
 const difference = (a, b) => a.reduce((sum, value, i) => sum + Math.abs(value - b[i]), 0);
 const colorKey = (rgba, i) => rgba[i] * 65536 + rgba[i + 1] * 256 + rgba[i + 2];
@@ -73,6 +84,38 @@ function assertSourcePixels(frames, width, height, source, m = null) {
       }
     }
   }
+}
+
+function assertClosedOutline(frame, width, height, fill) {
+  const visited = new Uint8Array(width * height), queue = new Int32Array(width * height);
+  let head = 0, tail = 0;
+  const enqueue = index => {
+    if (!visited[index] && frame[index * 4 + 3] === 0) {
+      visited[index] = 1;
+      queue[tail++] = index;
+    }
+  };
+  enqueue(0); enqueue(width - 1); enqueue((height - 1) * width); enqueue(width * height - 1);
+  while (head < tail) {
+    const index = queue[head++], x = index % width, y = Math.floor(index / width);
+    for (const neighbor of [x ? index - 1 : -1, x + 1 < width ? index + 1 : -1,
+      y ? index - width : -1, y + 1 < height ? index + width : -1]) {
+      if (neighbor < 0) continue;
+      const i = neighbor * 4;
+      assert.ok(frame[i] !== fill[0] || frame[i + 1] !== fill[1] ||
+        frame[i + 2] !== fill[2] || frame[i + 3] !== fill[3], 'exterior transparency reached the fill');
+      enqueue(neighbor);
+    }
+  }
+}
+
+function opaqueRow(frame, width, top) {
+  let row = top ? Infinity : -1;
+  for (let i = 3; i < frame.length; i += 4) if (frame[i]) {
+    const y = Math.floor(i / 4 / width);
+    row = top ? Math.min(row, y) : Math.max(row, y);
+  }
+  return row;
 }
 
 test('motion names, exact defaults, periodic endpoints and moving poses', () => {
@@ -141,6 +184,38 @@ test('idle and squash keep their bottom opaque row anchored', () => {
   }
 });
 
+test('nearest transforms preserve closed one-pixel outlines for every frame', () => {
+  for (const edge of [24, 48]) {
+    const source = outlinedSprite(edge);
+    assert.equal(detectPixelArt(source.rgba, source.width, source.height).pixelArt, false);
+    for (const motion of ['squash', 'idle', 'sway', 'bounce']) {
+      const result = render(source, motion, 384);
+      assert.equal(result.sampling, 'nearest');
+      assert.ok(result.scaleFactor >= 2);
+      for (const frame of result.frames) assertClosedOutline(frame, result.width, result.height, source.fill);
+    }
+  }
+});
+
+test('nearest transforms move in output-pixel steps instead of source-pixel jumps', () => {
+  const source = outlinedSprite(24);
+  for (const motion of ['idle', 'squash']) {
+    const result = render(source, motion, 384), m = result.scaleFactor;
+    assert.ok(m >= 2);
+    const rows = result.frames.map(frame => opaqueRow(frame, result.width, true));
+    const steps = rows.map((row, i) => Math.abs(row - rows[(i + 1) % rows.length]));
+    assert.ok(steps.every(step => step < m));
+    assert.ok(steps.some(step => step % m !== 0));
+    assert.ok(new Set(rows).size >= 4);
+  }
+  const bounce = render(source, 'bounce', 384), m = bounce.scaleFactor;
+  assert.ok(m >= 2);
+  const bottoms = bounce.frames.map(frame => opaqueRow(frame, bounce.width, false));
+  const steps = bottoms.map((row, i) => Math.abs(row - bottoms[(i + 1) % bottoms.length]));
+  assert.ok(new Set(bottoms.map(row => row % m)).size > 1);
+  assert.ok(steps.some(step => step % m !== 0));
+});
+
 test('rotation stays around bottom center, with only the specified wiggle translation', () => {
   // A narrow marker at the pivot tracks the actual renderer, including its inverse transform.
   const source = { width: 60, height: 80, rgba: new Uint8Array(60 * 80 * 4) };
@@ -166,24 +241,24 @@ test('rotation stays around bottom center, with only the specified wiggle transl
     assert.equal(result.sampling, 'nearest'); assert.equal(result.scaleFactor, scale);
     const markers = result.frames.map(frame => {
       let sx = 0, sy = 0, n = 0;
-      // The blue channel weights the marker centroid before converting it back to source-pixel coordinates.
+      // The blue channel weights the marker centroid in output-pixel coordinates.
       for (let i = 0; i < frame.length; i += 4) if (frame[i + 2] && frame[i + 3]) {
         const weight = frame[i + 2] * frame[i + 3];
         sx += ((i / 4) % result.width) * weight; sy += Math.floor(i / 4 / result.width) * weight; n += weight;
       }
       assert.ok(n > 0);
-      return { x: (sx / n + 0.5) / scale - 0.5, y: (sy / n + 0.5) / scale - 0.5 };
+      return { x: sx / n + 0.5, y: sy / n + 0.5 };
     });
     poses.forEach((p, i) => {
       // The marker is centered one source pixel above the bottom pivot.
       const expected = forward(30, 68, p);
-      assert.ok(Math.abs(markers[i].x - (expected.x - left - 0.5)) <= 1);
-      assert.ok(Math.abs(markers[i].y - (expected.y - top - 0.5)) <= 1);
+      assert.ok(Math.abs(markers[i].x - (expected.x - left) * scale) <= 1);
+      assert.ok(Math.abs(markers[i].y - (expected.y - top) * scale) <= 1);
       // Recover the pivot from that marker, removing wiggle's intentional dx translation.
-      const pivotX = markers[i].x - Math.sin(p.angle * Math.PI / 180) * p.sy - p.dx * 30;
-      const pivotY = markers[i].y + Math.cos(p.angle * Math.PI / 180) * p.sy;
-      assert.ok(Math.abs(pivotX - (30 - left - 0.5)) <= 1);
-      assert.ok(Math.abs(pivotY - (69 - top - 0.5)) <= 1);
+      const pivotX = markers[i].x - (Math.sin(p.angle * Math.PI / 180) * p.sy + p.dx * 30) * scale;
+      const pivotY = markers[i].y + Math.cos(p.angle * Math.PI / 180) * p.sy * scale;
+      assert.ok(Math.abs(pivotX - (30 - left) * scale) <= 1);
+      assert.ok(Math.abs(pivotY - (69 - top) * scale) <= 1);
     });
   }
 });
@@ -214,7 +289,10 @@ test('native-resolution pixel sprites use nearest sampling for all motions witho
       assert.equal(result.sampling, 'nearest');
       assert.equal(result.pixelArt, false); assert.equal(result.pixelScale, null);
       assertWholeEnlargement(result, 384, 2);
-      assertSourcePixels(result.frames, result.width, result.height, source, result.scaleFactor);
+      assertSourcePixels(result.frames, result.width, result.height, source);
+      if (motion !== 'bounce') {
+        assertSourcePixels([result.frames[0]], result.width, result.height, source, result.scaleFactor);
+      }
     }
     const result = render(source, 'idle', 384);
     const gif = encodeGif(result.frames, { width: result.width, height: result.height, delayMs: result.delaysMs });
@@ -238,7 +316,7 @@ test('pixel grid detection retains scale and shifted origins, rejecting smooth o
   }
 });
 
-test('pixel art uses only source colors and uniform integer enlargement blocks', () => {
+test('pixel art uses only source colors and identity frames use uniform integer enlargement blocks', () => {
   const source = pixelSprite(2, 3), colors = new Set(source.colors.map(color => color.join(',')));
   // Idle's natural canvas is 16 x 17, so a 384 limit gives a 22x enlargement.
   const result = render(source, 'idle', 384), m = 22;
@@ -246,12 +324,14 @@ test('pixel art uses only source colors and uniform integer enlargement blocks',
   assert.equal(result.sampling, 'pixel-grid'); assert.equal(result.scaleFactor, null);
   assert.ok(Math.max(result.width, result.height) <= 384);
   assert.equal(result.width % m, 0); assert.equal(result.height % m, 0);
-  for (const frame of result.frames) {
+  for (const [frameIndex, frame] of result.frames.entries()) {
     for (let y = 0; y < result.height; y++) for (let x = 0; x < result.width; x++) {
       const i = (y * result.width + x) * 4;
       if (frame[i + 3]) assert.ok(colors.has(Array.from(frame.subarray(i, i + 4)).join(',')));
-      const block = (Math.floor(y / m) * m * result.width + Math.floor(x / m) * m) * 4;
-      for (let c = 0; c < 4; c++) assert.equal(frame[i + c], frame[block + c]);
+      if (frameIndex === 0) {
+        const block = (Math.floor(y / m) * m * result.width + Math.floor(x / m) * m) * 4;
+        for (let c = 0; c < 4; c++) assert.equal(frame[i + c], frame[block + c]);
+      }
     }
   }
   // A larger native grid exercises the nearest-neighbor reduction branch too.
@@ -296,7 +376,7 @@ test('long flat rectangle edges and a single square are not evidence of pixel ar
   }
 });
 
-test('all pixel art motions preserve colors, clear margins and whole native-pixel blocks', () => {
+test('all pixel art motions preserve colors and clear margins, with blocks on identity frames', () => {
   const source = pixelSprite(), colors = new Set(source.colors.map(color => color.join(',')));
   for (const motion of LIGHT_MOTIONS) {
     const spec = motionSpec(motion), corners = [];
@@ -312,12 +392,14 @@ test('all pixel art motions preserve colors, clear margins and whole native-pixe
     const m = Math.max(1, Math.floor(96 / Math.max(w, h))), result = render(source, motion, 96);
     assert.equal(result.pixelArt, true); assert.equal(result.sampling, 'pixel-grid');
     assert.equal(result.scaleFactor, null); assert.deepEqual([result.width, result.height], [w * m, h * m]);
-    for (const frame of result.frames) for (let y = 0; y < result.height; y++) for (let x = 0; x < result.width; x++) {
+    for (const [frameIndex, frame] of result.frames.entries()) for (let y = 0; y < result.height; y++) for (let x = 0; x < result.width; x++) {
       const i = (y * result.width + x) * 4;
       if (frame[i + 3]) assert.ok(colors.has(Array.from(frame.subarray(i, i + 4)).join(',')));
       if (!x || !y || x === result.width - 1 || y === result.height - 1) assert.equal(frame[i + 3], 0);
-      const block = (Math.floor(y / m) * m * result.width + Math.floor(x / m) * m) * 4;
-      for (let c = 0; c < 4; c++) assert.equal(frame[i + c], frame[block + c]);
+      if (motion !== 'bounce' && frameIndex === 0) {
+        const block = (Math.floor(y / m) * m * result.width + Math.floor(x / m) * m) * 4;
+        for (let c = 0; c < 4; c++) assert.equal(frame[i + c], frame[block + c]);
+      }
     }
   }
 });
