@@ -5,6 +5,57 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-11-09
+
+### Added
+
+- **Animated GIFs (`animated`) on `generate_image`.** Backdraw asks ChatGPT for a GIF with one
+  clear motion, a still camera and a seamless loop, then asks once more in the same chat if it gets
+  a still image. If no multi-frame GIF arrives, the result says `⚠ NOT ANIMATED`. GIFs are saved
+  unchanged, never cropped, whether or not `animated` was requested. Results report the frame
+  count, loop duration and loop behavior, and say when `aspect_ratio` was not applied. (#9)
+- **Motion presets (`motion`).** `idle`, `walk`, `run`, `jump`, `wave`, `dance`, `bounce`, `wiggle`
+  and `spin` enable `animated` and add a short movement and framing request to the prompt. Unknown
+  values are rejected. (#14)
+- **All-frames GIF preview.** Multi-frame GIFs from a generation attach one numbered contact sheet
+  with every frame, or 16 evenly spaced frames when there are more than 16. Transparent areas use
+  a checkerboard; if decoding fails, the preview falls back to the first frame. (#14)
+- **Gallery GIF details and playback.** Cards show a `PNG`, `JPG`, `WEBP` or `GIF` format label,
+  plus GIF frame count and duration such as `GIF · 12f · 1.4s`. GIFs up to 640 KB play on hover,
+  while respecting reduced-motion preferences. (#10)
+- **Local `animate_image` tool.** It turns one PNG into a seamless, infinitely looping GIF in
+  seconds without ChatGPT or Chrome. Motions are `bounce`, `idle`, `sway`, `nod`, `squash` and
+  `wiggle`, with a transparent or white background. Pixel art and small sources are enlarged by a
+  whole factor with nearest-neighbor sampling, so they stay sharp; the result reports the sampling
+  used (`pixel-grid`, `nearest` or `smooth`). The GIF is saved beside the unchanged source as
+  `<name>_<motion>.gif`, attaches a numbered contact sheet and appears in the gallery while the
+  bridge runs. Input is limited to a 20 MB PNG and 16.7 million pixels; `size` is 64-1024 (default
+  384), and the output GIF is limited to 8 MB. (#15)
+
+### Changed
+
+- **GIF background reporting.** Every GIF result says whether the background is transparent,
+  including its share, or opaque. (#12)
+- **Transparent reference uploads.** Transparent PNG/WebP references are uploaded as a copy over
+  white with alpha kept, so ChatGPT no longer sees the subject on black; the file on disk is
+  unchanged. (#12)
+- **Edit checks account for transparency and animation.** Images are compared aspect-preserved on
+  white, while animated jobs get a neutral similarity line instead of an edit verdict. (#12)
+- **Applied aspect ratios only.** Gallery cards show the aspect-ratio pill only when the ratio was
+  applied, and never for GIFs. (#10)
+
+### Fixed
+
+- A file card whose name contains a status word, such as `koi_logo_preview.png`, no longer keeps
+  the reply busy until timeout. (#11)
+- GIFs from transparent references with hidden black pixels came back on a black background, and
+  the edit check read the transparent areas as black and could score 0%. (#12)
+- An animated prompt that already starts or ends with the GIF wrapper no longer sends it twice. (#13)
+- `job_status` no longer shows the previous job's chat link while a reused tab is loading. (#13)
+- ChatGPT's "Is this conversation helpful so far?" survey is no longer reported as its reply. (#9)
+- A second message in the same job, from the animated re-ask or `auto_reattach`, is checked against
+  the chat it started from before it counts as sent. (#9)
+
 ## [2.1.3] - 2026-10-26
 
 ### Changed
