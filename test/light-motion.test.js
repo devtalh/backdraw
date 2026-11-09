@@ -203,6 +203,35 @@ test('pixel art uses only source colors and uniform integer enlargement blocks',
   }
 });
 
+test('hidden RGB noise below alpha 16 does not break a four-pixel grid', () => {
+  const source = pixelSprite();
+  let seed = 0x12345678;
+  for (let i = 0; i < source.rgba.length; i += 4) if (!source.rgba[i + 3]) {
+    for (let c = 0; c < 4; c++) {
+      seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+      source.rgba[i + c] = seed & (c === 3 ? 15 : 255);
+    }
+  }
+  assert.deepEqual(detectPixelArt(source.rgba, source.width, source.height),
+    { pixelArt: true, scale: 4, offsetX: 0, offsetY: 0 });
+});
+
+test('long flat rectangle edges and a single square are not evidence of pixel art', () => {
+  const width = 1000, height = 1000;
+  for (const rectangles of [
+    [[200, 200, 400, 400]],
+    [[200, 200, 400, 400], [600, 600, 800, 800]],
+  ]) {
+    const rgba = new Uint8Array(width * height * 4);
+    for (const [left, top, right, bottom] of rectangles) {
+      for (let y = top; y < bottom; y++) for (let x = left; x < right; x++) {
+        rgba.set([200, 30, 10, 255], (y * width + x) * 4);
+      }
+    }
+    assert.deepEqual(detectPixelArt(rgba, width, height), { pixelArt: false, scale: 1, offsetX: 0, offsetY: 0 });
+  }
+});
+
 test('all pixel art motions preserve colors, clear margins and whole native-pixel blocks', () => {
   const source = pixelSprite(), colors = new Set(source.colors.map(color => color.join(',')));
   for (const motion of LIGHT_MOTIONS) {

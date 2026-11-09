@@ -1,6 +1,7 @@
 'use strict';
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { performance } = require('node:perf_hooks');
 const { encodeGif } = require('../lib/gif-writer');
 const { gifInfo } = require('../lib/gif');
 const { decodeGifFrames } = require('../extension/gifframes');
@@ -171,6 +172,16 @@ test('five-color pixel art is lossless, including opaque black distinct from tra
   assert.equal(out.frames[0].indices.includes(0), false);
 });
 
+test('the exact-color path is lossless at both palette capacity limits', () => {
+  for (const transparent of [true, false]) {
+    const width = transparent ? 255 : 256, frame = new Uint8Array(width * 4);
+    for (let i = 0; i < width; i++) frame.set([i, i % 4, 0, 255], i * 4);
+    const result = encodeGif([frame], { width, height: 1, transparent, delayMs: 20 });
+    assert.equal(result.palette, 256);
+    verify(result, [frame]);
+  }
+});
+
 test('weighted median cut gives bounded gradient error, nearest-color mapping and deterministic bytes', () => {
   const width = 64, height = 64;
   const frame = Uint8Array.from({ length: width * height * 4 }, (_, i) => {
@@ -191,18 +202,69 @@ test('weighted median cut gives bounded gradient error, nearest-color mapping an
 });
 
 test('median-cut box means are weighted by pixel counts across the input', () => {
-  // Every red value has nine blue=0 samples and one blue=1 sample. At 256 boxes,
-  // each weighted mean has blue=0; an unweighted mean would round blue to 1.
+  // Every red value has nine blue=0 samples and one blue=1 sample. These 512
+  // exact colors occupy 64 six-bit buckets. Their real weighted blue mean is 0,
+  // not 1 (unweighted), and their red mean is 4*bucket+2, not the bucket origin.
   const frame = new Uint8Array(256 * 10 * 4);
   for (let r = 0; r < 256; r++) for (let n = 0; n < 10; n++) {
     frame.set([r, 0, n === 9 ? 1 : 0, 255], (r * 10 + n) * 4);
   }
   const result = encodeGif([frame], { width: 2560, height: 1, delayMs: 20, transparent: false });
   const out = inspect(result.data);
-  assert.deepEqual(out.palette, Array.from({ length: 256 }, (_, r) => [r, 0, 0]));
+  assert.deepEqual(out.palette, Array.from({ length: 64 }, (_, r) => [r * 4 + 2, 0, 0]));
+  const expected = frame.slice();
+  for (let i = 0; i < expected.length; i += 4) expected[i] = Math.floor(expected[i] / 4) * 4 + 2;
+  for (let i = 2; i < expected.length; i += 4) expected[i] = 0;
+  verify(result, [expected]);
+});
+
+test('median-cut means weight distinct buckets rather than giving every bucket one vote', () => {
+  // 512 buckets, ten pixels per pair: nine at blue=0, one at blue=4.
+  // Each of 256 boxes must round its weighted blue mean to 0, not 2.
+  const frame = new Uint8Array(256 * 10 * 4), palette = [];
+  for (let n = 0; n < 256; n++) {
+    const r = Math.floor(n / 16) * 16, g = (n % 16) * 16;
+    palette.push([r, g, 0]);
+    for (let p = 0; p < 10; p++) frame.set([r, g, p === 9 ? 4 : 0, 255], (n * 10 + p) * 4);
+  }
+  const result = encodeGif([frame], { width: 2560, height: 1, delayMs: 20, transparent: false });
+  const out = inspect(result.data);
+  const sorted = colors => colors.map(rgb => rgb.join(',')).sort();
+  assert.deepEqual(sorted(out.palette), sorted(palette));
   const expected = frame.slice();
   for (let i = 2; i < expected.length; i += 4) expected[i] = 0;
   verify(result, [expected]);
+});
+
+test('1024px sixteen-frame seeded RGB noise has bounded encoding time and deterministic decodable bytes', t => {
+  const width = 1024, height = 1024;
+  let seed = 0x123456;
+  // Full-period LCG modulo 2^24 visits every RGB exactly once over these 16 frames.
+  const frames = Array.from({ length: 16 }, () => {
+    const frame = new Uint8Array(width * height * 4);
+    for (let i = 0; i < frame.length; i += 4) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) & 0xffffff;
+      frame[i] = seed >>> 16; frame[i + 1] = (seed >>> 8) & 255; frame[i + 2] = seed & 255; frame[i + 3] = 255;
+    }
+    return frame;
+  });
+  const options = { width, height, delayMs: 50, transparent: false };
+  const heapBefore = process.memoryUsage().heapUsed, start = performance.now();
+  const result = encodeGif(frames, options);
+  const elapsed = performance.now() - start, heapDelta = process.memoryUsage().heapUsed - heapBefore;
+  t.diagnostic(`1024px x 16 noise: ${Math.round(elapsed)} ms encoding; heapUsed delta ${(heapDelta / 1024 / 1024).toFixed(2)} MiB`);
+  assert.ok(elapsed < 30000, `encoding took ${elapsed} ms (limit 30000 ms)`);
+  const repeatStart = performance.now();
+  assert.deepEqual(encodeGif(frames, options).data, result.data);
+  assert.ok(performance.now() - repeatStart < 30000, 'repeat encoding below 30000 ms');
+  const independent = inspect(result.data), decoded = decodeGifFrames(result.data, { maxFrames: 2 });
+  assert.equal(independent.frames.length, 16); assert.equal(decoded.total, 16);
+  assert.equal(decoded.width, width); assert.equal(decoded.height, height);
+  assert.deepEqual(decoded.frames.map(frame => frame.index), [0, 15]);
+  for (const frame of decoded.frames) {
+    assert.deepEqual(Uint8Array.from(frame.rgba), independent.frames[frame.index].rgba);
+    for (let i = 3; i < frame.rgba.length; i += 4) assert.equal(frame.rgba[i], 255);
+  }
 });
 
 test('transparent matte RGB and soft red edges produce no white or pink halo', () => {
