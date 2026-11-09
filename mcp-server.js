@@ -13,6 +13,8 @@ const { describeCollections } = require('./lib/collections');
 const { MOTION_NAMES } = require('./lib/motion');
 const { LIGHT_MOTIONS } = require('./lib/light-motion');
 const { animateImage, animationResultLines } = require('./lib/animate');
+const { SHEET_MOTIONS } = require('./lib/sprite-sheet');
+const { animateSheet, sheetResultLines } = require('./lib/sprite-export');
 const gallery = require('./lib/gallery');
 
 const SERVER_INFO = { name: identity.MCP_NAME, title: identity.PRODUCT, version: bridge.VERSION };
@@ -24,6 +26,7 @@ const INSTRUCTIONS = `Generates images with the user's own ChatGPT account (alre
 - For a specific shape (banner, avatar, phone wallpaper) pass aspect_ratio instead of describing the size in the prompt; for stickers/logos/icons that need a see-through background pass transparent_background=true and read the transparency line in the result.
 - When the user asks for an animation, GIF or moving image, pass animated=true. Use one subject, one clear motion, a still camera and no small text in the scene; aspect_ratio is not applied to the GIF. For a common motion (${MOTION_NAMES.join(', ')}) pass motion; describe the subject and style in the prompt.
 - For local motion of the same character in a seamless sticker/emoji loop, use animate_image on a transparent PNG; for changing poses (walking, waving), use generate_image with motion.
+- For a sprite sheet PNG with all poses in one image, use animate_sheet: the character stays unchanged and frames are aligned; tell the user about quality warnings.
 - When the user mentions one of their Backdraw collections (reference images they saved from the web in Chrome), call list_collections if needed and pass reference_collection to generate_image.
 - The saved file is named after the start of the prompt. When the prompt opens with something other than the subject (e.g. instructions about the reference images), pass filename_hint with a few words naming what the user asked for.
 - Read every result line: NEEDS REFERENCE IMAGE means ChatGPT could not reach the image to edit; CHATGPT REPLIED WITHOUT AN IMAGE shows ChatGPT's own text. Never resend the identical prompt in a loop; follow the next step given in the result.
@@ -203,6 +206,32 @@ const TOOLS = [
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   {
+    name: 'animate_sheet',
+    title: 'Animate a sprite sheet locally (no ChatGPT)',
+    description: 'Split a local sprite sheet PNG with all poses in one image into aligned frames and a transparent looping GIF, atlas PNG, manifest, frame PNGs and contact preview in a new sibling folder. ' +
+      'No ChatGPT or Chrome; takes seconds. The source PNG is never changed. Frames share a ground line and horizontal center of mass; jump adds an upward arc. ' +
+      'Report quality warnings to the user. For light motion from one image, use animate_image.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        image_path: { type: 'string', description: "Local PNG; relative paths are resolved from the server's current folder." },
+        motion: { type: 'string', enum: SHEET_MOTIONS },
+        columns: { type: 'integer', minimum: 1, maximum: 16, description: 'Provide with rows; 2-64 cells in total.' },
+        rows: { type: 'integer', minimum: 1, maximum: 16, description: 'Provide with columns.' },
+        frames: { type: 'integer', minimum: 2, maximum: 64, description: 'Expected frame count; must agree with columns times rows when both are given. Omit all for automatic extraction.' },
+        fps: { type: 'number', minimum: 1, maximum: 50, description: 'Uniform frame timing, overriding the motion profile. Cannot be combined with durations_ms.' },
+        durations_ms: { type: 'array', items: { type: 'integer', minimum: 20, maximum: 5000 }, minItems: 2, maxItems: 64, description: 'One duration per found frame; overrides the motion profile.' },
+        jump_height: { type: 'integer', minimum: 0, maximum: 2048, description: 'Jump only: arc peak in source pixels; default half the median frame height.' },
+        air_frames: { type: 'array', items: { type: 'integer', minimum: 1, maximum: 64 }, minItems: 2, maxItems: 2, description: 'Jump only: inclusive [first, last] airborne frames, 1-based.' },
+        size: { type: 'integer', minimum: 64, maximum: 1024, description: 'GIF long-edge limit; default source scale. Whole-number nearest-neighbor enlargement or premultiplied-alpha area downscaling. Atlas and PNG frames stay at source scale.' },
+        background: { type: 'string', enum: ['transparent', 'white'], default: 'transparent', description: 'Always saves a transparent GIF; white also saves a white GIF and lists that one in the gallery.' },
+        include_preview: { type: 'boolean', default: true },
+      },
+      required: ['image_path', 'motion'], additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
     name: 'animate_image',
     title: 'Animate a PNG locally (no ChatGPT)',
     description: 'Move a local PNG (e.g. a sticker saved with transparent_background=true) with code and save a new looping GIF beside it as <name>_<motion>.gif, without overwriting files. ' +
@@ -328,11 +357,38 @@ async function callTool(name, args, call) {
       case 'select_project': return await selectProject(args);
       case 'list_collections': return await listCollections();
       case 'animate_image': return await animateLocalImage(args);
+      case 'animate_sheet': return await animateSheetTool(args);
       default: return textResult(`Unknown tool: ${name}`, true);
     }
   } catch (e) {
     return textResult(e.code === 'NOT_RUNNING' ? `BRIDGE NOT RUNNING — ${e.message}` : `ERROR — ${e.message}`, true);
   }
+}
+
+async function animateSheetTool(args) {
+  if (typeof args.image_path !== 'string' || !args.image_path.trim()) return textResult('ERROR \u2014 image_path is required.', true);
+  const { motion, columns, rows, frames, fps, durations_ms, jump_height, air_frames, size, background, include_preview } = args;
+  const result = animateSheet({ imagePath: path.resolve(args.image_path), motion, columns, rows, frames, fps,
+    durations_ms, jump_height, air_frames, size, background, include_preview });
+  const preview = result.sheet.png.toString('base64');
+  let added;
+  try {
+    const job = await bridge.call('add_local_animation', {
+      path: result.path, sourcePath: result.sourcePath, motion: result.motion, background: result.background, kind: 'sheet',
+      ...(result.sheet.png.length < gallery.MAX_PREVIEW_BYTES ? { preview } : {}),
+      previewFrames: { shown: result.sheet.shown, total: result.frames },
+    }, 10000);
+    added = { added: true, jobId: job.id };
+  } catch (e) {
+    const reason = e.code === 'NOT_RUNNING'
+      ? 'the bridge is not running (Chrome is closed or the extension is off), so it is not in the gallery'
+      : e.code === 'BAD_REQUEST' && /Unknown method|Unknown motion/.test(e.message)
+        ? 'the installed bridge is older than this server; update Backdraw' : e.message;
+    added = { added: false, reason };
+  }
+  const content = [{ type: 'text', text: sheetResultLines(result, added).join('\n') }];
+  if (args.include_preview !== false) content.push({ type: 'image', data: preview, mimeType: 'image/png' });
+  return { content, isError: false };
 }
 
 async function animateLocalImage(args) {

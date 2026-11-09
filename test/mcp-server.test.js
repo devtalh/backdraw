@@ -15,6 +15,8 @@ const { MAX_REFS } = require('../lib/limits');
 const { LEGACY_VERSIONS } = require('../lib/protocol');
 const { MOTION_NAMES } = require('../lib/motion');
 const { LIGHT_MOTIONS } = require('../lib/light-motion');
+const { SHEET_MOTIONS } = require('../lib/sprite-sheet');
+const { grid } = require('./sprite-fixture');
 const { encodePng, decodePng } = require('../lib/png-codec');
 const { gifInfo } = require('../lib/gif');
 
@@ -24,7 +26,7 @@ const PIPE = process.platform === 'win32' ? `\\\\.\\pipe\\${TAG}` : path.join(os
 const VERSION_KEY = 'io.modelcontextprotocol/protocolVersion';
 const SERVER_INFO_KEY = 'io.modelcontextprotocol/serverInfo';
 const MODERN = { [VERSION_KEY]: '2026-07-28', 'io.modelcontextprotocol/clientCapabilities': {} };
-const TOOL_NAMES = ['generate_image', 'job_status', 'cancel_job', 'fetch_images', 'list_projects', 'select_project', 'list_collections', 'animate_image'];
+const TOOL_NAMES = ['generate_image', 'job_status', 'cancel_job', 'fetch_images', 'list_projects', 'select_project', 'list_collections', 'animate_sheet', 'animate_image'];
 
 function animationFixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'backdraw-mcp-animate-'));
@@ -422,8 +424,82 @@ test('animate_image rejects missing paths, non-PNG bytes, unknown motion and inv
   }
 });
 
+function sheetFixture(t, columns = 3, rows = 2) {
+  const imagePath = animationFixture(t), source = grid(columns, rows);
+  fs.writeFileSync(imagePath, encodePng(source.width, source.height, source.rgba));
+  return imagePath;
+}
+
+test('animate_sheet exposes the full local sprite schema and quality instructions', async () => {
+  const { result } = await request('tools/list'), tool = result.tools.find(t => t.name === 'animate_sheet');
+  const { properties: p, required, additionalProperties } = tool.inputSchema;
+  assert.deepEqual(required, ['image_path', 'motion']); assert.equal(additionalProperties, false);
+  assert.deepEqual(p.motion.enum, SHEET_MOTIONS);
+  for (const key of ['columns', 'rows']) assert.deepEqual([p[key].type, p[key].minimum, p[key].maximum], ['integer', 1, 16]);
+  assert.deepEqual([p.frames.minimum, p.frames.maximum], [2, 64]);
+  assert.deepEqual([p.fps.type, p.fps.minimum, p.fps.maximum], ['number', 1, 50]);
+  assert.deepEqual(p.durations_ms.items, { type: 'integer', minimum: 20, maximum: 5000 });
+  assert.deepEqual([p.air_frames.minItems, p.air_frames.maxItems], [2, 2]);
+  assert.deepEqual([p.jump_height.minimum, p.jump_height.maximum], [0, 2048]);
+  assert.deepEqual([p.size.minimum, p.size.maximum, p.size.default], [64, 1024, undefined]);
+  assert.equal(p.background.default, 'transparent'); assert.equal(p.include_preview.default, true);
+  assert.deepEqual(tool.annotations, result.tools.find(t => t.name === 'animate_image').annotations);
+  assert.match(tool.description, /source PNG is never changed/);
+  assert.match((await request('initialize', {})).result.instructions, /sprite sheet PNG.*animate_sheet.*quality warnings/);
+});
+
+test('animate_sheet saves a folder and transparent GIF without a bridge, resolving relative paths', async t => {
+  const imagePath = sheetFixture(t), hash = crypto.createHash('sha256').update(fs.readFileSync(imagePath)).digest('hex');
+  const res = await callTool('animate_sheet', { image_path: path.relative(process.cwd(), imagePath), motion: 'walk', columns: 3, rows: 2 });
+  assert.equal(res.result.isError, false, textOf(res)); assert.match(textOf(res), /^SUCCESS/);
+  const folder = path.join(path.dirname(imagePath), 'starfish_walk_sheet');
+  assert.ok(textOf(res).includes(`Saved folder: ${folder}`));
+  assert.equal(gifInfo(fs.readFileSync(path.join(folder, 'starfish_walk.gif'))).frames, 6);
+  for (const file of ['atlas.png', 'manifest.json', 'contact.png', 'frames/frame_01.png']) assert.ok(fs.existsSync(path.join(folder, file)));
+  assert.match(textOf(res), /Gallery: not added.*the bridge is not running/);
+  assert.ok(decodePng(Buffer.from(res.result.content[1].data, 'base64')).width > 0);
+  const second = await callTool('animate_sheet', { image_path: imagePath, motion: 'walk', include_preview: false });
+  assert.equal(second.result.content.length, 1); assert.ok(fs.existsSync(`${folder}_2`));
+  assert.equal(crypto.createHash('sha256').update(fs.readFileSync(imagePath)).digest('hex'), hash);
+});
+
+test('animate_sheet rejects missing paths, non-PNGs, unknown motions and partial grid options', async t => {
+  const imagePath = sheetFixture(t), badPath = path.join(path.dirname(imagePath), 'bad.jpg');
+  fs.writeFileSync(badPath, 'not PNG');
+  for (const [args, pattern] of [[{}, /image_path is required/], [{ image_path: ' ' }, /image_path is required/],
+    [{ image_path: badPath, motion: 'walk' }, /not a PNG/], [{ image_path: imagePath, motion: 'bounce' }, /Unknown motion/],
+    [{ image_path: imagePath, motion: 'walk', columns: 3 }, /columns and rows must be provided together/]]) {
+    const res = await callTool('animate_sheet', args);
+    assert.equal(res.result.isError, true); assert.match(textOf(res), /^ERROR/); assert.match(textOf(res), pattern);
+  }
+});
+
 test('with a fake host', async t => {
   await startHost();
+
+  await t.test('animate_sheet registers kind, absolute white GIF path and exact preview frame counts; old hosts advise updating', async t => {
+    const imagePath = sheetFixture(t, 17, 1);
+    let sent;
+    handlers = { add_local_animation: p => { sent = p; return { id: JOB_ID }; } }; hostCalls.length = 0;
+    const res = await callTool('animate_sheet', { image_path: imagePath, motion: 'walk', background: 'white' }, MODERN);
+    assert.equal(res.result.isError, false, textOf(res)); assert.equal(res.result.resultType, 'complete');
+    assert.deepEqual(hostCalls, ['add_local_animation']); assert.equal(sent.kind, 'sheet');
+    assert.equal(sent.sourcePath, imagePath); assert.ok(path.isAbsolute(sent.path));
+    assert.match(sent.path, /starfish_walk_white.gif$/); assert.ok(fs.existsSync(sent.path));
+    assert.deepEqual(sent.previewFrames, { shown: 16, total: 17 });
+    assert.equal(sent.motion, 'walk'); assert.equal(sent.background, 'white');
+    assert.ok(decodePng(Buffer.from(sent.preview, 'base64')).width > 0); assert.equal(sent.preview, res.result.content[1].data);
+    assert.match(textOf(res), /Gallery: added/);
+    for (const [message, pattern] of [['Unknown motion. Use: bounce, idle.', /the installed bridge is older than this server; update Backdraw/],
+      ['Unknown method "add_local_animation".', /the installed bridge is older than this server; update Backdraw/],
+      ['disk unavailable', /disk unavailable/]]) {
+      handlers = { add_local_animation: () => { throw new Error(message); } };
+      const failed = await callTool('animate_sheet', { image_path: imagePath, motion: 'walk' });
+      assert.equal(failed.result.isError, false); assert.match(textOf(failed), pattern); assert.match(textOf(failed), /The GIF is saved/);
+      const folder = textOf(failed).split('\n').find(l => l.startsWith('Saved folder: ')).slice(14);
+      assert.ok(fs.existsSync(path.join(folder, 'starfish_walk.gif')));
+    }
+  });
 
   await t.test('animate_image registers absolute paths and a PNG sheet; gallery errors never lose the GIF', async t => {
     const imagePath = animationFixture(t);
