@@ -3,6 +3,7 @@
 // with nothing listening, then against a fake host. Chrome and the installed bridge are never involved.
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
@@ -13,6 +14,9 @@ const { aspectOption } = require('../lib/aspect');
 const { MAX_REFS } = require('../lib/limits');
 const { LEGACY_VERSIONS } = require('../lib/protocol');
 const { MOTION_NAMES } = require('../lib/motion');
+const { LIGHT_MOTIONS } = require('../lib/light-motion');
+const { encodePng, decodePng } = require('../lib/png-codec');
+const { gifInfo } = require('../lib/gif');
 
 const SERVER = path.join(__dirname, '..', 'mcp-server.js');
 const TAG = `backdraw-test-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
@@ -20,7 +24,17 @@ const PIPE = process.platform === 'win32' ? `\\\\.\\pipe\\${TAG}` : path.join(os
 const VERSION_KEY = 'io.modelcontextprotocol/protocolVersion';
 const SERVER_INFO_KEY = 'io.modelcontextprotocol/serverInfo';
 const MODERN = { [VERSION_KEY]: '2026-07-28', 'io.modelcontextprotocol/clientCapabilities': {} };
-const TOOL_NAMES = ['generate_image', 'job_status', 'cancel_job', 'fetch_images', 'list_projects', 'select_project', 'list_collections'];
+const TOOL_NAMES = ['generate_image', 'job_status', 'cancel_job', 'fetch_images', 'list_projects', 'select_project', 'list_collections', 'animate_image'];
+
+function animationFixture(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'backdraw-mcp-animate-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const imagePath = path.join(dir, 'starfish.png');
+  const rgba = new Uint8Array(16 * 16 * 4);
+  for (let y = 4; y < 12; y++) for (let x = 4; x < 12; x++) rgba.set([240, 40, 80, 255], (y * 16 + x) * 4);
+  fs.writeFileSync(imagePath, encodePng(16, 16, rgba));
+  return imagePath;
+}
 
 // ---------------------------------------------------------------- MCP server child process
 
@@ -348,8 +362,97 @@ test('generate_image with nothing listening: BRIDGE NOT RUNNING error result', a
   assert.match(textOf(res), /^BRIDGE NOT RUNNING/);
 });
 
+test('animate_image schema and instructions expose local motion separately from ChatGPT motion', async () => {
+  const { result } = await request('tools/list');
+  const tool = result.tools.at(-1), { properties: p, required, additionalProperties } = tool.inputSchema;
+  assert.equal(tool.name, 'animate_image');
+  assert.equal(tool.title, 'Animate a PNG locally (no ChatGPT)');
+  assert.deepEqual(required, ['image_path', 'motion']);
+  assert.equal(additionalProperties, false);
+  assert.equal(p.image_path.type, 'string');
+  assert.equal(p.image_path.description, "Absolute path preferred (e.g. a path saved by generate_image); a relative path is resolved from the server's current folder.");
+  assert.deepEqual(p.motion.enum, LIGHT_MOTIONS);
+  assert.equal(p.motion.type, 'string');
+  assert.deepEqual({ ...p.size, description: undefined }, { type: 'integer', minimum: 64, maximum: 1024, default: 384, description: undefined });
+  assert.equal(p.size.description, 'Output long-edge limit in pixels; enlargement uses the nearest whole multiple of the source pixel grid, so the result may be smaller.');
+  assert.deepEqual(p.background, { type: 'string', enum: ['transparent', 'white'], default: 'transparent' });
+  assert.deepEqual(p.include_preview, { type: 'boolean', default: true });
+  assert.deepEqual(tool.annotations, { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false });
+  const init = await request('initialize', {});
+  assert.match(init.result.instructions, /use animate_image on a transparent PNG; for changing poses \(walking, waving\), use generate_image with motion/);
+});
+
+test('animate_image saves a sibling GIF and PNG sheet even without a bridge; relative paths use the caller cwd', async t => {
+  const imagePath = animationFixture(t), original = fs.readFileSync(imagePath);
+  const res = await callTool('animate_image', { image_path: path.relative(process.cwd(), imagePath), motion: 'bounce' });
+  assert.equal(res.result.isError, false, textOf(res));
+  assert.match(textOf(res), /^SUCCESS/);
+  const saved = path.join(path.dirname(imagePath), 'starfish_bounce.gif');
+  assert.ok(textOf(res).includes(`Saved: ${saved}`));
+  assert.match(textOf(res), /16 frames, 800 ms per loop \(50 ms per frame\)/);
+  assert.match(textOf(res), /Sampling: nearest neighbor \(enlarged 27x from 16 x 16 source pixels\)/);
+  assert.match(textOf(res), /Gallery: not added.*the bridge is not running \(Chrome is closed or the extension is off\), so it is not in the gallery/);
+  assert.doesNotMatch(textOf(res), /run animate_image again/);
+  assert.match(textOf(res), /The GIF is saved/);
+  const info = gifInfo(fs.readFileSync(saved));
+  assert.equal(info.frames, 16);
+  assert.equal(Math.max(info.width, info.height), 378);
+  assert.ok(Math.max(info.width, info.height) <= 384);
+  const preview = res.result.content.find(c => c.type === 'image');
+  assert.equal(preview.mimeType, 'image/png');
+  assert.ok(decodePng(Buffer.from(preview.data, 'base64')).width > 0);
+  const noPreview = await callTool('animate_image', { image_path: imagePath, motion: 'bounce', size: 64, include_preview: false });
+  assert.equal(noPreview.result.isError, false);
+  assert.equal(noPreview.result.content.length, 1);
+  assert.ok(fs.existsSync(saved.replace('.gif', '_2.gif')));
+  assert.deepEqual(fs.readFileSync(imagePath), original);
+});
+
+test('animate_image rejects missing paths, non-PNG bytes, unknown motion and invalid sizes', async t => {
+  const imagePath = animationFixture(t);
+  const badPath = path.join(path.dirname(imagePath), 'wrong.jpg'); fs.writeFileSync(badPath, 'not PNG');
+  for (const [args, error] of [
+    [{}, /image_path is required\./], [{ image_path: ' ' }, /image_path is required\./],
+    [{ image_path: badPath, motion: 'idle' }, /ERROR.*not a PNG/],
+    [{ image_path: imagePath, motion: 'walk' }, /ERROR.*Unknown motion/],
+    ...['384', null, 63, 1025].map(size => [{ image_path: imagePath, motion: 'idle', size }, /ERROR.*size must/]),
+  ]) {
+    const res = await callTool('animate_image', args);
+    assert.equal(res.result.isError, true); assert.match(textOf(res), error);
+  }
+});
+
 test('with a fake host', async t => {
   await startHost();
+
+  await t.test('animate_image registers absolute paths and a PNG sheet; gallery errors never lose the GIF', async t => {
+    const imagePath = animationFixture(t);
+    let sent;
+    handlers = { add_local_animation: p => { sent = p; return { id: JOB_ID }; } };
+    hostCalls.length = 0;
+    const res = await callTool('animate_image', { image_path: imagePath, motion: 'wiggle', size: 64, background: 'white' }, MODERN);
+    assert.equal(res.result.isError, false); assert.equal(res.result.resultType, 'complete');
+    assert.match(textOf(res), new RegExp(`Gallery: added \\(${JOB_ID}\\)`));
+    assert.deepEqual(hostCalls, ['add_local_animation']);
+    assert.equal(sent.path, path.join(path.dirname(imagePath), 'starfish_wiggle.gif'));
+    assert.equal(sent.sourcePath, imagePath); assert.ok(path.isAbsolute(sent.path));
+    assert.equal(sent.motion, 'wiggle'); assert.equal(sent.background, 'white');
+    assert.deepEqual(sent.previewFrames, { shown: 10, total: 10 });
+    assert.ok(decodePng(Buffer.from(sent.preview, 'base64')).width > 0);
+    assert.equal(res.result.content[1].data, sent.preview);
+    for (const [message, reason] of [
+      ['Unknown method "add_local_animation".', /the installed bridge is older than this server; update Backdraw/],
+      ['disk is unavailable', /disk is unavailable/],
+    ]) {
+      handlers = { add_local_animation: () => { throw new Error(message); } };
+      const failedGallery = await callTool('animate_image', { image_path: imagePath, motion: 'nod', size: 64 });
+      assert.equal(failedGallery.result.isError, false);
+      assert.match(textOf(failedGallery), /^SUCCESS/); assert.match(textOf(failedGallery), /Gallery: not added/);
+      assert.match(textOf(failedGallery), reason);
+      const file = textOf(failedGallery).split('\n').find(l => l.startsWith('Saved: ')).slice(7);
+      assert.ok(fs.existsSync(file));
+    }
+  });
 
   await t.test('animated is passed to the host and defaults to false', async () => {
     const sent = [];

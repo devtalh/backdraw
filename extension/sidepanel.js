@@ -148,6 +148,10 @@ async function poll() {
   return false;
 }
 
+chrome.runtime.onMessage.addListener(msg => {
+  if (msg && msg.type === 'panel:gallery_changed' && !document.hidden) refresh();
+});
+
 // ---------------------------------------------------------------- the gallery
 
 function formatDate(iso) {

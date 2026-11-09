@@ -456,6 +456,43 @@ Aşağıdaki kare sayıları ve süreler ipucudur; ChatGPT farklı değerler ür
 [sprite-gen](https://github.com/aldegad/sprite-gen) (Apache-2.0) projelerindeki fikirlerden
 esinlenildi; kod, istem metni veya tablo kopyalanmadı.
 
+## Yerel hareket (animate_image)
+
+`animate_image`, tek PNG'den yerel olarak saniyeler içinde kusursuz döngülü GIF üretir; ChatGPT
+ve Chrome gerekmez. Karakter değişmez, sticker ve emoji için uygundur. Yürüme veya el sallama
+gibi poz değişikliği gerekiyorsa `generate_image` ile `motion` kullan.
+
+Örnek istem: "Denizyıldızı sticker'ını zıplat."
+
+| Ad | Hareket | Kare × ms | Döngü süresi |
+|---|---|---|---|
+| `bounce` | Zıplar ve yere iner | 16 × 50 | 800 ms |
+| `idle` | Hafifçe nefes alır | 16 × 110 | 1760 ms |
+| `sway` | Sola ve sağa sallanır | 16 × 80 | 1280 ms |
+| `nod` | Başını eğer | 12 × 80 | 960 ms |
+| `squash` | Ezilir ve uzar | 12 × 60 | 720 ms |
+| `wiggle` | Hızlıca kıpırdar | 10 × 40 | 400 ms |
+
+`image_path` (yerel PNG, geçerli klasöre göre göreli veya mutlak yol) ve `motion` ver.
+`size`, uzun kenar sınırını belirler (64-1024, varsayılan 384; büyütmede en yakın tam kat).
+`background` varsayılan olarak `transparent`, istenirse `white` olur.
+Çıktı kaynağın yanında `<ad>_<motion>.gif` olarak, gerekirse `_2`, `_3` ekleriyle kaydedilir;
+PNG hiç değişmez. Numaralı önizleme bütün kareleri gösterir. Chrome açıkken galeride de görünür;
+köprü kapalıysa GIF yine kaydedilir ve sonuç neden listelenmediğini açıklar.
+
+GIF şeffaflığı 1-bit'tir: en az yarı opak pikseller kendi rengini korur; diğerleri tamamen saydam
+olur. Kaynaktan büyük çıktı, piksel art ve küçük ikonlar keskin kalsın diye en yakın komşuyla tam sayı
+katında büyütülür; uzun kenarı `size` değerinden küçük olabilir. Yumuşak premultiplied alpha örnekleme
+yalnızca küçültmede kullanılır ve hale oluşmasını önler. Bütün kareler ortak palet kullanır; palet
+titremesi ve dithering yoktur. Tespit edilen piksel art (k×k ızgara) yine kendi piksel ızgarasında
+hareket eder ve en yakın komşuyla ölçeklenir.
+
+Sınırlar: yalnız interlaced olmayan PNG, en çok 20 MB ve 16,7 milyon piksel (ör. 4096 × 4096; kenar en çok 8192); çıktı GIF en çok 8 MB.
+
+Hafif hareket fikri [gif-factory](https://github.com/WoYun520/gif-factory) (MIT), piksel ölçeği
+fikri [sprite-gen](https://github.com/aldegad/sprite-gen) (Apache-2.0) projesinden gelir;
+kod kopyalanmadı.
+
 ## Galeri yan paneli
 
 Açılır pencerede **Galeriyi aç**'a tıkla; Backdraw'ın yan paneli bulunduğun sayfanın yanında açılır.
@@ -469,6 +506,7 @@ Araç çubuğundaki Backdraw simgesine sağ tıklayıp **Backdraw galerisini aç
 - **Her görsel için:** **Sohbeti aç**, **Klasörde göster** (Gezgin dosya seçili olarak açılır),
   **Yolu kopyala** ve **Koleksiyona ekle** (var olan bir koleksiyon ya da **Yeni koleksiyon…**).
 
+Yerel animasyonlar da sohbet bağlantısı olmadan listelenir; dosyaları kaynak PNG'nin yanında kalır.
 Galeri, iş geçmişindeki görselleri listeler; geçmiş son 100 işi tutar. Küçük resimler 7 gün saklanan
 önizlemelerden gelir; daha eski görsellerde yer tutucu görünür. Görsel dosyalarının kendisi görsel
 klasöründe kalır.
@@ -486,6 +524,7 @@ dosyanın tam hâli görsel klasöründe değişmeden durur.
 | `list_projects` | – | ChatGPT Projelerini listeler ve seçili olanı gösterir. |
 | `select_project` | `name` ya da `url` | Yeni görsel sohbetlerinin açılacağı Projeyi seçer ve hatırlar (ad esnek eşleştirilir). |
 | `list_collections` | – | Referans koleksiyonlarını görsel sayıları, klasörleri ve dosyalarıyla (en yenisi önce) listeler. |
+| `animate_image` | `image_path` (zorunlu), `motion` (zorunlu), `size` (384), `background` (`transparent`), `include_preview` (true) | PNG'yi ChatGPT ve Chrome olmadan yerel döngülü GIF'e dönüştürür. |
 
 - `animated`: kısa bir animasyonlu GIF ister; ChatGPT durağan bir görsel döndürürse bir kez daha sorar.
 - `motion`: isteğe bağlı GIF hareketi (`idle`, `walk`, `run`, `jump`, `wave`, `dance`, `bounce`,
@@ -505,6 +544,9 @@ dosyanın tam hâli görsel klasöründe değişmeden durur.
 - `filename_hint`: konuyu anlatan birkaç kelime; dosya adı istemin başı yerine bundan üretilir
   (istem referans görsellerle ilgili talimatlarla başlıyorsa işe yarar).
 - `wait_seconds`: 0 ile 900 arası.
+- `animate_image`: `image_path` yerel PNG'dir; `motion`, `bounce`, `idle`, `sway`, `nod`, `squash`
+  veya `wiggle` olur. `size` 64-1024 (varsayılan 384), `background` `transparent` veya `white`
+  olur; `include_preview: false` numaralı önizlemeyi kaldırır. Bkz. [Yerel hareket](#yerel-hareket-animate_image).
 
 Bir sonuç şunları söyleyebilir:
 

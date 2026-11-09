@@ -1,6 +1,6 @@
 'use strict';
 // MCP server (stdio, newline-delimited JSON-RPC) that Claude Code starts. It is a thin client:
-// every tool call is forwarded to the native host that Chrome runs for the extension.
+// ChatGPT tools go to the native host; local animation runs in the caller's context here.
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
@@ -11,6 +11,9 @@ const { FINAL, DEFAULT_WAIT, waitSeconds, resultLines } = require('./lib/results
 const { MAX_REFS } = require('./lib/limits');
 const { describeCollections } = require('./lib/collections');
 const { MOTION_NAMES } = require('./lib/motion');
+const { LIGHT_MOTIONS } = require('./lib/light-motion');
+const { animateImage, animationResultLines } = require('./lib/animate');
+const gallery = require('./lib/gallery');
 
 const SERVER_INFO = { name: identity.MCP_NAME, title: identity.PRODUCT, version: bridge.VERSION };
 
@@ -20,6 +23,7 @@ const INSTRUCTIONS = `Generates images with the user's own ChatGPT account (alre
 - To EDIT an image or keep a character consistent, pass the image file(s) in reference_images (e.g. a file saved by an earlier call). A fresh chat with reference_images is the most reliable way to edit; long revision chains via conversation_url make ChatGPT lose track of earlier images.
 - For a specific shape (banner, avatar, phone wallpaper) pass aspect_ratio instead of describing the size in the prompt; for stickers/logos/icons that need a see-through background pass transparent_background=true and read the transparency line in the result.
 - When the user asks for an animation, GIF or moving image, pass animated=true. Use one subject, one clear motion, a still camera and no small text in the scene; aspect_ratio is not applied to the GIF. For a common motion (${MOTION_NAMES.join(', ')}) pass motion; describe the subject and style in the prompt.
+- For local motion of the same character in a seamless sticker/emoji loop, use animate_image on a transparent PNG; for changing poses (walking, waving), use generate_image with motion.
 - When the user mentions one of their Backdraw collections (reference images they saved from the web in Chrome), call list_collections if needed and pass reference_collection to generate_image.
 - The saved file is named after the start of the prompt. When the prompt opens with something other than the subject (e.g. instructions about the reference images), pass filename_hint with a few words naming what the user asked for.
 - Read every result line: NEEDS REFERENCE IMAGE means ChatGPT could not reach the image to edit; CHATGPT REPLIED WITHOUT AN IMAGE shows ChatGPT's own text. Never resend the identical prompt in a loop; follow the next step given in the result.
@@ -198,6 +202,25 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
+  {
+    name: 'animate_image',
+    title: 'Animate a PNG locally (no ChatGPT)',
+    description: 'Move a local PNG (e.g. a sticker saved with transparent_background=true) with code and save a new looping GIF beside it as <name>_<motion>.gif, without overwriting files. ' +
+      'No ChatGPT, no Chrome; takes seconds. The character stays unchanged: it only bounces, sways, squashes or breathes. For pose changes such as walking or waving, use generate_image with motion. ' +
+      'The source PNG is never changed. Returns a numbered preview of every frame.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        image_path: { type: 'string', description: "Absolute path preferred (e.g. a path saved by generate_image); a relative path is resolved from the server's current folder." },
+        motion: { type: 'string', enum: LIGHT_MOTIONS, description: 'bounce: jump and land; idle: gentle breathing; sway: rock side to side; nod: dip the head; squash: squash and stretch; wiggle: quick little shake.' },
+        size: { type: 'integer', minimum: 64, maximum: 1024, default: 384, description: 'Output long-edge limit in pixels; enlargement uses the nearest whole multiple of the source pixel grid, so the result may be smaller.' },
+        background: { type: 'string', enum: ['transparent', 'white'], default: 'transparent' },
+        include_preview: { type: 'boolean', default: true },
+      },
+      required: ['image_path', 'motion'], additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
 ];
 
 // ---------------------------------------------------------------- JSON-RPC over stdio
@@ -304,11 +327,36 @@ async function callTool(name, args, call) {
       case 'list_projects': return await listProjects();
       case 'select_project': return await selectProject(args);
       case 'list_collections': return await listCollections();
+      case 'animate_image': return await animateLocalImage(args);
       default: return textResult(`Unknown tool: ${name}`, true);
     }
   } catch (e) {
     return textResult(e.code === 'NOT_RUNNING' ? `BRIDGE NOT RUNNING — ${e.message}` : `ERROR — ${e.message}`, true);
   }
+}
+
+async function animateLocalImage(args) {
+  if (!args.image_path || !String(args.image_path).trim()) return textResult('image_path is required.', true);
+  const result = animateImage({ imagePath: path.resolve(String(args.image_path)), motion: args.motion, size: args.size, background: args.background });
+  const preview = result.sheet.png.toString('base64');
+  let added;
+  try {
+    const job = await bridge.call('add_local_animation', {
+      path: result.path, sourcePath: result.sourcePath, motion: result.motion, background: result.background,
+      ...(result.sheet.png.length < gallery.MAX_PREVIEW_BYTES ? { preview } : {}),
+      previewFrames: { shown: result.sheet.shown, total: result.frames },
+    }, 10000);
+    added = { added: true, jobId: job.id };
+  } catch (e) {
+    const reason = e.code === 'NOT_RUNNING'
+      ? 'the bridge is not running (Chrome is closed or the extension is off), so it is not in the gallery'
+      : e.code === 'BAD_REQUEST' && /Unknown method/.test(e.message)
+        ? 'the installed bridge is older than this server; update Backdraw' : e.message;
+    added = { added: false, reason };
+  }
+  const content = [{ type: 'text', text: animationResultLines(result, added).join('\n') }];
+  if (args.include_preview !== false) content.push({ type: 'image', data: preview, mimeType: 'image/png' });
+  return { content, isError: false };
 }
 
 async function generateImage(args, call) {

@@ -14,11 +14,12 @@ const { stamp, slugify, sniffExt } = require('./lib/naming');
 const { normName, parseProjectUrl, pickProject } = require('./lib/projects');
 const { buildText } = require('./lib/prompt');
 const { MOTION_NAMES } = require('./lib/motion');
+const { LIGHT_MOTIONS } = require('./lib/light-motion');
 const { aspectOption } = require('./lib/aspect');
 const { pngInfo } = require('./lib/png');
 const { gifInfo } = require('./lib/gif');
-const { MAX_REFS, MAX_REF_BYTES, MAX_REFS_TOTAL_BYTES, MAX_COLLECTION_BYTES } = require('./lib/limits');
-const { withCollection } = require('./lib/collections');
+const { MAX_REFS, MAX_REF_BYTES, MAX_REFS_TOTAL_BYTES, MAX_COLLECTION_BYTES, MAX_ANIMATION_BYTES } = require('./lib/limits');
+const { withCollection, isInside } = require('./lib/collections');
 const store = require('./lib/collection-store');
 const { callAssembler, answerCall } = require('./lib/extension-calls');
 const gallery = require('./lib/gallery');
@@ -392,6 +393,75 @@ function saveImages(job, images, title) {
   });
 }
 
+// Local files are registered only after the host checks their bytes itself. No Chrome job is queued.
+function addLocalAnimation(p) {
+  const bad = message => new shared.BridgeError(message, 'BAD_REQUEST');
+  if (typeof p.path !== 'string' || !path.isAbsolute(p.path) || path.extname(p.path).toLowerCase() !== '.gif') {
+    throw bad('path must be an absolute GIF file path.');
+  }
+  if (!LIGHT_MOTIONS.includes(p.motion)) throw bad(`Unknown motion. Use: ${LIGHT_MOTIONS.join(', ')}.`);
+  if (!['transparent', 'white'].includes(p.background)) throw bad('background must be transparent or white.');
+  if (p.sourcePath !== undefined && typeof p.sourcePath !== 'string') throw bad('sourcePath must be a string.');
+  const file = path.resolve(p.path);
+  let buf, gif;
+  try {
+    const stat = fs.statSync(file);
+    if (!stat.isFile()) throw bad('path must point to a file.');
+    if (stat.size > MAX_ANIMATION_BYTES) throw bad('GIF exceeds the 8 MB animation limit.');
+    buf = fs.readFileSync(file);
+    if (buf.length > MAX_ANIMATION_BYTES) throw bad('GIF exceeds the 8 MB animation limit.');
+    const signature = buf.toString('latin1', 0, 6);
+    gif = (signature === 'GIF87a' || signature === 'GIF89a') && gifInfo(buf);
+    if (!gif || gif.truncated !== false || gif.frames < 1) throw bad('The file must be a complete GIF with at least one frame.');
+  } catch (e) { throw bad(`Cannot register local animation: ${e.message}`); }
+  const samePath = value => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
+  const existingIndex = jobs.findIndex(j => j.mode === 'local' && j.status === 'succeeded' &&
+    j.images.some(im => samePath(im.path) === samePath(file)));
+  const existing = jobs[existingIndex];
+  if (existing) {
+    const oldPreview = existing.images[0] && existing.images[0].preview;
+    if (typeof oldPreview === 'string' && isInside(shared.PREVIEW_DIR, oldPreview)) {
+      try { fs.unlinkSync(oldPreview); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    }
+    jobs.splice(existingIndex, 1);
+  }
+  // A new id invalidates the panel's jobId:n caches and moves the recreated animation to the top.
+  let id;
+  do { id = `img_${crypto.randomBytes(4).toString('hex')}`; }
+  while ((existing && id === existing.id) || jobs.some(j => j.id === id));
+  let preview = null;
+  if (typeof p.preview === 'string' && p.preview.length <= Math.ceil(gallery.MAX_PREVIEW_BYTES / 3) * 4) {
+    const png = Buffer.from(p.preview, 'base64');
+    if (png.length < gallery.MAX_PREVIEW_BYTES && png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+      fs.mkdirSync(shared.PREVIEW_DIR, { recursive: true });
+      preview = path.join(shared.PREVIEW_DIR, `${id}-1.png`);
+      fs.writeFileSync(preview, png);
+    }
+  }
+  const pf = p.previewFrames;
+  const previewFrames = preview && pf && Number.isInteger(pf.shown) && Number.isInteger(pf.total) &&
+    pf.shown >= 2 && pf.shown <= 16 && pf.total >= pf.shown && pf.total <= 512 &&
+    pf.total === gif.frames && pf.shown === Math.min(16, pf.total) ? { shown: pf.shown, total: pf.total } : null;
+  const time = now();
+  const job = {
+    id, mode: 'local', status: 'succeeded', step: 'succeeded', message: 'Local animation saved',
+    prompt: `Local ${p.motion} animation of ${path.basename(p.sourcePath || file)}`.slice(0, 300),
+    animated: true, motion: p.motion, transparent: p.background === 'transparent', aspect: null,
+    project: null, startUrl: null, conversationUrl: null, references: [], copies: [],
+    createdAt: time, startedAt: time, finishedAt: time, assistantText: null, error: null, reason: null,
+    images: [{ path: file, width: gif.width, height: gif.height, bytes: buf.length, preview, previewFrames,
+      full: null, aspect: null, png: null, alpha: null,
+      gif: { frames: gif.frames, durationMs: gif.durationMs, delaysMs: gif.delaysMs.slice(0, 64), loop: gif.loop,
+        transparent: gif.transparent, transparentFrames: gif.transparentFrames, truncated: gif.truncated } }],
+  };
+  jobs.push(job);
+  if (jobs.length > MAX_JOBS) jobs = jobs.filter((j, i) => i >= jobs.length - MAX_JOBS || !TERMINAL.has(j.status));
+  saveJobs();
+  log('info', `job ${id} local animation saved`, { path: file, motion: p.motion });
+  if (extension) toExtension({ type: 'gallery_changed' });
+  return publicJob(job);
+}
+
 // Images this bridge already saved from the same ChatGPT conversation, newest first.
 function chatId(url) { const m = String(url || '').match(/\/c\/([0-9a-f-]{8,})/i); return m ? m[1].toLowerCase() : null; }
 function imagesFromChat(job) {
@@ -410,7 +480,7 @@ function centralizeLegacyImages() {
   const central = path.resolve(config.outputDir).toLowerCase();
   let changed = false;
   for (const j of jobs) {
-    if (j.status !== 'succeeded' || !Array.isArray(j.images)) continue;
+    if (j.mode === 'local' || j.status !== 'succeeded' || !Array.isArray(j.images)) continue;
     for (const im of j.images) {
       if (!im.path || path.dirname(path.resolve(im.path)).toLowerCase() === central) continue;
       if (!fs.existsSync(im.path)) {
@@ -523,7 +593,7 @@ function galleryImage(p, needFile) {
 // Like a right-click add, with the chat as the source; the size limit applies before the file is read.
 // The panel's small JPEG (checked by the store like any thumbnail) or else the saved preview becomes
 // the collection's thumbnail; the store drops a preview over its thumbnail limit (256 KB), so then
-// there is none.
+// there is none. PNG contact sheets are also dropped: decodeThumb accepts only JPEG thumbnails.
 function addJobImage(p) {
   const { job, image } = galleryImage(p, true);
   if (fs.statSync(image.path).size > MAX_COLLECTION_BYTES) {
@@ -575,6 +645,7 @@ function statusInfo() {
 
 const handlers = {
   status: () => statusInfo(),
+  add_local_animation: p => addLocalAnimation(p),
   generate: p => publicJob(createWithCollection(p)),
   job: p => publicJob(findJob(p.jobId)),
   // The MCP server copies finished images into the caller's output_dir and records it here once.
