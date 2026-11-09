@@ -6,12 +6,38 @@ const os = require('node:os');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { performance } = require('node:perf_hooks');
-const { animateImage } = require('../lib/animate');
+const { animateImage, animationResultLines } = require('../lib/animate');
 const { encodePng, decodePng } = require('../lib/png-codec');
 const { LIGHT_MOTIONS, motionSpec } = require('../lib/light-motion');
 const { gifInfo } = require('../lib/gif');
 const { decodeGifFrames, contactLayout } = require('../extension/gifframes');
-const { MAX_REF_BYTES } = require('../lib/limits');
+const { MAX_REF_BYTES, MAX_ANIMATION_BYTES } = require('../lib/limits');
+
+test('animationResultLines describes both backgrounds, sampling modes, source opacity and gallery outcomes', () => {
+  assert.equal(MAX_ANIMATION_BYTES, 8 * 1024 * 1024);
+  const result = { sourcePath: path.join('stickers', 'starfish.png'), path: 'starfish_bounce.gif', motion: 'bounce',
+    frames: 16, durationMs: 800, delaysMs: Array(16).fill(50), width: 384, height: 300, bytes: 4096,
+    background: 'transparent', pixelArt: false, opaqueSource: false };
+  assert.deepEqual(animationResultLines(result, { added: true, jobId: 'img_1234abcd' }), [
+    'SUCCESS \u2014 animated starfish.png locally with "bounce" (no ChatGPT, nothing was sent).',
+    'Saved: starfish_bounce.gif',
+    'Animated GIF: 16 frames, 800 ms per loop (50 ms per frame), loops forever; 384 x 300 px; 4.0 KB.',
+    'Background: transparent (1-bit: pixels at least half opaque are kept with their own color, the rest are fully transparent).',
+    'Smooth image: resampled with premultiplied alpha, so edges get no halo.',
+    'The attached preview shows all 16 frames in order, numbered from 1, over a checkerboard where the GIF is transparent. Check the loop and the edges.',
+    'Gallery: added (img_1234abcd).',
+    'The source PNG was not changed.',
+  ]);
+  const lines = animationResultLines({ ...result, background: 'white', pixelArt: true, pixelScale: 4, opaqueSource: true },
+    { added: false, reason: 'offline' });
+  assert.deepEqual(lines.slice(3, 6), [
+    'Background: white.',
+    'Pixel art detected (4 px blocks): moved on its pixel grid and scaled with nearest neighbor, so edges stay sharp.',
+    'WARNING \u2014 the PNG has no transparent pixels, so the whole rectangle moves. For a sticker, first make a transparent PNG (generate_image with transparent_background=true).',
+  ]);
+  assert.equal(lines.at(-2), 'Gallery: not added \u2014 offline. The GIF is saved.');
+  assert.equal(lines.at(-1), 'The source PNG was not changed.');
+});
 
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'backdraw-animate-'));
@@ -152,13 +178,71 @@ test('oversized source is rejected before any read', t => {
 
 test('write failures name the target and preserve source content and mtime', t => {
   const { imagePath } = fixture(t), before = snapshot(imagePath);
-  const write = t.mock.method(fs, 'writeFileSync', (file, data, options) => {
-    assert.equal(options.flag, 'wx');
+  const originalOpen = fs.openSync;
+  const open = t.mock.method(fs, 'openSync', (file, flags, ...rest) => {
+    if (file.endsWith('.gif')) assert.equal(flags, 'wx');
+    return originalOpen(file, flags, ...rest);
+  });
+  const write = t.mock.method(fs, 'writeFileSync', file => {
+    assert.equal(typeof file, 'number', 'write only through the owned exclusive descriptor');
     throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
   });
   assert.throws(() => animateImage({ imagePath, motion: 'idle', size: 96 }), err =>
     err.code === 'EACCES' && err.message.includes('character_idle.gif') && /cannot write/.test(err.message));
-  write.mock.restore(); assert.deepEqual(snapshot(imagePath), before);
+  write.mock.restore(); open.mock.restore(); assert.deepEqual(snapshot(imagePath), before);
+});
+
+test('partial write failure removes only its own GIF and preserves occupied names and the PNG', t => {
+  const { dir, imagePath } = fixture(t), before = snapshot(imagePath);
+  const occupied = path.join(dir, 'character_idle.gif'), partial = path.join(dir, 'character_idle_2.gif');
+  fs.writeFileSync(occupied, 'existing GIF');
+  const originalWrite = fs.writeFileSync;
+  const write = t.mock.method(fs, 'writeFileSync', (fd, data) => {
+    assert.equal(typeof fd, 'number');
+    originalWrite(fd, data.subarray(0, 20));
+    throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+  });
+  assert.throws(() => animateImage({ imagePath, motion: 'idle', size: 64 }), { code: 'ENOSPC', message: /cannot write.*character_idle_2.gif.*disk full/ });
+  write.mock.restore();
+  assert.equal(fs.existsSync(partial), false);
+  assert.equal(fs.readFileSync(occupied, 'utf8'), 'existing GIF');
+  assert.deepEqual(snapshot(imagePath), before);
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['character.png', 'character_idle.gif']);
+});
+
+test('an unsuccessful exclusive open never deletes another file', t => {
+  const { dir, imagePath } = fixture(t), before = snapshot(imagePath);
+  const target = path.join(dir, 'character_idle.gif');
+  fs.writeFileSync(target, 'owned by someone else');
+  const originalOpen = fs.openSync;
+  const open = t.mock.method(fs, 'openSync', (file, flags, ...rest) => {
+    if (flags !== 'wx') return originalOpen(file, flags, ...rest);
+    assert.equal(file, target);
+    throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+  });
+  const unlink = t.mock.method(fs, 'unlinkSync', () => assert.fail('no owned file to remove'));
+  assert.throws(() => animateImage({ imagePath, motion: 'idle', size: 64 }), { code: 'EACCES' });
+  assert.equal(unlink.mock.callCount(), 0);
+  open.mock.restore(); unlink.mock.restore();
+  assert.equal(fs.readFileSync(target, 'utf8'), 'owned by someone else');
+  assert.deepEqual(snapshot(imagePath), before);
+});
+
+test('exclusive filename attempts stop after 1000 collisions', t => {
+  const { imagePath } = fixture(t), before = snapshot(imagePath), names = [];
+  const originalOpen = fs.openSync;
+  const open = t.mock.method(fs, 'openSync', (file, flags, ...rest) => {
+    if (flags !== 'wx') return originalOpen(file, flags, ...rest);
+    names.push(path.basename(file));
+    throw Object.assign(new Error('already exists'), { code: 'EEXIST' });
+  });
+  const unlink = t.mock.method(fs, 'unlinkSync', () => assert.fail('collisions are never owned'));
+  assert.throws(() => animateImage({ imagePath, motion: 'idle', size: 64 }), { code: 'BAD_REQUEST', message: /all 1000 output filenames.*already exist/ });
+  assert.equal(names.length, 1000);
+  assert.equal(names[0], 'character_idle.gif'); assert.equal(names.at(-1), 'character_idle_1000.gif');
+  assert.equal(unlink.mock.callCount(), 0);
+  open.mock.restore(); unlink.mock.restore();
+  assert.deepEqual(snapshot(imagePath), before);
 });
 
 test('1024-pixel full pipeline timing and decoder check', t => {

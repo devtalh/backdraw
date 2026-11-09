@@ -129,6 +129,10 @@ async function onHostMessage(msg) {
     case 'collections':
       collectionsChanged(msg.collections);
       break;
+    case 'gallery_changed':
+      // No open panel means no receiver; registration still succeeded.
+      try { await chrome.runtime.sendMessage({ type: 'panel:gallery_changed' }); } catch {}
+      break;
     case 'reload':
       setTimeout(() => chrome.runtime.reload(), 300);
       break;

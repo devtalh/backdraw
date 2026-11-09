@@ -446,6 +446,41 @@ Inspired by ideas from [kiki-pixel-gif](https://github.com/Mayzmei/kiki-pixel-gi
 [sprite-gen](https://github.com/aldegad/sprite-gen) (Apache-2.0); no code, prompt text or tables
 were copied.
 
+## Local motion (animate_image)
+
+`animate_image` turns one PNG into a seamless looping GIF locally, in seconds, with no ChatGPT or
+Chrome. The character stays unchanged, ideal for stickers and emoji. Use `generate_image` with
+`motion` when poses must change, such as walking or waving.
+
+Example request: "Make the starfish sticker bounce."
+
+| Name | Movement | Frames × ms | Loop duration |
+|---|---|---|---|
+| `bounce` | Jump and land | 16 × 50 | 800 ms |
+| `idle` | Gentle breathing | 16 × 110 | 1760 ms |
+| `sway` | Rock side to side | 16 × 80 | 1280 ms |
+| `nod` | Dip the head | 12 × 80 | 960 ms |
+| `squash` | Squash and stretch | 12 × 60 | 720 ms |
+| `wiggle` | Quick little shake | 10 × 40 | 400 ms |
+
+Pass `image_path` (local PNG, relative to the current folder or absolute) and `motion`.
+`size` sets the long edge (64-1024, default 384; pixel art uses the nearest whole multiple).
+`background` is `transparent` by default, or `white`.
+The output is `<name>_<motion>.gif` beside the source, with `_2`, `_3`, etc. if needed; the PNG is
+never changed. A numbered preview shows every frame. With Chrome open, it also appears in the
+gallery; if the bridge is off, the GIF is still saved and the result explains why it was not listed.
+
+GIF transparency is 1-bit: pixels at least half opaque keep their own color; the rest become fully
+transparent. Smooth images use premultiplied alpha sampling to avoid halos. All frames share one
+palette, with no palette flicker or dithering. Detected pixel art (a k×k grid) moves on its pixel
+grid and scales with nearest neighbor to keep edges sharp.
+
+Limits: non-interlaced PNG only, at most 20 MB and 16.7 million pixels (for example 4096 × 4096; edges up to 8192); the output GIF is at most 8 MB.
+
+The light-motion idea comes from [gif-factory](https://github.com/WoYun520/gif-factory) (MIT),
+and the pixel-scale idea from [sprite-gen](https://github.com/aldegad/sprite-gen) (Apache-2.0);
+no code was copied.
+
 ## Gallery side panel
 
 Click **Open gallery** in the popup to open Backdraw's side panel next to the page you are on. You
@@ -459,6 +494,7 @@ can also right-click the Backdraw toolbar icon → **Open Backdraw gallery**.
 - **Per image:** **Open chat**, **Show in folder** (Explorer with the file selected),
   **Copy path** and **Add to collection** (an existing collection or **New collection…**).
 
+Local animations are listed too, without chat links, and their files stay beside the source PNG.
 The gallery lists the images of the job history, which keeps the last 100 jobs. Thumbnails come
 from the previews, which are kept for 7 days; older images show a placeholder. The image files
 themselves stay in your images folder.
@@ -476,6 +512,7 @@ file remains unchanged in your images folder.
 | `list_projects` | – | Lists your ChatGPT Projects and shows the selected one. |
 | `select_project` | `name` or `url` | Selects and remembers the Project for new image chats (the name is matched loosely). |
 | `list_collections` | – | Lists your reference collections with image counts, folders and files (newest first). |
+| `animate_image` | `image_path` (required), `motion` (required), `size` (384), `background` (`transparent`), `include_preview` (true) | Animates a PNG locally into a looping GIF, without ChatGPT or Chrome. |
 
 - `animated`: request a short animated GIF; if ChatGPT returns a still image, ask once more.
 - `motion`: optional GIF movement (`idle`, `walk`, `run`, `jump`, `wave`, `dance`, `bounce`,
@@ -495,6 +532,9 @@ file remains unchanged in your images folder.
 - `filename_hint`: a few words naming the subject, used for the file name instead of the start of
   the prompt (handy when the prompt opens with instructions about the reference images).
 - `wait_seconds`: 0 to 900.
+- `animate_image`: `image_path` is a local PNG; `motion` is `bounce`, `idle`, `sway`, `nod`, `squash`
+  or `wiggle`. `size` is 64-1024 (default 384), `background` is `transparent` or `white`, and
+  `include_preview: false` omits the numbered sheet. See [Local motion](#local-motion-animate_image).
 
 What a result can say:
 

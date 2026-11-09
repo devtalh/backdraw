@@ -2,7 +2,7 @@
 // Runs a copy of the native host from a scratch folder (so its data/ and logs/ are scratch too), with
 // its images folder there as well, on a private test pipe, and plays the Chrome extension over its
 // stdio. The installed bridge, Chrome and the real images folder are never involved. The scratch
-// folder stays inside the project (ignored as *.tmp), so the test never deletes anything outside it.
+// folder is created exclusively under the OS temp directory; cleanup removes only that fixture.
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
@@ -15,20 +15,20 @@ const identity = require('../identity');
 const { buildText } = require('../lib/prompt');
 const { MOTION_NAMES } = require('../lib/motion');
 const { SHOW_IMAGE, resultLines } = require('../lib/results');
-const { MAX_COLLECTION_BYTES } = require('../lib/limits');
+const { MAX_COLLECTION_BYTES, MAX_ANIMATION_BYTES } = require('../lib/limits');
+const { MAX_PREVIEW_BYTES } = require('../lib/gallery');
 const { png } = require('./png-fixture');
 const { gif } = require('./gif-fixture');
 
 const ROOT = path.join(__dirname, '..');
 const TAG = `backdraw-host-test-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
 const PIPE = process.platform === 'win32' ? `\\\\.\\pipe\\${TAG}` : path.join(os.tmpdir(), `${TAG}.sock`);
-const DIR = path.join(ROOT, `.${TAG}.tmp`);
+const DIR = fs.mkdtempSync(path.join(os.tmpdir(), `${TAG}-`));
 const IMAGES = path.join(DIR, 'images');
 const REFS = path.join(DIR, 'refs');
 const PROJECT = { id: 'g-p-67a1b2c3d4e5f60718293a4b5c6d7e8f', name: 'Images', url: 'https://chatgpt.com/g/g-p-67a1b2c3d4e5f60718293a4b5c6d7e8f/project' };
 const CHAT_URL = 'https://chatgpt.com/g/g-p-67a1b2c3d4e5f60718293a4b5c6d7e8f/c/6812a3b4-1c2d-8000-9e8f-0123456789ab';
 
-fs.mkdirSync(DIR);
 for (const f of ['host.js', 'shared.js', 'identity.js', 'package.json', 'lib', 'platform']) fs.cpSync(path.join(ROOT, f), path.join(DIR, f), { recursive: true });
 fs.mkdirSync(path.join(DIR, 'data'));
 fs.writeFileSync(path.join(DIR, 'data', 'config.json'), JSON.stringify({ outputDir: IMAGES, collectionsDir: REFS, project: PROJECT }));
@@ -44,6 +44,8 @@ const exited = new Promise(resolve => child.once('exit', resolve));
 test.after(async () => {
   child.stdin.end(); // Chrome closing the connection stops the host
   await exited;
+  assert.equal(path.dirname(path.resolve(DIR)), path.resolve(os.tmpdir()));
+  assert.ok(path.basename(DIR).startsWith(`${TAG}-`));
   fs.rmSync(DIR, { recursive: true, force: true });
 });
 
@@ -443,6 +445,7 @@ test('the host', async t => {
       'Transparent background: GIF with a transparent color in 1 of 3 frames; how much of it is transparent could not be measured.',
     ]);
     const stored = JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8')).find(j => j.id === job.id);
+    assert.equal(stored.status, 'succeeded', 'the completed GIF job must also be persisted as succeeded');
     assert.deepEqual(stored.images[0].gif, im.gif);
     assert.equal(Object.hasOwn(stored, 'gif'), false);
     assert.equal(Object.hasOwn(stored.images[0], 'animated'), false);
@@ -552,5 +555,134 @@ test('the host', async t => {
     for (const im of done.images) assert.equal(im.previewFrames, null);
     const stored = JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8')).find(j => j.id === job.id);
     for (const im of stored.images) assert.equal(im.previewFrames, null);
+  });
+
+  await t.test('add_local_animation validates its own GIF, registers it and notifies the gallery without running a job', async () => {
+    const file = path.join(DIR, 'starfish_bounce.GIF');
+    const image = gif({ width: 12, height: 8, loop: 0, frames: Array.from({ length: 16 }, () => ({ delayCs: 5, transparentIndex: 0 })) });
+    const preview = png(6, { width: 256, height: 256 });
+    fs.writeFileSync(file, image);
+    const before = (await call('gallery_list', { limit: 1 })).total;
+    const runs = fromHost.filter(m => m.type === 'run').length;
+    const params = { path: file, sourcePath: path.join(DIR, 'starfish.png'), motion: 'bounce', background: 'transparent',
+      preview: b64(preview), previewFrames: { shown: 16, total: 16 }, width: 999, gif: { frames: 999 } };
+    const job = await call('add_local_animation', params);
+    assert.match(job.id, /^img_[0-9a-f]{8}$/);
+    assert.deepEqual([job.mode, job.status, job.step, job.message], ['local', 'succeeded', 'succeeded', 'Local animation saved']);
+    assert.equal(job.prompt, 'Local bounce animation of starfish.png');
+    assert.deepEqual([job.animated, job.motion, job.transparent], [true, 'bounce', true]);
+    assert.deepEqual([job.startUrl, job.conversationUrl, job.references, job.copies], [null, null, [], []]);
+    assert.equal(job.createdAt, job.startedAt); assert.equal(job.createdAt, job.finishedAt);
+    const [im] = job.images;
+    assert.deepEqual([im.path, im.width, im.height, im.bytes, im.full, im.aspect, im.png, im.alpha], [file, 12, 8, image.length, null, null, null, null]);
+    assert.deepEqual(im.gif, { frames: 16, durationMs: 800, delaysMs: Array(16).fill(50), loop: 0,
+      transparent: true, transparentFrames: 16, truncated: false });
+    assert.deepEqual(im.previewFrames, { shown: 16, total: 16 });
+    assert.equal(path.basename(im.preview), `${job.id}-1.png`);
+    assert.deepEqual(await nextFromHost('gallery_changed'), { type: 'gallery_changed' });
+    const page = await call('gallery_list', { limit: 1 });
+    assert.equal(page.total, before + 1);
+    assert.deepEqual([page.items[0].jobId, page.items[0].format, page.items[0].frames, page.items[0].durationMs, page.items[0].conversationUrl], [job.id, 'GIF', 16, 800, null]);
+    assert.deepEqual(await call('gallery_thumb', { jobId: job.id, n: 1 }), { data: b64(preview), mime: 'image/png' });
+    assert.deepEqual(await call('gallery_animation', { jobId: job.id, n: 1 }), { data: b64(image), mime: 'image/gif' });
+    const status = await call('status');
+    assert.equal(status.running, null); assert.deepEqual(status.queued, []);
+    assert.equal(status.recent[0].motion, 'bounce');
+    assert.equal(fromHost.filter(m => m.type === 'run').length, runs);
+    const stored = JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8')).find(j => j.id === job.id);
+    assert.equal(stored.project, null); assert.deepEqual(stored.images, job.images);
+    const added = await call('collection_add_job_image', { jobId: job.id, n: 1, collection: 'Local motions', create: true });
+    assert.deepEqual(fs.readFileSync(path.join(REFS, 'Local motions', added.file)), image);
+    assert.equal(fs.existsSync(path.join(REFS, 'Local motions', 'thumbs', `${added.file}.jpg`)), false);
+  });
+
+  await t.test('recreated local GIFs replace the record with a new id, preview bytes and gallery notifications', async () => {
+    const file = path.join(DIR, 'recreated.gif');
+    const original = gif({ width: 12, height: 8, frames: [{}, {}] });
+    const preview = png(6, { width: 12, height: 8 });
+    fs.writeFileSync(file, original);
+    const before = (await call('gallery_list')).total;
+    const first = await call('add_local_animation', { path: file, sourcePath: 'old.png', motion: 'idle', background: 'transparent',
+      preview: b64(preview), previewFrames: { shown: 2, total: 2 } });
+    assert.deepEqual(await nextFromHost('gallery_changed'), { type: 'gallery_changed' });
+    assert.equal((await call('gallery_list')).total, before + 1);
+    assert.equal(fs.existsSync(first.images[0].preview), true);
+    fs.unlinkSync(file);
+    const replacement = gif({ width: 24, height: 16, frames: [{}, {}, {}, {}] });
+    const newPreview = png(6, { width: 24, height: 16 });
+    assert.notDeepEqual(replacement, original); assert.notDeepEqual(newPreview, preview);
+    fs.writeFileSync(file, replacement);
+    const second = await call('add_local_animation', { path: path.join(DIR, 'sub', '..', path.basename(file)), sourcePath: 'new.png', motion: 'sway', background: 'white',
+      preview: b64(newPreview), previewFrames: { shown: 4, total: 4 } });
+    assert.deepEqual(await nextFromHost('gallery_changed'), { type: 'gallery_changed' });
+    assert.notEqual(second.id, first.id); assert.notEqual(second.images[0].preview, first.images[0].preview);
+    await assert.rejects(call('job', { jobId: first.id }), { code: 'NOT_FOUND' });
+    assert.equal(fs.existsSync(first.images[0].preview), false);
+    assert.deepEqual([second.motion, second.transparent, second.prompt], ['sway', false, 'Local sway animation of new.png']);
+    assert.deepEqual([second.images[0].width, second.images[0].height, second.images[0].bytes, second.images[0].gif.frames],
+      [24, 16, replacement.length, 4]);
+    assert.notEqual(second.images[0].bytes, first.images[0].bytes);
+    assert.deepEqual(second.images[0].previewFrames, { shown: 4, total: 4 });
+    assert.deepEqual(await call('gallery_thumb', { jobId: second.id, n: 1 }), { data: b64(newPreview), mime: 'image/png' });
+    const secondPage = await call('gallery_list');
+    assert.equal(secondPage.total, before + 1); assert.equal(secondPage.items[0].jobId, second.id);
+    assert.deepEqual(await call('job', { jobId: second.id }), second);
+    const lines = resultLines(await call('job', { jobId: second.id }));
+    assert.ok(lines.every(line => typeof line === 'string'));
+    assert.match(lines.join('\n'), /^SUCCESS/); assert.ok(lines.join('\n').includes(file));
+    assert.match(lines.join('\n'), /4 frames/);
+    const stored = () => JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8'))
+      .filter(j => j.mode === 'local' && j.images.some(im => path.resolve(im.path) === path.resolve(file)));
+    assert.equal(stored().length, 1); assert.equal(stored()[0].id, second.id); assert.deepEqual(stored()[0].images, second.images);
+    const withoutPreview = await call('add_local_animation', { path: file, motion: 'nod', background: 'white' });
+    assert.deepEqual(await nextFromHost('gallery_changed'), { type: 'gallery_changed' });
+    assert.notEqual(withoutPreview.id, second.id);
+    assert.equal(withoutPreview.images[0].preview, null); assert.equal(withoutPreview.images[0].previewFrames, null);
+    await assert.rejects(call('job', { jobId: second.id }), { code: 'NOT_FOUND' });
+    assert.equal(fs.existsSync(second.images[0].preview), false);
+    assert.equal(stored().length, 1); assert.equal(stored()[0].id, withoutPreview.id);
+    assert.equal(stored()[0].images[0].preview, null);
+    const withoutPreviewPage = await call('gallery_list');
+    assert.equal(withoutPreviewPage.total, before + 1); assert.equal(withoutPreviewPage.items[0].jobId, withoutPreview.id);
+  });
+
+  await t.test('add_local_animation rejects invalid paths, incomplete GIFs and unsupported metadata before adding records', async () => {
+    const file = path.join(DIR, 'valid-local.gif'); fs.writeFileSync(file, gif());
+    const notGif = path.join(DIR, 'not-gif.gif'); fs.writeFileSync(notGif, png(6));
+    const cut = path.join(DIR, 'cut-local.gif'); fs.writeFileSync(cut, gif().subarray(0, -1));
+    const empty = path.join(DIR, 'empty-local.gif'); fs.writeFileSync(empty, gif({ frames: [] }));
+    const big = path.join(DIR, 'big-local.gif'); fs.writeFileSync(big, ''); fs.truncateSync(big, MAX_ANIMATION_BYTES + 1);
+    const folder = path.join(DIR, 'folder.gif'); fs.mkdirSync(folder);
+    const before = (await call('gallery_list')).total;
+    for (const override of [
+      { path: 'relative.gif' }, { path: path.join(DIR, 'wrong.png') }, { path: path.join(DIR, 'missing.gif') },
+      { path: null }, { path: 42 }, { path: notGif }, { path: cut }, { path: empty }, { path: folder }, { path: big },
+      { motion: 'walk' }, { background: 'black' }, { sourcePath: 42 },
+    ]) await assert.rejects(call('add_local_animation', { path: file, motion: 'idle', background: 'white', ...override }), { code: 'BAD_REQUEST' });
+    assert.equal((await call('gallery_list')).total, before);
+  });
+
+  await t.test('local previews are optional PNGs and frame counts must match the GIF, with at most 64 saved delays', async () => {
+    const animation = gif({ frames: Array.from({ length: 65 }, () => ({ delayCs: 2 })) });
+    const preview = b64(png(6));
+    const cases = [
+      { preview: b64(JPEG), previewFrames: { shown: 16, total: 65 } },
+      { preview: 'not base64 PNG', previewFrames: { shown: 16, total: 65 } },
+      { preview: b64(Buffer.concat([png(6), Buffer.alloc(MAX_PREVIEW_BYTES)])) },
+      ...[{}, { shown: '16', total: 65 }, { shown: 16, total: '65' }, { shown: 1, total: 65 },
+        { shown: 17, total: 65 }, { shown: 15, total: 65 }, { shown: 16, total: 64 }, { shown: 16, total: 513 }]
+        .map(previewFrames => ({ preview, previewFrames })),
+      { preview, previewFrames: { shown: 16, total: 65 } },
+      {},
+    ];
+    for (const [i, options] of cases.entries()) {
+      const file = path.join(DIR, `preview-local-${i}.gif`); fs.writeFileSync(file, animation);
+      const job = await call('add_local_animation', { path: file, motion: 'idle', background: 'white', ...options });
+      assert.equal(job.transparent, false);
+      const im = job.images[0];
+      assert.equal(im.gif.delaysMs.length, 64); assert.equal(im.gif.frames, 65); assert.equal(im.gif.durationMs, 1300);
+      assert.equal(!!im.preview, options.preview === preview);
+      assert.deepEqual(im.previewFrames, i === cases.length - 2 ? { shown: 16, total: 65 } : null);
+    }
   });
 });

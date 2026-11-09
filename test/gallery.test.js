@@ -127,16 +127,21 @@ test('findJobImage: only a known job id and a whole image number, never anything
   assert.equal(g.findJobImage(undefined, 'img_00000001', 1), null);
 });
 
-test('readPreview: a JPEG inside the previews folder only, and not too large for one native message', () => {
+test('readPreview: a JPEG or PNG inside the previews folder only, and not too large for one native message', () => {
   const previews = abs('previews');
   fs.mkdirSync(previews);
   const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(300, 1)]);
   fs.writeFileSync(path.join(previews, 'ok.jpg'), jpeg);
   fs.writeFileSync(path.join(previews, 'png.jpg'), png(2));
+  fs.writeFileSync(path.join(previews, 'sheet.png'), png(6));
+  fs.writeFileSync(path.join(previews, 'bad.png'), Buffer.from('not PNG'));
+  fs.writeFileSync(path.join(previews, 'big.png'), Buffer.concat([png(6), Buffer.alloc(g.MAX_PREVIEW_BYTES)]));
   fs.writeFileSync(path.join(previews, 'big.jpg'), Buffer.concat([jpeg, Buffer.alloc(g.MAX_PREVIEW_BYTES)]));
   fs.writeFileSync(abs('outside.jpg'), jpeg);
   assert.deepEqual(g.readPreview(previews, { preview: path.join(previews, 'ok.jpg') }), { data: jpeg.toString('base64'), mime: 'image/jpeg' });
-  for (const preview of [path.join(previews, 'png.jpg'), path.join(previews, 'big.jpg'), path.join(previews, 'gone.jpg'), abs('outside.jpg'),
+  assert.deepEqual(g.readPreview(previews, { preview: path.join(previews, 'png.jpg') }), { data: png(2).toString('base64'), mime: 'image/png' });
+  assert.deepEqual(g.readPreview(previews, { preview: path.join(previews, 'sheet.png') }), { data: png(6).toString('base64'), mime: 'image/png' });
+  for (const preview of [path.join(previews, 'bad.png'), path.join(previews, 'big.png'), path.join(previews, 'big.jpg'), path.join(previews, 'gone.jpg'), abs('outside.jpg'),
     path.join(previews, '..', 'outside.jpg'), previews, 'ok.jpg', null, undefined, 7]) {
     assert.deepEqual(g.readPreview(previews, { preview }), { data: null, mime: null }, String(preview));
   }

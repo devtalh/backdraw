@@ -107,10 +107,11 @@ test('toolbar icon menu: "Open Backdraw gallery", which the image menu handler l
 
 // ---------------------------------------------------------------- the service worker
 
-function loadWorker() {
+function loadWorker({ noPanel = false } = {}) {
   const posted = [];
   const created = [];
   const opened = [];
+  const sent = [];
   const on = { message: [], menu: [], port: [] };
   const event = list => ({ addListener: fn => { if (list) list.push(fn); } });
   const port = { onMessage: event(on.port), onDisconnect: event(), postMessage: m => posted.push(m) };
@@ -120,6 +121,7 @@ function loadWorker() {
       runtime: {
         id: 'ext', getURL: p => `chrome-extension://ext/${p}`, getManifest: () => ({ version: '0.0.0' }), connectNative: () => port,
         onStartup: event(), onInstalled: event(), onMessage: event(on.message),
+        sendMessage: async msg => { sent.push(plain(msg)); if (noPanel) throw new Error('No receiver'); },
       },
       i18n: { getMessage: key => `<${key}>`, getUILanguage: () => 'en' },
       alarms: { create() {}, onAlarm: event() },
@@ -144,8 +146,34 @@ function loadWorker() {
     return { replies, async };
   };
   const fromHost = msg => on.port.forEach(l => l(msg));
-  return { posted, created, opened, on, send, fromHost };
+  return { posted, created, opened, sent, on, send, fromHost };
 }
+
+test('worker: gallery_changed notifies the panel and safely ignores a missing receiver or unknown host message', async () => {
+  for (const noPanel of [false, true]) {
+    const w = loadWorker({ noPanel });
+    w.fromHost({ type: 'gallery_changed' });
+    await tick();
+    assert.deepEqual(w.sent, [{ type: 'panel:gallery_changed' }]);
+    w.fromHost({ type: 'future_host_message' });
+    await tick();
+    assert.equal(w.sent.length, 1);
+    assert.ok(!w.posted.some(m => m.level === 'error'));
+  }
+});
+
+test('sidepanel: gallery_changed refreshes only a visible panel', () => {
+  // Run the listener from the real script, following this file's text-based panel checks.
+  const listener = read('sidepanel.js').match(/chrome\.runtime\.onMessage\.addListener\(msg => \{[\s\S]*?\n\}\);/)[0];
+  let receive, refreshed = 0;
+  const document = { hidden: false };
+  vm.runInNewContext(listener, { document, refresh: () => { refreshed++; }, chrome: { runtime: { onMessage: { addListener: fn => { receive = fn; } } } } });
+  receive({ type: 'panel:gallery_changed' }); assert.equal(refreshed, 1);
+  document.hidden = true;
+  receive({ type: 'panel:gallery_changed' }); assert.equal(refreshed, 1);
+  document.hidden = false;
+  receive({ type: 'other' }); receive(null); assert.equal(refreshed, 1);
+});
 
 test('worker: panel:status answers at once with the connection and the job in progress', () => {
   const w = loadWorker();
