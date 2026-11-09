@@ -31,8 +31,49 @@ function pixelSprite(offsetX = 0, offsetY = 0) {
   return { width, height, rgba, colors };
 }
 
+function nativePixelSprite(edge) {
+  const colors = [[0, 0, 0, 0], [16, 48, 96, 255], [224, 48, 24, 255], [32, 208, 80, 255]];
+  const rgba = new Uint8Array(edge * edge * 4);
+  for (let y = 2; y < edge - 2; y++) for (let x = 2; x < edge - 2; x++) {
+    const inside = (x >= Math.floor(edge / 4) && x < Math.ceil(edge * 3 / 4)) ||
+      (y >= Math.floor(edge / 3) && y < Math.ceil(edge * 2 / 3));
+    if (inside && (x * 3 + y * 5) % 13 !== 0) {
+      rgba.set(colors[1 + (x * 7 + y * 11) % 3], (y * edge + x) * 4);
+    }
+  }
+  return { width: edge, height: edge, rgba, colors };
+}
+
 const render = (source, motion, size = 144) => renderLightMotion(source, { motion, size, background: 'transparent' });
 const difference = (a, b) => a.reduce((sum, value, i) => sum + Math.abs(value - b[i]), 0);
+const colorKey = (rgba, i) => rgba[i] * 65536 + rgba[i + 1] * 256 + rgba[i + 2];
+
+function assertWholeEnlargement(result, size, minimum = 1) {
+  const m = result.scaleFactor, long = Math.max(result.width, result.height);
+  assert.ok(Number.isInteger(m) && m >= minimum);
+  assert.ok(long <= size);
+  assert.equal(result.width % m, 0); assert.equal(result.height % m, 0);
+  assert.ok(long / m * (m + 1) > size, 'scaleFactor is the largest whole multiple within size');
+}
+
+function assertSourcePixels(frames, width, height, source, m = null) {
+  const colors = new Set(), alphas = new Set();
+  for (let i = 0; i < source.rgba.length; i += 4) {
+    alphas.add(source.rgba[i + 3]);
+    if (source.rgba[i + 3]) colors.add(colorKey(source.rgba, i));
+  }
+  for (const frame of frames) for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const i = (y * width + x) * 4, alpha = frame[i + 3];
+    if (!alphas.has(alpha)) assert.fail(`new alpha ${alpha} at ${x},${y}`);
+    if (alpha && !colors.has(colorKey(frame, i))) assert.fail(`new opaque color at ${x},${y}`);
+    if (m !== null) {
+      const block = ((y - y % m) * width + x - x % m) * 4;
+      for (let c = 0; c < 4; c++) {
+        if (frame[i + c] !== frame[block + c]) assert.fail(`non-uniform ${m}x block at ${x},${y}`);
+      }
+    }
+  }
+}
 
 test('motion names, exact defaults, periodic endpoints and moving poses', () => {
   assert.deepEqual(LIGHT_MOTIONS, ['bounce', 'idle', 'sway', 'nod', 'squash', 'wiggle']);
@@ -71,7 +112,8 @@ for (const motion of LIGHT_MOTIONS) test(`${motion}: pixel loop seam and clear c
   const result = render(sprite(), motion);
   assert.equal(result.pixelArt, false);
   assert.equal(result.pixelScale, null);
-  assert.equal(Math.max(result.width, result.height), 144);
+  assert.equal(result.sampling, 'nearest');
+  assertWholeEnlargement(result, 144);
   const diffs = result.frames.slice(1).map((frame, i) => difference(frame, result.frames[i]));
   assert.ok(Math.max(...diffs) > 0);
   assert.ok(difference(result.frames.at(-1), result.frames[0]) <= Math.max(...diffs) * 1.05, 'loop seam');
@@ -116,48 +158,68 @@ test('rotation stays around bottom center, with only the specified wiggle transl
     };
     const corners = poses.flatMap(p => [15, 45].flatMap(x => [10, 69].map(y => forward(x, y, p))));
     const margin = 59 * 0.06;
-    const left = Math.min(...corners.map(p => p.x)) - margin;
-    const top = Math.min(...corners.map(p => p.y)) - margin;
-    const right = Math.max(...corners.map(p => p.x)) + margin;
-    const bottom = Math.max(...corners.map(p => p.y)) + margin;
-    const scale = 384 / Math.max(right - left, bottom - top);
+    const left = Math.floor(Math.min(...corners.map(p => p.x)) - margin);
+    const top = Math.floor(Math.min(...corners.map(p => p.y)) - margin);
+    const right = Math.ceil(Math.max(...corners.map(p => p.x)) + margin);
+    const bottom = Math.ceil(Math.max(...corners.map(p => p.y)) + margin);
+    const scale = Math.floor(384 / Math.max(right - left, bottom - top));
+    assert.equal(result.sampling, 'nearest'); assert.equal(result.scaleFactor, scale);
     const markers = result.frames.map(frame => {
       let sx = 0, sy = 0, n = 0;
-      // Premultiplied blue measures marker coverage even at its antialiased edges.
+      // The blue channel weights the marker centroid before converting it back to source-pixel coordinates.
       for (let i = 0; i < frame.length; i += 4) if (frame[i + 2] && frame[i + 3]) {
         const weight = frame[i + 2] * frame[i + 3];
         sx += ((i / 4) % result.width) * weight; sy += Math.floor(i / 4 / result.width) * weight; n += weight;
       }
       assert.ok(n > 0);
-      return { x: sx / n, y: sy / n };
+      return { x: (sx / n + 0.5) / scale - 0.5, y: (sy / n + 0.5) / scale - 0.5 };
     });
     poses.forEach((p, i) => {
       // The marker is centered one source pixel above the bottom pivot.
       const expected = forward(30, 68, p);
-      assert.ok(Math.abs(markers[i].x - ((expected.x - left) * scale - 0.5)) <= 1);
-      assert.ok(Math.abs(markers[i].y - ((expected.y - top) * scale - 0.5)) <= 1);
+      assert.ok(Math.abs(markers[i].x - (expected.x - left - 0.5)) <= 1);
+      assert.ok(Math.abs(markers[i].y - (expected.y - top - 0.5)) <= 1);
       // Recover the pivot from that marker, removing wiggle's intentional dx translation.
-      const pivotX = markers[i].x - Math.sin(p.angle * Math.PI / 180) * p.sy * scale - p.dx * 30 * scale;
-      const pivotY = markers[i].y + Math.cos(p.angle * Math.PI / 180) * p.sy * scale;
-      assert.ok(Math.abs(pivotX - ((30 - left) * scale - 0.5)) <= 1);
-      assert.ok(Math.abs(pivotY - ((69 - top) * scale - 0.5)) <= 1);
+      const pivotX = markers[i].x - Math.sin(p.angle * Math.PI / 180) * p.sy - p.dx * 30;
+      const pivotY = markers[i].y + Math.cos(p.angle * Math.PI / 180) * p.sy;
+      assert.ok(Math.abs(pivotX - (30 - left - 0.5)) <= 1);
+      assert.ok(Math.abs(pivotY - (69 - top - 0.5)) <= 1);
     });
   }
 });
 
-test('premultiplied interpolation and box reduction reject hidden white RGB halos through GIF', () => {
-  for (const edge of [60, 512]) {
-    const rgba = new Uint8Array(edge * edge * 4);
-    for (let y = 0; y < edge; y++) for (let x = 0; x < edge; x++) {
-      const distance = Math.hypot(x + 0.5 - edge / 2, y + 0.5 - edge / 2);
-      const alpha = Math.round(Math.max(0, Math.min(1, edge * 0.35 - distance)) * 255);
-      rgba.set(alpha ? [200, 0, 0, alpha] : [255, 255, 255, 0], (y * edge + x) * 4);
+test('smooth downscaling and box reduction reject hidden white RGB halos through GIF', () => {
+  const edge = 512, rgba = new Uint8Array(edge * edge * 4);
+  for (let y = 0; y < edge; y++) for (let x = 0; x < edge; x++) {
+    const distance = Math.hypot(x + 0.5 - edge / 2, y + 0.5 - edge / 2);
+    const alpha = Math.round(Math.max(0, Math.min(1, edge * 0.35 - distance)) * 255);
+    rgba.set(alpha ? [200, 0, 0, alpha] : [255, 255, 255, 0], (y * edge + x) * 4);
+  }
+  const result = render({ width: edge, height: edge, rgba }, 'sway', 128);
+  assert.equal(result.sampling, 'smooth'); assert.equal(result.scaleFactor, null);
+  assert.equal(Math.max(result.width, result.height), 128);
+  const gif = encodeGif(result.frames, { width: result.width, height: result.height, delayMs: result.delaysMs });
+  for (const frame of decodeGifFrames(gif.data).frames) for (let i = 0; i < frame.rgba.length; i += 4) {
+    if (frame.rgba[i + 3]) assert.ok(frame.rgba[i + 1] <= 40 && frame.rgba[i + 2] <= 40);
+  }
+});
+
+test('native-resolution pixel sprites use nearest sampling for all motions without new colors', () => {
+  for (const edge of [16, 48]) {
+    const source = nativePixelSprite(edge);
+    assert.deepEqual(detectPixelArt(source.rgba, source.width, source.height),
+      { pixelArt: false, scale: 1, offsetX: 0, offsetY: 0 });
+    for (const motion of LIGHT_MOTIONS) {
+      const result = render(source, motion, 384);
+      assert.equal(result.sampling, 'nearest');
+      assert.equal(result.pixelArt, false); assert.equal(result.pixelScale, null);
+      assertWholeEnlargement(result, 384, 2);
+      assertSourcePixels(result.frames, result.width, result.height, source, result.scaleFactor);
     }
-    const result = render({ width: edge, height: edge, rgba }, 'sway', 64);
+    const result = render(source, 'idle', 384);
     const gif = encodeGif(result.frames, { width: result.width, height: result.height, delayMs: result.delaysMs });
-    for (const frame of decodeGifFrames(gif.data).frames) for (let i = 0; i < frame.rgba.length; i += 4) {
-      if (frame.rgba[i + 3]) assert.ok(frame.rgba[i + 1] <= 40 && frame.rgba[i + 2] <= 40);
-    }
+    const decoded = decodeGifFrames(gif.data);
+    assertSourcePixels(decoded.frames.map(frame => frame.rgba), decoded.width, decoded.height, source);
   }
 });
 
@@ -181,6 +243,7 @@ test('pixel art uses only source colors and uniform integer enlargement blocks',
   // Idle's natural canvas is 16 x 17, so a 384 limit gives a 22x enlargement.
   const result = render(source, 'idle', 384), m = 22;
   assert.equal(result.pixelArt, true); assert.equal(result.pixelScale, 4);
+  assert.equal(result.sampling, 'pixel-grid'); assert.equal(result.scaleFactor, null);
   assert.ok(Math.max(result.width, result.height) <= 384);
   assert.equal(result.width % m, 0); assert.equal(result.height % m, 0);
   for (const frame of result.frames) {
@@ -197,7 +260,8 @@ test('pixel art uses only source colors and uniform integer enlargement blocks',
     large.rgba.set(source.colors[1 + (Math.floor(x / 2) + Math.floor(y / 2)) % 5], (y * 256 + x) * 4);
   }
   const small = render(large, 'sway', 64);
-  assert.equal(small.pixelArt, true); assert.equal(Math.max(small.width, small.height), 64);
+  assert.equal(small.pixelArt, true); assert.equal(small.sampling, 'pixel-grid');
+  assert.equal(small.scaleFactor, null); assert.equal(Math.max(small.width, small.height), 64);
   for (const frame of small.frames) for (let i = 0; i < frame.length; i += 4) {
     if (frame[i + 3]) assert.ok(colors.has(Array.from(frame.subarray(i, i + 4)).join(',')));
   }
@@ -246,7 +310,8 @@ test('all pixel art motions preserve colors, clear margins and whole native-pixe
     const w = Math.ceil(Math.max(...corners.map(p => p.x)) + 2) - Math.floor(Math.min(...corners.map(p => p.x)) - 2);
     const h = Math.ceil(Math.max(...corners.map(p => p.y)) + 2) - Math.floor(Math.min(...corners.map(p => p.y)) - 2);
     const m = Math.max(1, Math.floor(96 / Math.max(w, h))), result = render(source, motion, 96);
-    assert.equal(result.pixelArt, true); assert.deepEqual([result.width, result.height], [w * m, h * m]);
+    assert.equal(result.pixelArt, true); assert.equal(result.sampling, 'pixel-grid');
+    assert.equal(result.scaleFactor, null); assert.deepEqual([result.width, result.height], [w * m, h * m]);
     for (const frame of result.frames) for (let y = 0; y < result.height; y++) for (let x = 0; x < result.width; x++) {
       const i = (y * result.width + x) * 4;
       if (frame[i + 3]) assert.ok(colors.has(Array.from(frame.subarray(i, i + 4)).join(',')));

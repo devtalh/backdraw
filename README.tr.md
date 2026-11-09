@@ -474,16 +474,18 @@ gibi poz değişikliği gerekiyorsa `generate_image` ile `motion` kullan.
 | `wiggle` | Hızlıca kıpırdar | 10 × 40 | 400 ms |
 
 `image_path` (yerel PNG, geçerli klasöre göre göreli veya mutlak yol) ve `motion` ver.
-`size`, uzun kenarı belirler (64-1024, varsayılan 384; piksel artta en yakın tam kat).
+`size`, uzun kenar sınırını belirler (64-1024, varsayılan 384; büyütmede en yakın tam kat).
 `background` varsayılan olarak `transparent`, istenirse `white` olur.
 Çıktı kaynağın yanında `<ad>_<motion>.gif` olarak, gerekirse `_2`, `_3` ekleriyle kaydedilir;
 PNG hiç değişmez. Numaralı önizleme bütün kareleri gösterir. Chrome açıkken galeride de görünür;
 köprü kapalıysa GIF yine kaydedilir ve sonuç neden listelenmediğini açıklar.
 
 GIF şeffaflığı 1-bit'tir: en az yarı opak pikseller kendi rengini korur; diğerleri tamamen saydam
-olur. Yumuşak görsellerde premultiplied alpha örnekleme hale oluşmasını önler. Bütün kareler ortak
-palet kullanır; palet titremesi ve dithering yoktur. Tespit edilen piksel art (k×k ızgara), kendi
-piksel ızgarasında hareket eder ve keskin kenarlar için en yakın komşuyla ölçeklenir.
+olur. Kaynaktan büyük çıktı, piksel art ve küçük ikonlar keskin kalsın diye en yakın komşuyla tam sayı
+katında büyütülür; uzun kenarı `size` değerinden küçük olabilir. Yumuşak premultiplied alpha örnekleme
+yalnızca küçültmede kullanılır ve hale oluşmasını önler. Bütün kareler ortak palet kullanır; palet
+titremesi ve dithering yoktur. Tespit edilen piksel art (k×k ızgara) yine kendi piksel ızgarasında
+hareket eder ve en yakın komşuyla ölçeklenir.
 
 Sınırlar: yalnız interlaced olmayan PNG, en çok 20 MB ve 16,7 milyon piksel (ör. 4096 × 4096; kenar en çok 8192); çıktı GIF en çok 8 MB.
 

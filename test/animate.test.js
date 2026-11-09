@@ -17,18 +17,19 @@ test('animationResultLines describes both backgrounds, sampling modes, source op
   assert.equal(MAX_ANIMATION_BYTES, 8 * 1024 * 1024);
   const result = { sourcePath: path.join('stickers', 'starfish.png'), path: 'starfish_bounce.gif', motion: 'bounce',
     frames: 16, durationMs: 800, delaysMs: Array(16).fill(50), width: 384, height: 300, bytes: 4096,
-    background: 'transparent', pixelArt: false, opaqueSource: false };
+    background: 'transparent', pixelArt: false, sampling: 'smooth', opaqueSource: false };
   assert.deepEqual(animationResultLines(result, { added: true, jobId: 'img_1234abcd' }), [
     'SUCCESS \u2014 animated starfish.png locally with "bounce" (no ChatGPT, nothing was sent).',
     'Saved: starfish_bounce.gif',
     'Animated GIF: 16 frames, 800 ms per loop (50 ms per frame), loops forever; 384 x 300 px; 4.0 KB.',
     'Background: transparent (1-bit: pixels at least half opaque are kept with their own color, the rest are fully transparent).',
-    'Smooth image: resampled with premultiplied alpha, so edges get no halo.',
+    'Sampling: smooth (downscaled with premultiplied alpha), so edges get no halo.',
     'The attached preview shows all 16 frames in order, numbered from 1, over a checkerboard where the GIF is transparent. Check the loop and the edges.',
     'Gallery: added (img_1234abcd).',
     'The source PNG was not changed.',
   ]);
-  const lines = animationResultLines({ ...result, background: 'white', pixelArt: true, pixelScale: 4, opaqueSource: true },
+  const lines = animationResultLines({ ...result, background: 'white', pixelArt: true, pixelScale: 4,
+    sampling: 'pixel-grid', opaqueSource: true },
     { added: false, reason: 'offline' });
   assert.deepEqual(lines.slice(3, 6), [
     'Background: white.',
@@ -37,6 +38,9 @@ test('animationResultLines describes both backgrounds, sampling modes, source op
   ]);
   assert.equal(lines.at(-2), 'Gallery: not added \u2014 offline. The GIF is saved.');
   assert.equal(lines.at(-1), 'The source PNG was not changed.');
+  const nearest = animationResultLines({ ...result, sampling: 'nearest', scaleFactor: 6,
+    sourceWidth: 48, sourceHeight: 48 }, { added: true, jobId: 'img_1234abcd' });
+  assert.equal(nearest[4], 'Sampling: nearest neighbor (enlarged 6x from 48 x 48 source pixels), so edges stay sharp and no new colors appear.');
 });
 
 function fixture(t) {
@@ -53,6 +57,19 @@ function fixture(t) {
 function snapshot(file) {
   return { hash: createHash('sha256').update(fs.readFileSync(file)).digest('hex'), mtimeMs: fs.statSync(file).mtimeMs };
 }
+function nativePixelSprite(edge = 48) {
+  const colors = [[0, 0, 0, 0], [16, 48, 96, 255], [224, 48, 24, 255], [32, 208, 80, 255]];
+  const rgba = new Uint8Array(edge * edge * 4);
+  for (let y = 2; y < edge - 2; y++) for (let x = 2; x < edge - 2; x++) {
+    const inside = (x >= Math.floor(edge / 4) && x < Math.ceil(edge * 3 / 4)) ||
+      (y >= Math.floor(edge / 3) && y < Math.ceil(edge * 2 / 3));
+    if (inside && (x * 3 + y * 5) % 13 !== 0) {
+      rgba.set(colors[1 + (x * 7 + y * 11) % 3], (y * edge + x) * 4);
+    }
+  }
+  return { width: edge, height: edge, rgba, colors };
+}
+const colorKey = (rgba, i) => rgba[i] * 65536 + rgba[i + 1] * 256 + rgba[i + 2];
 function verify(result, size, transparent) {
   const data = fs.readFileSync(result.path), info = gifInfo(data), spec = motionSpec(result.motion);
   const decoded = decodeGifFrames(data, { maxFrames: 16 });
@@ -62,7 +79,16 @@ function verify(result, size, transparent) {
   assert.equal(info.loop, 0); assert.equal(info.transparent, transparent);
   assert.equal(info.transparentFrames, transparent ? spec.frames : 0); assert.equal(info.truncated, false);
   assert.equal(result.bytes, data.length); assert.equal(result.frames, spec.frames);
-  assert.equal(Math.max(info.width, info.height), size);
+  const long = Math.max(info.width, info.height);
+  if (result.sampling === 'nearest') {
+    assert.ok(Number.isInteger(result.scaleFactor) && result.scaleFactor >= 1);
+    assert.ok(long <= size);
+    assert.equal(info.width % result.scaleFactor, 0); assert.equal(info.height % result.scaleFactor, 0);
+    assert.ok(long / result.scaleFactor * (result.scaleFactor + 1) > size);
+  } else {
+    assert.equal(result.scaleFactor, null);
+    assert.equal(long, size);
+  }
   for (const frame of decoded.frames) for (const i of [0, info.width - 1, (info.height - 1) * info.width, info.width * info.height - 1]) {
     assert.deepEqual(Array.from(frame.rgba.subarray(i * 4, i * 4 + 4)), transparent ? [0, 0, 0, 0] : [255, 255, 255, 255]);
   }
@@ -136,10 +162,11 @@ test('contact sheets show the encoded GIF transparency and palette', t => {
   assert.equal(comparedOpaque, true);
 });
 
-test('animation results expose detected pixel scale', t => {
+test('animation results expose sampling metadata and detected pixel scale', t => {
   const { dir, imagePath } = fixture(t);
-  const smooth = animateImage({ imagePath, motion: 'idle', size: 96 });
+  const smooth = animateImage({ imagePath, motion: 'idle', size: 64 });
   assert.equal(smooth.pixelArt, false); assert.equal(smooth.pixelScale, null);
+  assert.equal(smooth.sampling, 'smooth'); assert.equal(smooth.scaleFactor, null);
   const width = 64, height = 64, rgba = new Uint8Array(width * height * 4);
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
     const light = (Math.floor(x / 4) + Math.floor(y / 4)) % 2;
@@ -149,6 +176,24 @@ test('animation results expose detected pixel scale', t => {
   fs.writeFileSync(pixelPath, encodePng(width, height, rgba));
   const pixel = animateImage({ imagePath: pixelPath, motion: 'idle', size: 96 });
   assert.equal(pixel.pixelArt, true); assert.equal(pixel.pixelScale, 4);
+  assert.equal(pixel.sampling, 'pixel-grid'); assert.equal(pixel.scaleFactor, null);
+});
+
+test('native-resolution pixel PNG stays on its source palette through the GIF pipeline', t => {
+  const { dir } = fixture(t), source = nativePixelSprite();
+  const imagePath = path.join(dir, 'native-pixel.png');
+  fs.writeFileSync(imagePath, encodePng(source.width, source.height, source.rgba));
+  const result = animateImage({ imagePath, motion: 'idle', size: 384 });
+  assert.equal(result.sampling, 'nearest'); assert.equal(result.pixelArt, false);
+  assert.equal(result.pixelScale, null); assert.ok(result.scaleFactor >= 2);
+  assert.deepEqual([result.sourceWidth, result.sourceHeight], [source.width, source.height]);
+  assert.ok(Math.max(result.width, result.height) <= 384);
+  const colors = new Set(source.colors.slice(1).map(color => color[0] * 65536 + color[1] * 256 + color[2]));
+  const decoded = decodeGifFrames(fs.readFileSync(result.path), { maxFrames: 16 });
+  for (const frame of decoded.frames) for (let i = 0; i < frame.rgba.length; i += 4) {
+    assert.ok(frame.rgba[i + 3] === 0 || frame.rgba[i + 3] === 255);
+    if (frame.rgba[i + 3]) assert.ok(colors.has(colorKey(frame.rgba, i)), 'GIF introduced a new opaque color');
+  }
 });
 
 test('invalid paths, motion, sizes, background and PNG bytes fail without changing the source', t => {

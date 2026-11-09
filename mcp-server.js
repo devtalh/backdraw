@@ -213,7 +213,7 @@ const TOOLS = [
       properties: {
         image_path: { type: 'string', description: "Absolute path preferred (e.g. a path saved by generate_image); a relative path is resolved from the server's current folder." },
         motion: { type: 'string', enum: LIGHT_MOTIONS, description: 'bounce: jump and land; idle: gentle breathing; sway: rock side to side; nod: dip the head; squash: squash and stretch; wiggle: quick little shake.' },
-        size: { type: 'integer', minimum: 64, maximum: 1024, default: 384, description: 'Output long edge in pixels; pixel art uses the nearest whole multiple of its pixel grid.' },
+        size: { type: 'integer', minimum: 64, maximum: 1024, default: 384, description: 'Output long-edge limit in pixels; enlargement uses the nearest whole multiple of the source pixel grid, so the result may be smaller.' },
         background: { type: 'string', enum: ['transparent', 'white'], default: 'transparent' },
         include_preview: { type: 'boolean', default: true },
       },

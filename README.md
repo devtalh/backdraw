@@ -464,16 +464,18 @@ Example request: "Make the starfish sticker bounce."
 | `wiggle` | Quick little shake | 10 × 40 | 400 ms |
 
 Pass `image_path` (local PNG, relative to the current folder or absolute) and `motion`.
-`size` sets the long edge (64-1024, default 384; pixel art uses the nearest whole multiple).
+`size` sets the long-edge limit (64-1024, default 384; enlargement uses the nearest whole multiple).
 `background` is `transparent` by default, or `white`.
 The output is `<name>_<motion>.gif` beside the source, with `_2`, `_3`, etc. if needed; the PNG is
 never changed. A numbered preview shows every frame. With Chrome open, it also appears in the
 gallery; if the bridge is off, the GIF is still saved and the result explains why it was not listed.
 
 GIF transparency is 1-bit: pixels at least half opaque keep their own color; the rest become fully
-transparent. Smooth images use premultiplied alpha sampling to avoid halos. All frames share one
-palette, with no palette flicker or dithering. Detected pixel art (a k×k grid) moves on its pixel
-grid and scales with nearest neighbor to keep edges sharp.
+transparent. Output larger than the source is enlarged by a whole-number factor with nearest-neighbor
+sampling, keeping pixel art and small icons sharp; its long edge may be smaller than `size`. Smooth
+premultiplied-alpha sampling is used only when downscaling, to avoid halos. All frames share one
+palette, with no palette flicker or dithering. Detected pixel art (a k×k grid) still moves on its
+pixel grid and scales with nearest neighbor.
 
 Limits: non-interlaced PNG only, at most 20 MB and 16.7 million pixels (for example 4096 × 4096; edges up to 8192); the output GIF is at most 8 MB.
 

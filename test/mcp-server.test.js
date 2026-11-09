@@ -374,6 +374,7 @@ test('animate_image schema and instructions expose local motion separately from 
   assert.deepEqual(p.motion.enum, LIGHT_MOTIONS);
   assert.equal(p.motion.type, 'string');
   assert.deepEqual({ ...p.size, description: undefined }, { type: 'integer', minimum: 64, maximum: 1024, default: 384, description: undefined });
+  assert.equal(p.size.description, 'Output long-edge limit in pixels; enlargement uses the nearest whole multiple of the source pixel grid, so the result may be smaller.');
   assert.deepEqual(p.background, { type: 'string', enum: ['transparent', 'white'], default: 'transparent' });
   assert.deepEqual(p.include_preview, { type: 'boolean', default: true });
   assert.deepEqual(tool.annotations, { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false });
@@ -389,12 +390,14 @@ test('animate_image saves a sibling GIF and PNG sheet even without a bridge; rel
   const saved = path.join(path.dirname(imagePath), 'starfish_bounce.gif');
   assert.ok(textOf(res).includes(`Saved: ${saved}`));
   assert.match(textOf(res), /16 frames, 800 ms per loop \(50 ms per frame\)/);
+  assert.match(textOf(res), /Sampling: nearest neighbor \(enlarged 27x from 16 x 16 source pixels\)/);
   assert.match(textOf(res), /Gallery: not added.*the bridge is not running \(Chrome is closed or the extension is off\), so it is not in the gallery/);
   assert.doesNotMatch(textOf(res), /run animate_image again/);
   assert.match(textOf(res), /The GIF is saved/);
   const info = gifInfo(fs.readFileSync(saved));
   assert.equal(info.frames, 16);
-  assert.equal(Math.max(info.width, info.height), 384);
+  assert.equal(Math.max(info.width, info.height), 378);
+  assert.ok(Math.max(info.width, info.height) <= 384);
   const preview = res.result.content.find(c => c.type === 'image');
   assert.equal(preview.mimeType, 'image/png');
   assert.ok(decodePng(Buffer.from(preview.data, 'base64')).width > 0);
