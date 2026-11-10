@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-11-10
+
+### Added
+
+- **Local `animate_sheet` tool.** It turns a sprite sheet PNG with all poses in one image into an
+  aligned, looping animation, without ChatGPT or Chrome. Frames are cut out of the sheet (touching
+  frames are split, small specks are merged or dropped and reported) and moved, never scaled, onto
+  a common ground line; for `jump` the arc is added in code. Motions are `idle`, `walk`, `run`,
+  `jump`, `dance`, `wave`, `attack` and `custom`, with `fps` or `durations_ms` overrides. Quality
+  checks (frame count, frame size, color drift, loop seam, edge halo) are reported as warnings. A
+  new folder next to the unchanged source holds a transparent GIF, an atlas PNG, the frame PNGs,
+  `manifest.json` and a numbered contact preview, and the GIF appears in the gallery. (#17)
+- **`generate_sprite` tool.** One call asks ChatGPT for a transparent sprite sheet (8 frames in
+  4x2 or 16 frames in 4x4), and the host turns it into the same GIF, atlas, frames and manifest as
+  soon as it is saved. If the frame count, an empty frame or the character's look fails the check,
+  the sheet is generated once more in a new chat and the better attempt is used. The gallery shows
+  the GIF together with its sheets, and `cancel_job` keeps the saved sheets. An older bridge
+  returns an update message instead. (#18)
+
+### Changed
+
+- **Shorter sprite results.** `generate_sprite` and `animate_sheet` results have one quality line
+  and list only the checks that failed. Local animation results no longer show the "Requested
+  motion" hint meant for ChatGPT. (#18)
+
 ## [2.2.0] - 2026-11-09
 
 ### Added
