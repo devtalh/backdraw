@@ -15,6 +15,7 @@ const { normName, parseProjectUrl, pickProject } = require('./lib/projects');
 const { buildText } = require('./lib/prompt');
 const { MOTION_NAMES } = require('./lib/motion');
 const { LIGHT_MOTIONS } = require('./lib/light-motion');
+const { SHEET_MOTIONS } = require('./lib/sprite-sheet');
 const { aspectOption } = require('./lib/aspect');
 const { pngInfo } = require('./lib/png');
 const { gifInfo } = require('./lib/gif');
@@ -399,7 +400,10 @@ function addLocalAnimation(p) {
   if (typeof p.path !== 'string' || !path.isAbsolute(p.path) || path.extname(p.path).toLowerCase() !== '.gif') {
     throw bad('path must be an absolute GIF file path.');
   }
-  if (!LIGHT_MOTIONS.includes(p.motion)) throw bad(`Unknown motion. Use: ${LIGHT_MOTIONS.join(', ')}.`);
+  const kind = p.kind === undefined ? 'light' : p.kind;
+  if (!['light', 'sheet'].includes(kind)) throw bad('kind must be light or sheet.');
+  const motions = kind === 'sheet' ? SHEET_MOTIONS : LIGHT_MOTIONS;
+  if (!motions.includes(p.motion)) throw bad(`Unknown motion. Use: ${motions.join(', ')}.`);
   if (!['transparent', 'white'].includes(p.background)) throw bad('background must be transparent or white.');
   if (p.sourcePath !== undefined && typeof p.sourcePath !== 'string') throw bad('sourcePath must be a string.');
   const file = path.resolve(p.path);
@@ -445,7 +449,7 @@ function addLocalAnimation(p) {
   const time = now();
   const job = {
     id, mode: 'local', status: 'succeeded', step: 'succeeded', message: 'Local animation saved',
-    prompt: `Local ${p.motion} animation of ${path.basename(p.sourcePath || file)}`.slice(0, 300),
+    prompt: `${kind === 'sheet' ? 'Sprite sheet' : 'Local'} ${p.motion} animation of ${path.basename(p.sourcePath || file)}`.slice(0, 300),
     animated: true, motion: p.motion, transparent: p.background === 'transparent', aspect: null,
     project: null, startUrl: null, conversationUrl: null, references: [], copies: [],
     createdAt: time, startedAt: time, finishedAt: time, assistantText: null, error: null, reason: null,

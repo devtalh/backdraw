@@ -596,6 +596,21 @@ test('the host', async t => {
     assert.equal(fs.existsSync(path.join(REFS, 'Local motions', 'thumbs', `${added.file}.jpg`)), false);
   });
 
+  await t.test('sprite sheet animations require kind sheet, accept sheet motions and use the sprite prompt', async () => {
+    const file = path.join(DIR, 'sprite-walk.gif'); fs.writeFileSync(file, gif({ frames: [{}, {}], loop: 0 }));
+    const params = { path: file, sourcePath: path.join(DIR, 'frog.png'), motion: 'walk', background: 'transparent' };
+    const before = (await call('gallery_list')).total;
+    for (const extra of [{}, { kind: 'unknown' }, { kind: null }, { kind: 'light' }, { kind: 'sheet', motion: 'bounce' }]) {
+      await assert.rejects(call('add_local_animation', { ...params, ...extra }), { code: 'BAD_REQUEST' });
+    }
+    assert.equal((await call('gallery_list')).total, before);
+    const job = await call('add_local_animation', { ...params, kind: 'sheet' });
+    assert.equal(job.prompt, 'Sprite sheet walk animation of frog.png'); assert.equal(job.motion, 'walk');
+    assert.equal(job.mode, 'local'); assert.equal(job.status, 'succeeded'); assert.equal(job.images[0].gif.frames, 2);
+    assert.deepEqual(await nextFromHost('gallery_changed'), { type: 'gallery_changed' });
+    assert.equal((await call('gallery_list')).total, before + 1);
+  });
+
   await t.test('recreated local GIFs replace the record with a new id, preview bytes and gallery notifications', async () => {
     const file = path.join(DIR, 'recreated.gif');
     const original = gif({ width: 12, height: 8, frames: [{}, {}] });

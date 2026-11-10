@@ -493,6 +493,64 @@ Hafif hareket fikri [gif-factory](https://github.com/WoYun520/gif-factory) (MIT)
 fikri [sprite-gen](https://github.com/aldegad/sprite-gen) (Apache-2.0) projesinden gelir;
 kod kopyalanmadı.
 
+## Sprite sheet animasyonu (animate_sheet)
+
+`animate_sheet`, bütün karakter pozlarını içeren yerel PNG'den saniyeler içinde hizalı ve döngülü
+animasyon üretir; ChatGPT veya Chrome gerekmez. Gevşek ızgarada bile bağlı bileşenleri bulur,
+1-bit alfa maskesiyle yarı saydam pusu temizler, her pozun kendi piksellerini ve renklerini korur.
+Tek resimden hafif hareket için [Yerel hareket](#yerel-hareket-animate_image) kullan.
+
+`image_path` (mutlak veya sunucunun geçerli klasörüne göre göreli yol) ve `motion` ver.
+`columns` ve `rows` birlikte (her biri 1-16, toplam 2-64 hücre) veya `frames` (2-64) verilebilir;
+otomatik algılama için hepsini atlayabilirsin. İkisi de verilirse `frames`, `columns * rows` ile aynı olmalı.
+Satır başına kare sayısı eşit değilse `columns`/`rows` yerine `frames` veya otomatik algılama kullan.
+
+| Hareket | Zamanlama (ms/kare, GIF yuvarlamasından önce) |
+|---|---|
+| `idle` | 150 |
+| `walk` | 83 |
+| `run` | 55 |
+| `jump` | Havada 60, yerde 90; kalkış ve iniş 150 |
+| `dance`, `wave`, `custom` | 100 |
+| `attack` | 70; en geniş vuruş 220, önceki hazırlık 140 |
+
+`fps` (1-50), profili eşit kare süreleriyle ezer. Alternatif olarak `durations_ms`, bulunan her kare
+için bir tam sayı süre (20-5000) verir. Bu iki seçenek birlikte kullanılamaz. GIF süreleri 10 ms'ye
+yuvarlanır. `size` (64-1024) yalnız GIF'in uzun kenarını sınırlar; verilmezse kaynak ölçeği korunur.
+Büyütmede tam sayı katında en yakın komşu, küçültmede premultiplied alpha ile alan ortalaması
+kullanılır. `background: white` ayrıca beyaz GIF yazar ve galeriye onu kaydeder; şeffaf GIF her zaman
+kaydedilir. `include_preview: false` yanıta eklenen önizlemeyi kaldırır.
+
+Kareler ortak zemin çizgisine taşınır ve yatay alfa kütle merkezine göre hizalanır; kaynak pozlar
+ölçeklenmez. `jump`, ardından havadaki kareleri parabol boyunca yükseltir. Varsayılan tepe, medyan
+kare yüksekliğinin yarısıdır; `jump_height` bunu ezer (0-2048 kaynak pikseli),
+`air_frames: [ilk, son]` ise 1 tabanlı, iki ucu dahil hava aralığını seçer. İkisi de yalnız jump içindir.
+Otomatik hava algılama, medyan yüksekliğin %85'inden kısa kareleri çömelme sayıp ilk ve son çömelme
+koşusu arasındaki kareleri, bu aralık yoksa çömelmesiz en uzun bitişik diziyi kullanır; sonuç yoksa orta yarıya döner.
+
+Kalite uyarıları şunları bildirir:
+
+- Beklenmeyen toplam veya satır başına kare sayısı.
+- Çok küçük kareler ve harekete özel boyut sapmaları.
+- Pozlar arasında değişen renk kimliği.
+- Ardışık kare farklarına göre fazla büyük son-ilk döngü dikişi.
+- Açık renk veya zemin rengindeki kenar haleleri; kaynaktaki yarı saydam piksel oranı da raporlanır.
+
+Kaynağın yanında yeni `<ad>_<motion>_sheet` klasörü (sonra `_2`, `_3` vb.) açılır. İçinde şeffaf
+`<ad>_<motion>.gif`, isteğe bağlı `<ad>_<motion>_white.gif`, kaynak ölçeğinde `atlas.png`,
+`frames/frame_01.png` vb., süre/hizalama/kalite bilgilerini içeren `manifest.json` ve numaralı
+`contact.png` bulunur. Kaynak PNG hiç değişmez, mevcut çıktıların üzerine yazılmaz. Köprü bağlıysa
+GIF galeride de görünür; değilse dosyalar yine kaydedilir. Opak sheet'lerde düz kenar zemini gerekir;
+bu zemin kenarlardan başlayan taşma doldurmayla silinir.
+Bu opak zemin geri dönüşü yalnız kenarlara bağlı zemini siler; sprite içindeki tamamen kapalı aynı renkli boşluklar kalır.
+
+Sınırlar: interlaced olmayan PNG, en çok 20 MB / 16,7 milyon piksel (kenar en çok 8192), en çok
+64 kare, her GIF en çok 8 MB; contact önizlemesi yalnız ilk 16 kareyi gösterir. Çok büyük kaynak
+ölçekli GIF tuvalleri encoder/decoder sınırlarını aşabilir; bu durumda daha küçük `size` ver.
+
+Fikirler [sprite-gen](https://github.com/aldegad/sprite-gen) (Apache-2.0) ve
+[kiki-pixel-gif](https://github.com/Mayzmei/kiki-pixel-gif) (MIT) kaynaklı; kod kopyalanmadı.
+
 ## Galeri yan paneli
 
 Açılır pencerede **Galeriyi aç**'a tıkla; Backdraw'ın yan paneli bulunduğun sayfanın yanında açılır.
@@ -525,6 +583,7 @@ dosyanın tam hâli görsel klasöründe değişmeden durur.
 | `select_project` | `name` ya da `url` | Yeni görsel sohbetlerinin açılacağı Projeyi seçer ve hatırlar (ad esnek eşleştirilir). |
 | `list_collections` | – | Referans koleksiyonlarını görsel sayıları, klasörleri ve dosyalarıyla (en yenisi önce) listeler. |
 | `animate_image` | `image_path` (zorunlu), `motion` (zorunlu), `size` (384), `background` (`transparent`), `include_preview` (true) | PNG'yi ChatGPT ve Chrome olmadan yerel döngülü GIF'e dönüştürür. |
+| `animate_sheet` | `image_path` (zorunlu), `motion` (zorunlu), `columns`, `rows`, `frames`, `fps`, `durations_ms`, `jump_height`, `air_frames`, `size` (kaynak ölçeği), `background` (`transparent`), `include_preview` (true) | Sprite sheet pozlarını yerel hizalar; GIF, atlas, kareler, manifest ve contact önizlemesi kaydeder. |
 
 - `animated`: kısa bir animasyonlu GIF ister; ChatGPT durağan bir görsel döndürürse bir kez daha sorar.
 - `motion`: isteğe bağlı GIF hareketi (`idle`, `walk`, `run`, `jump`, `wave`, `dance`, `bounce`,
@@ -547,6 +606,10 @@ dosyanın tam hâli görsel klasöründe değişmeden durur.
 - `animate_image`: `image_path` yerel PNG'dir; `motion`, `bounce`, `idle`, `sway`, `nod`, `squash`
   veya `wiggle` olur. `size` 64-1024 (varsayılan 384), `background` `transparent` veya `white`
   olur; `include_preview: false` numaralı önizlemeyi kaldırır. Bkz. [Yerel hareket](#yerel-hareket-animate_image).
+- `animate_sheet`: `motion`, `idle`, `walk`, `run`, `jump`, `dance`, `wave`, `attack` veya `custom` olur.
+  `columns`/`rows` veya `frames` algılamayı yönlendirir; `fps` veya `durations_ms` profil sürelerini ezer.
+  `jump_height`/`air_frames` zıplama kavisini belirler. Ölçek, zemin, kalite uyarıları ve sınırlar için
+  [Sprite sheet animasyonu](#sprite-sheet-animasyonu-animate_sheet) bölümüne bak.
 
 Bir sonuç şunları söyleyebilir:
 

@@ -483,6 +483,64 @@ The light-motion idea comes from [gif-factory](https://github.com/WoYun520/gif-f
 and the pixel-scale idea from [sprite-gen](https://github.com/aldegad/sprite-gen) (Apache-2.0);
 no code was copied.
 
+## Sprite sheet animation (animate_sheet)
+
+`animate_sheet` turns a local PNG containing all character poses into an aligned looping animation,
+in seconds, without ChatGPT or Chrome. It finds connected components even on a loose grid, removes
+semi-transparent haze with a 1-bit alpha mask, and keeps each pose's own pixels and colors. For
+light motion from a single picture, use [Local motion](#local-motion-animate_image).
+
+Pass `image_path` (absolute, or relative to the server's current folder) and `motion`. Give
+`columns` and `rows` together (1-16 each, 2-64 cells), or `frames` (2-64), or omit these for automatic
+detection. If both are supplied, `frames` must equal `columns * rows`.
+If rows contain different numbers of frames, use `frames` or automatic detection instead of `columns`/`rows`.
+
+| Motion | Timing (ms/frame, before GIF rounding) |
+|---|---|
+| `idle` | 150 |
+| `walk` | 83 |
+| `run` | 55 |
+| `jump` | 60 airborne, 90 grounded; takeoff and landing 150 |
+| `dance`, `wave`, `custom` | 100 |
+| `attack` | 70; widest strike 220, preceding windup 140 |
+
+`fps` (1-50) overrides the profile with equal frame durations. Alternatively, `durations_ms`
+supplies one integer duration (20-5000) per detected frame. These options cannot be combined.
+GIF delays are rounded to 10 ms. `size` (64-1024) limits only the GIF's long edge; omitting it keeps
+source scale. Enlargement uses an integer nearest-neighbor multiple; reduction uses area averaging
+with premultiplied alpha. `background: white` also writes a white GIF and lists it in the gallery;
+the transparent GIF is always saved. `include_preview: false` omits the attached preview.
+
+Frames are translated onto a common ground line and aligned by horizontal alpha center of mass,
+without scaling the source poses. `jump` then lifts airborne frames along a parabola. Its default
+peak is half the median frame height; `jump_height` overrides it (0-2048 source pixels), and
+`air_frames: [first, last]` selects an inclusive 1-based range. Both options are jump-only. Automatic
+air detection treats frames below 85% of the median height as crouches and uses the frames between the
+first and last crouch runs, or the longest non-crouching run if unavailable, before falling back to the middle half.
+
+Quality warnings report:
+
+- Unexpected total or per-row frame counts.
+- Very small frames and motion-specific size outliers.
+- Changed color identity between poses.
+- A last-to-first loop seam larger than typical adjacent differences.
+- Pale or background-colored edge halos; source semi-transparent pixel coverage is also reported.
+
+The new sibling folder `<name>_<motion>_sheet` (then `_2`, `_3`, etc.) contains the transparent
+`<name>_<motion>.gif`, optional `<name>_<motion>_white.gif`, source-scale `atlas.png`,
+`frames/frame_01.png` etc., `manifest.json` with timing/alignment/quality details, and numbered
+`contact.png`. The source PNG is never changed and existing outputs are never overwritten. With a
+connected bridge the GIF also appears in the gallery; otherwise the files are still saved. Opaque
+sheets require a flat edge background, removed by an edge-connected flood fill.
+This opaque-background fallback removes only edge-connected background; fully enclosed same-color holes inside sprites remain.
+
+Limits: non-interlaced PNG, at most 20 MB / 16.7 million pixels (edges up to 8192), at most 64 frames,
+each GIF at most 8 MB; the contact preview shows only the first 16 frames. Very large native GIF
+canvases can exceed the encoder/decoder limits; supply a smaller `size` in that case.
+
+Ideas from [sprite-gen](https://github.com/aldegad/sprite-gen) (Apache-2.0) and
+[kiki-pixel-gif](https://github.com/Mayzmei/kiki-pixel-gif) (MIT); no code was copied.
+
 ## Gallery side panel
 
 Click **Open gallery** in the popup to open Backdraw's side panel next to the page you are on. You
@@ -515,6 +573,7 @@ file remains unchanged in your images folder.
 | `select_project` | `name` or `url` | Selects and remembers the Project for new image chats (the name is matched loosely). |
 | `list_collections` | – | Lists your reference collections with image counts, folders and files (newest first). |
 | `animate_image` | `image_path` (required), `motion` (required), `size` (384), `background` (`transparent`), `include_preview` (true) | Animates a PNG locally into a looping GIF, without ChatGPT or Chrome. |
+| `animate_sheet` | `image_path` (required), `motion` (required), `columns`, `rows`, `frames`, `fps`, `durations_ms`, `jump_height`, `air_frames`, `size` (source scale), `background` (`transparent`), `include_preview` (true) | Aligns sprite sheet poses locally; saves GIF, atlas, frames, manifest and contact preview. |
 
 - `animated`: request a short animated GIF; if ChatGPT returns a still image, ask once more.
 - `motion`: optional GIF movement (`idle`, `walk`, `run`, `jump`, `wave`, `dance`, `bounce`,
@@ -537,6 +596,10 @@ file remains unchanged in your images folder.
 - `animate_image`: `image_path` is a local PNG; `motion` is `bounce`, `idle`, `sway`, `nod`, `squash`
   or `wiggle`. `size` is 64-1024 (default 384), `background` is `transparent` or `white`, and
   `include_preview: false` omits the numbered sheet. See [Local motion](#local-motion-animate_image).
+- `animate_sheet`: `motion` is `idle`, `walk`, `run`, `jump`, `dance`, `wave`, `attack` or `custom`.
+  `columns`/`rows` or `frames` guide detection; `fps` or `durations_ms` override profile timing.
+  `jump_height`/`air_frames` control the jump arc. See [Sprite sheet animation](#sprite-sheet-animation-animate_sheet)
+  for output scaling, backgrounds, quality warnings and limits.
 
 What a result can say:
 
