@@ -16,6 +16,8 @@ const { buildText } = require('./lib/prompt');
 const { MOTION_NAMES } = require('./lib/motion');
 const { LIGHT_MOTIONS } = require('./lib/light-motion');
 const { SHEET_MOTIONS } = require('./lib/sprite-sheet');
+const { SPRITE_MOTIONS, spriteGrid, buildSpritePrompt } = require('./lib/sprite-prompt');
+const { processSheet, retryReasons, pickBest } = require('./lib/sprite-job');
 const { aspectOption } = require('./lib/aspect');
 const { pngInfo } = require('./lib/png');
 const { gifInfo } = require('./lib/gif');
@@ -42,6 +44,7 @@ let reqSeq = 0;
 let saveTimer = null;
 const pending = new Map();
 const refStore = new Map(); // jobId -> reference images (kept in memory only, until the job ends)
+const cancelTimers = new Map();
 
 function now() { return new Date().toISOString(); }
 
@@ -166,6 +169,25 @@ function findJob(id) {
 }
 
 function createJob(p) {
+  let sprite = null;
+  if (p.sprite !== undefined) {
+    const bad = message => new shared.BridgeError(message, 'BAD_REQUEST');
+    if (!p.sprite || typeof p.sprite !== 'object' || Array.isArray(p.sprite)) throw bad('sprite must be an object.');
+    if (p.mode === 'collect' || p.startUrl != null || p.motion != null || p.animated !== undefined || p.sendAsIs !== undefined) {
+      throw bad('sprite cannot be combined with collect, startUrl, motion, animated or sendAsIs.');
+    }
+    const { motion, frames = 8, view = 'side', size, background = 'transparent' } = p.sprite;
+    if (!SPRITE_MOTIONS.includes(motion)) throw bad(`Unknown motion. Use: ${SPRITE_MOTIONS.join(', ')}.`);
+    let grid;
+    try { grid = spriteGrid(frames); } catch (e) { throw bad(e.message); }
+    if (!['side', 'front'].includes(view)) throw bad('Unknown view. Use: side, front.');
+    if (size !== undefined && (!Number.isInteger(size) || size < 64 || size > 1024)) throw bad('size must be an integer from 64 to 1024.');
+    if (!['transparent', 'white'].includes(background)) throw bad('background must be transparent or white.');
+    const character = String(p.prompt || '').trim().replace(/[.!\s]+$/u, '');
+    if (!character) throw bad('The character description is empty.');
+    sprite = { character, motion, frames, columns: grid.columns, rows: grid.rows, view, size: size ?? null,
+      background, attempts: [], chosen: null, regenerated: false, regenerateReason: null, warning: null, state: 'generating' };
+  }
   // mode "collect" only downloads the images of an existing conversation; nothing is sent.
   const mode = p.mode === 'collect' ? 'collect' : 'generate';
   const motion = p.motion == null || p.motion === '' ? null : p.motion;
@@ -217,6 +239,15 @@ function createJob(p) {
     createdAt: now(), startedAt: null, finishedAt: null,
     conversationUrl: null, images: [], assistantText: null, error: null, reason: null, editCheck: null, reattached: false,
   };
+  if (sprite) {
+    job.sprite = sprite;
+    job.prompt = buildSpritePrompt({ ...sprite, hasReferences: refs.length > 0 });
+    job.aspect = aspectOption(spriteGrid(sprite.frames).aspect);
+    job.transparent = true;
+    job.animated = false;
+    job.motion = null;
+    job.filenameHint = String(p.filenameHint || `${sprite.character} ${sprite.motion} sprite sheet`).trim().slice(0, 200);
+  }
   if (refs.length) refStore.set(job.id, refs.map(r => ({ name: String(r.name || 'reference.png'), mime: r.mime, data: r.data })));
   jobs.push(job);
   if (jobs.length > MAX_JOBS) jobs = jobs.filter((j, i) => i >= jobs.length - MAX_JOBS || !TERMINAL.has(j.status));
@@ -231,7 +262,7 @@ function pump() {
   const job = jobs.find(j => j.status === 'queued');
   if (!job) return;
   runningId = job.id;
-  Object.assign(job, { status: 'running', step: 'starting', message: 'Starting', startedAt: now() });
+  Object.assign(job, { status: 'running', step: 'starting', message: job.sprite?.regenerated ? `Regenerating the sprite sheet once in a new chat: ${job.sprite.regenerateReason}` : 'Starting', startedAt: now() });
   saveJobs();
   // Reference images go first, in pieces; the extension puts them together when "run" arrives.
   (refStore.get(job.id) || []).forEach((r, index) => {
@@ -253,14 +284,22 @@ function pump() {
   watchdog = setTimeout(() => {
     if (runningId !== job.id) return;
     toExtension({ type: 'cancel', jobId: job.id });
-    finishJob(job, { status: 'failed', reason: 'timeout', error: 'The extension stopped reporting on this job.' });
+    if (job.sprite && job.cancelRequested) cancelSpriteJob(job);
+    else if (job.sprite?.attempts.length) completeSpriteJob(job, 'Could not regenerate: the extension stopped reporting on this job.');
+    else finishJob(job, { status: 'failed', reason: 'timeout', error: 'The extension stopped reporting on this job.' });
   }, (job.timeoutSec + 900) * 1000);
 }
 
 function finishJob(job, fields) {
   if (TERMINAL.has(job.status)) return;
+  clearTimeout(cancelTimers.get(job.id));
+  cancelTimers.delete(job.id);
   Object.assign(job, fields, { finishedAt: now() });
   job.step = job.status;
+  if (job.sprite) {
+    job.sprite.state = 'done';
+    for (const attempt of job.sprite.attempts) if (attempt.result) delete attempt.result.sheet;
+  }
   refStore.delete(job.id);
   if (runningId === job.id) { runningId = null; clearTimeout(watchdog); }
   saveJobs();
@@ -271,6 +310,7 @@ function finishJob(job, fields) {
 function onProgress(msg) {
   const job = jobs.find(j => j.id === msg.jobId);
   if (!job || TERMINAL.has(job.status)) return;
+  if (job.sprite?.state === 'processing') return;
   job.status = msg.needsHuman ? 'needs_human' : 'running';
   if (msg.step) job.step = msg.step;
   if (msg.message) job.message = msg.message;
@@ -281,6 +321,7 @@ function onProgress(msg) {
 
 function onResult(msg) {
   const job = jobs.find(j => j.id === msg.jobId);
+  if (job?.sprite?.state === 'processing' && !job.cancelRequested && msg.status !== 'cancelled') return;
   if (job && !TERMINAL.has(job.status)) {
     if (msg.conversationUrl) job.conversationUrl = msg.conversationUrl;
     if (msg.assistantText) job.assistantText = String(msg.assistantText).slice(0, 4000);
@@ -288,13 +329,28 @@ function onResult(msg) {
     job.animatedRetry = !!msg.animatedRetry;
     job.referencesTransparent = Number.isSafeInteger(msg.referencesTransparent) && msg.referencesTransparent > 0 ? msg.referencesTransparent : 0;
     job.referencesMatted = Number.isSafeInteger(msg.referencesMatted) && msg.referencesMatted > 0 ? msg.referencesMatted : 0;
-    if (msg.ok && Array.isArray(msg.images) && msg.images.length) {
+    if (job.sprite && (job.cancelRequested || msg.status === 'cancelled')) {
+      cancelSpriteJob(job);
+    } else if (msg.ok && Array.isArray(msg.images) && msg.images.length) {
       try {
         const images = saveImages(job, msg.images, msg.title);
-        finishJob(job, { status: 'succeeded', images, editCheck: msg.editCheck || null, message: `${images.length} image(s) saved` });
+        if (job.sprite) {
+          job.sprite.attempts.push({ attempt: job.sprite.attempts.length + 1, sheet: images[0],
+            conversationUrl: job.conversationUrl, assistantText: job.assistantText, result: null });
+          job.images = job.sprite.attempts.map(a => a.sheet);
+          Object.assign(job, { status: 'running', step: 'processing', message: 'Cutting and aligning the sprite sheet' });
+          job.sprite.state = 'processing';
+          saveJobs();
+          if (runningId === job.id) { runningId = null; clearTimeout(watchdog); }
+          setImmediate(pump);
+          setImmediate(() => processSpriteJob(job));
+        } else finishJob(job, { status: 'succeeded', images, editCheck: msg.editCheck || null, message: `${images.length} image(s) saved` });
       } catch (e) {
-        finishJob(job, { status: 'failed', reason: 'save_failed', error: `The image was generated but could not be saved: ${e.message}` });
+        if (job.sprite?.attempts.length) completeSpriteJob(job, `Could not regenerate: ${e.message}`);
+        else finishJob(job, { status: 'failed', reason: 'save_failed', error: `The image was generated but could not be saved: ${e.message}` });
       }
+    } else if (job.sprite?.attempts.length) {
+      completeSpriteJob(job, `Could not regenerate: ${msg.error || msg.status || 'ChatGPT did not return an image.'}`);
     } else if (msg.status === 'needs_reference' || msg.status === 'text_reply') {
       finishJob(job, { status: msg.status, reason: msg.status, error: msg.error, message: msg.error });
     } else if (msg.status === 'cancelled') {
@@ -311,9 +367,88 @@ function onResult(msg) {
   }
 }
 
+// The host alone owns the queue and jobs.json: persisting attempts before processing
+// guarantees one regeneration across MCP clients, independently of job_status polling.
+// Pure Node processing also finishes saved sheets at shutdown and on the next startup.
+function processSpriteJob(job, interrupted = false) {
+  if (TERMINAL.has(job.status)) return;
+  if (job.cancelRequested) return cancelSpriteJob(job);
+  const sprite = job.sprite;
+  for (const attempt of sprite.attempts) {
+    if (attempt.result) continue;
+    attempt.result = processSheet(attempt.sheet.path, sprite);
+  }
+  const latest = sprite.attempts.at(-1).result;
+  const reason = retryReasons(latest);
+  if (reason && sprite.attempts.length === 1 && !sprite.regenerated) {
+    if (interrupted) return completeSpriteJob(job, 'Could not regenerate: Chrome closed / the bridge restarted.');
+    if (job.references.length && !refStore.has(job.id)) {
+      return completeSpriteJob(job, 'Could not regenerate: reference images are no longer available after the bridge restarted.');
+    }
+    Object.assign(sprite, { regenerated: true, regenerateReason: reason, state: 'generating' });
+    Object.assign(job, { status: 'queued', step: 'queued',
+      message: `Regenerating the sprite sheet once in a new chat: ${reason}`, conversationUrl: null, assistantText: null });
+    saveJobs();
+    pump();
+    return;
+  }
+  completeSpriteJob(job, interrupted && sprite.regenerated && sprite.attempts.length === 1 ? 'Could not regenerate: Chrome closed / the bridge restarted.' : null);
+}
+
+function completeSpriteJob(job, warning = null) {
+  if (TERMINAL.has(job.status)) return;
+  if (job.cancelRequested) return cancelSpriteJob(job);
+  const sprite = job.sprite;
+  if (warning) sprite.warning = warning;
+  sprite.chosen = pickBest(sprite.attempts);
+  const chosen = sprite.attempts[sprite.chosen], result = chosen.result;
+  job.images = [chosen.sheet, ...sprite.attempts.filter(a => a !== chosen).map(a => a.sheet)];
+  job.conversationUrl = chosen.conversationUrl;
+  sprite.state = 'done';
+  if (!result || result.error) {
+    finishJob(job, { status: 'failed', reason: 'sprite_processing', message: 'Sprite processing failed',
+      error: `${result?.error || 'Sprite processing failed'}. Source sheets: ${job.images.map(i => i.path).join(', ')}. Try animate_sheet manually.` });
+    return;
+  }
+  try {
+    const file = result.paths.whiteGif || result.paths.gif, buf = fs.readFileSync(file), gif = gifInfo(buf);
+    const preview = result.sheet?.png || fs.readFileSync(result.paths.contact);
+    job.images.unshift(animationImage(job.id, file, buf, gif, preview.toString('base64'),
+      { shown: Math.min(16, result.frames), total: result.frames }));
+    finishJob(job, { status: 'succeeded', error: null, message: 'Sprite animation saved' });
+    if (extension) toExtension({ type: 'gallery_changed' });
+  } catch (e) {
+    finishJob(job, { status: 'failed', message: `Sprite processing failed: ${e.message}`,
+      error: `${e.message}. Source sheets: ${job.images.map(i => i.path).join(', ')}. Try animate_sheet manually.` });
+  }
+}
+
+function recoverSpriteJob(job) {
+  if (!job.sprite) return false;
+  if (job.cancelRequested) { cancelSpriteJob(job); return true; }
+  if (!job.sprite.attempts.length) return false;
+  processSpriteJob(job, true);
+  return true;
+}
+
+function cancelSpriteJob(job) {
+  if (TERMINAL.has(job.status)) return;
+  job.images = job.sprite.attempts.map(a => a.sheet);
+  const message = job.images.length ? `Cancelled. Saved sprite sheet(s): ${job.images.map(i => i.path).join(', ')}` : 'Cancelled.';
+  finishJob(job, { status: 'cancelled', error: message, message });
+}
+
 function cancelJob(id) {
   const job = findJob(id);
   if (TERMINAL.has(job.status)) return job;
+  if (job.sprite) {
+    job.cancelRequested = true;
+    saveJobs();
+    if (job.status === 'queued' || job.sprite.state === 'processing') {
+      cancelSpriteJob(job);
+      return job;
+    }
+  }
   if (job.status === 'queued') {
     finishJob(job, { status: 'cancelled', error: 'Cancelled before it started.', message: 'Cancelled' });
     return job;
@@ -321,7 +456,11 @@ function cancelJob(id) {
   job.message = 'Cancelling…';
   toExtension({ type: 'cancel', jobId: job.id });
   // If the extension never answers, don't leave the job hanging.
-  setTimeout(() => finishJob(job, { status: 'cancelled', error: 'Cancelled.', message: 'Cancelled' }), 20000);
+  if (!cancelTimers.has(job.id)) cancelTimers.set(job.id, setTimeout(() => {
+    if (TERMINAL.has(job.status) || runningId !== job.id) return;
+    if (job.sprite) cancelSpriteJob(job);
+    else finishJob(job, { status: 'cancelled', error: 'Cancelled.', message: 'Cancelled' });
+  }, 20000));
   return job;
 }
 
@@ -351,7 +490,7 @@ function saveImages(job, images, title) {
     const signature = buf.toString('latin1', 0, 6);
     const isGif = signature === 'GIF87a' || signature === 'GIF89a';
     const gif = isGif ? gifInfo(buf) : null;
-    const cropped = !isGif && img.crop ? Buffer.from(img.crop.data || '', 'base64') : null;
+    const cropped = !job.sprite && !isGif && img.crop ? Buffer.from(img.crop.data || '', 'base64') : null;
     const crop = cropped && cropped.length >= 100 ? cropped : null;
     const main = crop || buf;
     const mainExt = crop ? 'png' : ext;
@@ -373,7 +512,8 @@ function saveImages(job, images, title) {
     }
     let preview = null;
     if (img.preview) {
-      preview = path.join(shared.PREVIEW_DIR, `${job.id}-${i + 1}.jpg`);
+      const key = job.sprite ? `${job.id}-sheet-${job.sprite.attempts.length + 1}` : job.id;
+      preview = path.join(shared.PREVIEW_DIR, `${key}-${i + 1}.jpg`);
       fs.writeFileSync(preview, Buffer.from(img.preview, 'base64'));
     }
     // From ChatGPT's own bytes: a cropped copy is always RGBA, so only the original tells whether
@@ -392,6 +532,26 @@ function saveImages(job, images, title) {
         transparent: gif.transparent, transparentFrames: gif.transparentFrames, truncated: gif.truncated },
     };
   });
+}
+
+function animationImage(id, file, buf, gif, previewData, pfInput) {
+  let preview = null;
+  if (typeof previewData === 'string' && previewData.length <= Math.ceil(gallery.MAX_PREVIEW_BYTES / 3) * 4) {
+    const png = Buffer.from(previewData, 'base64');
+    if (png.length < gallery.MAX_PREVIEW_BYTES && png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+      fs.mkdirSync(shared.PREVIEW_DIR, { recursive: true });
+      preview = path.join(shared.PREVIEW_DIR, `${id}-1.png`);
+      fs.writeFileSync(preview, png);
+    }
+  }
+  const pf = pfInput;
+  const previewFrames = preview && pf && Number.isInteger(pf.shown) && Number.isInteger(pf.total) &&
+    pf.shown >= 2 && pf.shown <= 16 && pf.total >= pf.shown && pf.total <= 512 &&
+    pf.total === gif.frames && pf.shown === Math.min(16, pf.total) ? { shown: pf.shown, total: pf.total } : null;
+  return { path: file, width: gif.width, height: gif.height, bytes: buf.length, preview, previewFrames,
+      full: null, aspect: null, png: null, alpha: null,
+      gif: { frames: gif.frames, durationMs: gif.durationMs, delaysMs: gif.delaysMs.slice(0, 64), loop: gif.loop,
+        transparent: gif.transparent, transparentFrames: gif.transparentFrames, truncated: gif.truncated } };
 }
 
 // Local files are registered only after the host checks their bytes itself. No Chrome job is queued.
@@ -433,19 +593,6 @@ function addLocalAnimation(p) {
   let id;
   do { id = `img_${crypto.randomBytes(4).toString('hex')}`; }
   while ((existing && id === existing.id) || jobs.some(j => j.id === id));
-  let preview = null;
-  if (typeof p.preview === 'string' && p.preview.length <= Math.ceil(gallery.MAX_PREVIEW_BYTES / 3) * 4) {
-    const png = Buffer.from(p.preview, 'base64');
-    if (png.length < gallery.MAX_PREVIEW_BYTES && png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
-      fs.mkdirSync(shared.PREVIEW_DIR, { recursive: true });
-      preview = path.join(shared.PREVIEW_DIR, `${id}-1.png`);
-      fs.writeFileSync(preview, png);
-    }
-  }
-  const pf = p.previewFrames;
-  const previewFrames = preview && pf && Number.isInteger(pf.shown) && Number.isInteger(pf.total) &&
-    pf.shown >= 2 && pf.shown <= 16 && pf.total >= pf.shown && pf.total <= 512 &&
-    pf.total === gif.frames && pf.shown === Math.min(16, pf.total) ? { shown: pf.shown, total: pf.total } : null;
   const time = now();
   const job = {
     id, mode: 'local', status: 'succeeded', step: 'succeeded', message: 'Local animation saved',
@@ -453,10 +600,7 @@ function addLocalAnimation(p) {
     animated: true, motion: p.motion, transparent: p.background === 'transparent', aspect: null,
     project: null, startUrl: null, conversationUrl: null, references: [], copies: [],
     createdAt: time, startedAt: time, finishedAt: time, assistantText: null, error: null, reason: null,
-    images: [{ path: file, width: gif.width, height: gif.height, bytes: buf.length, preview, previewFrames,
-      full: null, aspect: null, png: null, alpha: null,
-      gif: { frames: gif.frames, durationMs: gif.durationMs, delaysMs: gif.delaysMs.slice(0, 64), loop: gif.loop,
-        transparent: gif.transparent, transparentFrames: gif.transparentFrames, truncated: gif.truncated } }],
+    images: [animationImage(id, file, buf, gif, p.preview, p.previewFrames)],
   };
   jobs.push(job);
   if (jobs.length > MAX_JOBS) jobs = jobs.filter((j, i) => i >= jobs.length - MAX_JOBS || !TERMINAL.has(j.status));
@@ -484,7 +628,7 @@ function centralizeLegacyImages() {
   const central = path.resolve(config.outputDir).toLowerCase();
   let changed = false;
   for (const j of jobs) {
-    if (j.mode === 'local' || j.status !== 'succeeded' || !Array.isArray(j.images)) continue;
+    if (j.mode === 'local' || j.sprite || j.status !== 'succeeded' || !Array.isArray(j.images)) continue;
     for (const im of j.images) {
       if (!im.path || path.dirname(path.resolve(im.path)).toLowerCase() === central) continue;
       if (!fs.existsSync(im.path)) {
@@ -619,13 +763,23 @@ function publicJob(j) {
   return {
     id: j.id, mode: j.mode, status: j.status, step: j.step, message: j.message,
     prompt: j.prompt.length > 300 ? `${j.prompt.slice(0, 300)}…` : j.prompt,
-    conversationUrl: j.conversationUrl, startUrl: j.startUrl, images: j.images, assistantText: j.assistantText,
+    conversationUrl: j.conversationUrl, startUrl: j.startUrl, images: j.images, assistantText: j.sprite?.attempts.length ? null : j.assistantText,
     error: j.error, reason: j.reason, createdAt: j.createdAt, startedAt: j.startedAt, finishedAt: j.finishedAt,
     references: j.references || [], reattached: !!j.reattached, editCheck: j.editCheck || null,
     referencesTransparent: j.referencesTransparent || 0, referencesMatted: j.referencesMatted || 0,
     aspect: j.aspect ? j.aspect.target.label : null, transparent: !!j.transparent, animated: !!j.animated, animatedRetry: !!j.animatedRetry, motion: j.motion || null,
     copyTo: j.copyTo || null, copies: j.copies || [],
     collection: j.collection || null,
+    sprite: j.sprite ? {
+      ...Object.fromEntries(['motion', 'frames', 'columns', 'rows', 'view', 'background', 'regenerated',
+        'regenerateReason', 'warning', 'chosen'].map(key => [key, j.sprite[key]])),
+      attempts: j.sprite.attempts.map(a => ({ attempt: a.attempt, sheetPath: a.sheet.path, conversationUrl: a.conversationUrl,
+        folder: a.result?.folder ?? null, gif: a.result ? a.result.paths?.whiteGif || a.result.paths?.gif || null : null,
+        transparentGif: a.result?.paths?.gif ?? null, contact: a.result?.paths?.contact ?? null,
+        frames: a.result?.frames ?? null, durationMs: a.result?.durationMs ?? null, width: a.result?.width ?? null,
+        height: a.result?.height ?? null, bytes: a.result?.bytes ?? null,
+        gates: (a.result?.gates || []).map(({ id, passed, message }) => ({ id, passed, message })), error: a.result?.error ?? null })),
+    } : undefined,
     chatImages: j.status === 'needs_reference' || j.status === 'text_reply' ? imagesFromChat(j) : undefined,
     queuePosition: j.status === 'queued' ? jobs.filter(x => x.status === 'queued').indexOf(j) + 1 : undefined,
   };
@@ -634,6 +788,7 @@ function publicJob(j) {
 function statusInfo() {
   return {
     hostVersion: VERSION,
+    features: ['sprite'],
     extension,
     project: config.project,
     outputDir: config.outputDir,
@@ -735,8 +890,9 @@ const server = net.createServer(sock => {
 
 function shutdown(reason) {
   log('info', `host stopping: ${reason}`);
+  extension = null;
   for (const j of jobs) {
-    if (!TERMINAL.has(j.status)) Object.assign(j, { status: 'failed', step: 'failed', error: `Interrupted: ${reason}.`, finishedAt: now() });
+    if (!TERMINAL.has(j.status) && !recoverSpriteJob(j)) Object.assign(j, { status: 'failed', step: 'failed', error: `Interrupted: ${reason}.`, finishedAt: now() });
   }
   saveJobs();
   try { server.close(); } catch {}
@@ -746,7 +902,7 @@ function shutdown(reason) {
 // ---------------------------------------------------------------- start
 
 for (const j of jobs) {
-  if (!TERMINAL.has(j.status)) {
+  if (!TERMINAL.has(j.status) && !recoverSpriteJob(j)) {
     Object.assign(j, { status: 'failed', step: 'failed', finishedAt: now(),
       error: 'Interrupted: Chrome or the bridge restarted while this job was in progress.' });
   }

@@ -460,7 +460,7 @@ esinlenildi; kod, istem metni veya tablo kopyalanmadı.
 
 `animate_image`, tek PNG'den yerel olarak saniyeler içinde kusursuz döngülü GIF üretir; ChatGPT
 ve Chrome gerekmez. Karakter değişmez, sticker ve emoji için uygundur. Yürüme veya el sallama
-gibi poz değişikliği gerekiyorsa `generate_image` ile `motion` kullan.
+gibi poz değişikliği gerekiyorsa `generate_sprite` kullan.
 
 Örnek istem: "Denizyıldızı sticker'ını zıplat."
 
@@ -492,6 +492,23 @@ Sınırlar: yalnız interlaced olmayan PNG, en çok 20 MB ve 16,7 milyon piksel 
 Hafif hareket fikri [gif-factory](https://github.com/WoYun520/gif-factory) (MIT), piksel ölçeği
 fikri [sprite-gen](https://github.com/aldegad/sprite-gen) (Apache-2.0) projesinden gelir;
 kod kopyalanmadı.
+
+## Sprite animasyonu (generate_sprite)
+
+"Claude, kırmızı atkılı kurbağa yürüsün" diye iste. Tek `generate_sprite` çağrısıyla ChatGPT bir
+sprite sheet çizer, Backdraw pozları yerelde kesip hizalayarak döngülü şeffaf GIF, `atlas.png`,
+`manifest.json`, ayrı kare PNG'leri ve numaralı contact önizlemesi çıkarır. GIF ve kaynak sheet
+galeride görünür. Dönen iş kimliğini `job_status` ile izle.
+
+`walk`, `run`, `idle`, `jump`, `dance`, `wave` veya `attack`; `side` (varsayılan) ya da `front`
+görüş seçilebilir. Varsayılan 8 kare 4x2, 16 kare 4x4 ızgara kullanır. Kare sayısı, boş kare veya
+karakter kimliği kapısı geçmezse Backdraw yeni sohbette tam bir kez yeniden üretir ve daha iyi
+denemeyi seçer; kalan kalite uyarılarını bildirir. İki kaynak sheet de değiştirilmeden saklanır.
+
+Aynı karakterin ikinci hareketi için karakter PNG'sini veya önceki animasyonun `frames/`
+klasöründeki bir kareyi `reference_images` ile ver. `size` (64-1024), GIF'in uzun kenarını sınırlar;
+`background: white` ayrıca beyaz GIF kaydeder. `output_dir`, yalnız GIF ve ham kaynak sheet'leri
+kopyalar; `atlas.png`, `manifest.json` ve `frames/`, her kaynak sheet'in yanındaki çıktı klasöründe kalır.
 
 ## Sprite sheet animasyonu (animate_sheet)
 
@@ -576,6 +593,7 @@ dosyanın tam hâli görsel klasöründe değişmeden durur.
 | Araç | Parametreler (varsayılan) | Ne yapar |
 |---|---|---|
 | `generate_image` | `prompt` (zorunlu), `animated` (false), `motion`, `aspect_ratio`, `transparent_background` (false), `reference_images`, `reference_collection`, `reference_files`, `conversation_url`, `auto_reattach` (false), `send_as_is` (false), `output_dir`, `filename_hint`, `wait_seconds` (45), `include_preview` (true) | Projende yeni bir sohbet başlatır (ya da `conversation_url`'deki sohbete devam eder) ve görsel üretir veya düzenler. |
+| `generate_sprite` | `prompt` (zorunlu), `motion` (zorunlu), `frames` (8 veya 16, varsayılan 8), `view` (`side`), `reference_images`, `size`, `background` (`transparent`), `filename_hint`, `output_dir`, `wait_seconds` (45), `include_preview` (true) | ChatGPT'ye sheet çizdirip yerelde GIF, atlas, kareler ve manifest üretir; gerekirse bir kez yeniden üretir. |
 | `job_status` | `job_id`, `wait_seconds` (45), `include_preview` (true) | Bir işi bekler ve durumunu bildirir. `job_id` olmadan köprünün durumunu verir (Chrome bağlı mı, seçili Proje, görsel klasörü, kuyruk, son işler). |
 | `cancel_job` | `job_id` (zorunlu) | Kuyruktaki ya da çalışan bir işi iptal eder. ChatGPT üretmeye başladıysa arka plan sekmesinde Durdur'a basar. |
 | `fetch_images` | `conversation_url` (zorunlu), `aspect_ratio`, `output_dir`, `wait_seconds` (45), `include_preview` (true) | Var olan bir sohbetin son cevabındaki görselleri, hiçbir şey göndermeden indirir. |

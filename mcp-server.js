@@ -14,6 +14,7 @@ const { MOTION_NAMES } = require('./lib/motion');
 const { LIGHT_MOTIONS } = require('./lib/light-motion');
 const { animateImage, animationResultLines } = require('./lib/animate');
 const { SHEET_MOTIONS } = require('./lib/sprite-sheet');
+const { SPRITE_MOTIONS, SPRITE_FRAMES } = require('./lib/sprite-prompt');
 const { animateSheet, sheetResultLines } = require('./lib/sprite-export');
 const gallery = require('./lib/gallery');
 
@@ -25,7 +26,7 @@ const INSTRUCTIONS = `Generates images with the user's own ChatGPT account (alre
 - To EDIT an image or keep a character consistent, pass the image file(s) in reference_images (e.g. a file saved by an earlier call). A fresh chat with reference_images is the most reliable way to edit; long revision chains via conversation_url make ChatGPT lose track of earlier images.
 - For a specific shape (banner, avatar, phone wallpaper) pass aspect_ratio instead of describing the size in the prompt; for stickers/logos/icons that need a see-through background pass transparent_background=true and read the transparency line in the result.
 - When the user asks for an animation, GIF or moving image, pass animated=true. Use one subject, one clear motion, a still camera and no small text in the scene; aspect_ratio is not applied to the GIF. For a common motion (${MOTION_NAMES.join(', ')}) pass motion; describe the subject and style in the prompt.
-- For local motion of the same character in a seamless sticker/emoji loop, use animate_image on a transparent PNG; for changing poses (walking, waving), use generate_image with motion.
+- For local motion of the same character in a seamless sticker/emoji loop, use animate_image on a transparent PNG; for changing poses (walking, jumping, waving), use generate_sprite; for a ready sprite sheet, use animate_sheet.
 - For a sprite sheet PNG with all poses in one image, use animate_sheet: the character stays unchanged and frames are aligned; tell the user about quality warnings.
 - When the user mentions one of their Backdraw collections (reference images they saved from the web in Chrome), call list_collections if needed and pass reference_collection to generate_image.
 - The saved file is named after the start of the prompt. When the prompt opens with something other than the subject (e.g. instructions about the reference images), pass filename_hint with a few words naming what the user asked for.
@@ -122,6 +123,31 @@ const TOOLS = [
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
   {
+    name: 'generate_sprite',
+    title: 'Generate an animated sprite with ChatGPT',
+    description: 'Ask ChatGPT to draw poses in one sprite sheet; Backdraw cuts and aligns frames locally, saving a transparent GIF, atlas and manifest. ' +
+      'Retries once in a new chat if count, empty-frame or identity checks fail. Returns a job_id; follow with job_status. ' +
+      'For another motion of the same character, pass a frame from the previous GIF folder or a character PNG in reference_images.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'Character description.' },
+        motion: { type: 'string', enum: SPRITE_MOTIONS },
+        frames: { type: 'integer', enum: SPRITE_FRAMES, default: 8 },
+        view: { type: 'string', enum: ['side', 'front'], default: 'side' },
+        reference_images: { type: 'array', items: { type: 'string' }, maxItems: MAX_REFS },
+        size: { type: 'integer', minimum: 64, maximum: 1024 },
+        background: { type: 'string', enum: ['transparent', 'white'], default: 'transparent' },
+        filename_hint: { type: 'string' },
+        output_dir: { type: 'string' },
+        wait_seconds: WAIT_SECONDS,
+        include_preview: { type: 'boolean', default: true },
+      },
+      required: ['prompt', 'motion'], additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  {
     name: 'job_status',
     title: 'ChatGPT image job status',
     description:
@@ -130,7 +156,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        job_id: { type: 'string', description: 'Job id returned by generate_image (e.g. img_1a2b3c4d).' },
+        job_id: { type: 'string', description: 'Job id returned by generate_image or generate_sprite (e.g. img_1a2b3c4d).' },
         wait_seconds: WAIT_SECONDS,
         include_preview: { type: 'boolean', default: true, description: 'Attach the image preview when the job succeeded.' },
       },
@@ -235,7 +261,7 @@ const TOOLS = [
     name: 'animate_image',
     title: 'Animate a PNG locally (no ChatGPT)',
     description: 'Move a local PNG (e.g. a sticker saved with transparent_background=true) with code and save a new looping GIF beside it as <name>_<motion>.gif, without overwriting files. ' +
-      'No ChatGPT, no Chrome; takes seconds. The character stays unchanged: it only bounces, sways, squashes or breathes. For pose changes such as walking or waving, use generate_image with motion. ' +
+      'No ChatGPT, no Chrome; takes seconds. The character stays unchanged: it only bounces, sways, squashes or breathes. For pose changes such as walking or waving, use generate_sprite. ' +
       'The source PNG is never changed. Returns a numbered preview of every frame.',
     inputSchema: {
       type: 'object',
@@ -350,6 +376,7 @@ async function callTool(name, args, call) {
   try {
     switch (name) {
       case 'generate_image': return await generateImage(args, call);
+      case 'generate_sprite': return await generateSprite(args, call);
       case 'job_status': return await jobStatus(args, call);
       case 'cancel_job': return await cancelJob(args, call);
       case 'fetch_images': return await fetchImages(args, call);
@@ -434,6 +461,25 @@ async function generateImage(args, call) {
   return jobResult(await finish(done), args.include_preview !== false);
 }
 
+async function generateSprite(args, call) {
+  const deadline = deadlineFrom(args);
+  const { frames = 8, view = 'side', background = 'transparent' } = args;
+  const status = await bridge.call('status');
+  if (!status.features?.includes('sprite')) {
+    return textResult('ERROR \u2014 the installed bridge is older than this server; update Backdraw (node install.js), reload the extension and restart the client.', true);
+  }
+  const prompt = String(args.prompt || '').trim();
+  if (!prompt) return textResult('prompt is required.', true);
+  const job = await bridge.call('generate', {
+    prompt, sprite: { motion: args.motion, frames, view, size: args.size, background },
+    references: bridge.readReferences(args.reference_images),
+    filenameHint: args.filename_hint ? String(args.filename_hint) : undefined,
+    copyTo: args.output_dir ? path.resolve(String(args.output_dir)) : undefined,
+  }, 60000);
+  const done = await waitForJob(job.id, secondsLeft(deadline), call);
+  return jobResult(await finish(done), args.include_preview !== false);
+}
+
 async function fetchImages(args, call) {
   const deadline = deadlineFrom(args);
   const url = String(args.conversation_url || '').trim();
@@ -501,9 +547,13 @@ function jobResult(job, includePreview) {
   if (job.status === 'needs_human') toldUser.add(job.id); else toldUser.delete(job.id);
   const content = [{ type: 'text', text: resultLines(job).join('\n') }];
   if (includePreview && job.status === 'succeeded') {
-    for (const im of job.images) {
+    for (const im of job.sprite ? job.images.slice(0, 1) : job.images) {
       try {
-        if (im.preview) content.push({ type: 'image', data: fs.readFileSync(im.preview).toString('base64'), mimeType: 'image/jpeg' });
+        if (im.preview) {
+          const data = fs.readFileSync(im.preview);
+          const png = data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+          content.push({ type: 'image', data: data.toString('base64'), mimeType: png ? 'image/png' : 'image/jpeg' });
+        }
       } catch {}
     }
   }

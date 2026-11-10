@@ -75,7 +75,9 @@ test('exports verified transparent GIF, exact source-scale atlas/cells and path-
   for (const [file, hash] of snapshot) assert.equal(sha(fs.readFileSync(file)), hash);
   assert.equal(sha(fs.readFileSync(imagePath)), original);
   const text = sheetResultLines(r, { added: false, reason: 'offline' }).join('\n');
-  assert.match(text, /^SUCCESS/); assert.match(text, /QUALITY: all 6 checks passed/);
+  assert.match(text, /^SUCCESS/); assert.match(text, /^QUALITY: all 6 checks passed\.$/m);
+  assert.doesNotMatch(text, /Alignment:|GIF sampling:|Jump arc:|Opaque background|Extraction:|Edges:|Loop seam:/);
+  assert.match(text, /Contact preview attached: all 6 frames in order, numbered from 1\./);
   assert.match(text, /Gallery: not added.*offline.*The GIF is saved/); assert.match(text, /The source PNG was not changed/);
 });
 
@@ -184,7 +186,7 @@ for (const [file, motion, rows, expected] of [['frog-walk-4x2.png', 'walk', 2, 8
     assert.equal(sha(fs.readFileSync(imagePath)), hash);
     if (motion === 'jump') {
       assert.equal(r.jump.rule, 'auto'); assert.deepEqual(r.jump.airFrames, [4, 12]); assert.ok(m.frames.some(f => f.lift > 0));
-      assert.match(sheetResultLines(r, { added: false, reason: 'offline' }).join('\n'), /Jump arc:/);
+      assert.doesNotMatch(sheetResultLines(r, { added: false, reason: 'offline' }).join('\n'), /Jump arc:/);
     }
     // Seam is reported as evidence, deliberately not asserted for the real walk sheet.
     t.diagnostic(JSON.stringify({ fixture: file, frames: r.frames, heights: m.frames.map(f => f.sourceRect.h), cell: r.cell, jump: r.jump,

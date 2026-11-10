@@ -4,9 +4,68 @@ const test = require('node:test');
 const { FINAL, DEFAULT_WAIT, EDIT_INTENT, SHOW_IMAGE, waitSeconds, editCheckLines, imageLines, referenceLines, resultLines } = require('../lib/results');
 
 const CHAT_URL = 'https://chatgpt.com/g/g-p-67a1b2c3d4e5f60718293a4b5c6d7e8f-images/c/6812a3b4-1c2d-8000-9e8f-0123456789ab';
-const job = fields => ({ id: 'img_1a2b3c4d', prompt: 'a void mage', images: [], copies: [], references: [], ...fields });
+const job = fields => ({ id: 'img_1a2b3c4d', mode: 'generate', prompt: 'a void mage', images: [], copies: [], references: [], ...fields });
 const check = (...similarities) => ({ results: similarities.map((similarity, i) => ({ similarity, against: `ref${i + 1}.png` })) });
 const text = j => resultLines(j).join('\n');
+
+const spriteAttempt = (overrides = {}) => ({ attempt: 1, sheetPath: 'frog.png', gif: 'frog_walk.gif',
+  transparentGif: 'frog_walk.gif', contact: 'contact.png', folder: 'frog_walk_sheet', frames: 8,
+  durationMs: 640, width: 100, height: 120, bytes: 2048, conversationUrl: CHAT_URL,
+  gates: ['count', 'empty', 'size', 'identity', 'seam', 'edges'].map(id => ({ id, passed: true, message: `${id} checked` })),
+  ...overrides });
+const spriteJob = sprite => job({ status: 'succeeded', assistantText: 'Do not show this reply',
+  images: [{ path: 'frog_walk.gif' }, { path: 'frog.png' }],
+  sprite: { motion: 'walk', background: 'transparent', chosen: 0, attempts: [spriteAttempt()], ...sprite } });
+
+test('sprite success is short, reports only failing gates, and omits ordinary image diagnostics', () => {
+  const lines = resultLines(spriteJob());
+  assert.equal(lines[0], 'SUCCESS \u2014 sprite animation "walk" ready (job img_1a2b3c4d).');
+  assert.ok(lines.includes('QUALITY: all 6 checks passed.'));
+  assert.ok(lines.includes('Animated GIF: 8 frames, 640 ms per loop, loops forever; 100 x 120 px; 2.0 KB.'));
+  assert.ok(lines.includes('GIF: frog_walk.gif'));
+  assert.ok(lines.includes('Folder: frog_walk_sheet (atlas.png, manifest.json, frames/, contact.png)'));
+  assert.ok(lines.includes('Sprite sheet from ChatGPT: frog.png'));
+  assert.ok(lines.includes('Gallery: added (GIF and sprite sheet).'));
+  assert.ok(lines.includes('Contact preview attached: all 8 frames in order, numbered from 1.'));
+  assert.doesNotMatch(lines.join('\n'), /Alignment|seam|Extraction|Saved:|Background:|Transparent background|ChatGPT's text|Do not show/);
+  const gates = spriteAttempt().gates.map(g => g.id === 'empty' ? { ...g, passed: false, message: 'Very small frames: 2, 3' } : g);
+  const failed = text(spriteJob({ attempts: [spriteAttempt({ gates })] }));
+  assert.match(failed, /WARNING \u2014 empty: Very small frames: 2, 3/);
+  assert.equal(failed.split('\n').filter(l => l.startsWith('WARNING')).length, 1);
+  assert.doesNotMatch(failed, /QUALITY|count checked|seam checked/);
+});
+
+test('sprite regeneration reports the chosen attempt, other sheet, warning, white and transparent GIFs', () => {
+  const result = text(spriteJob({ background: 'white', regenerated: true, regenerateReason: 'count: 16; expected 8',
+    warning: 'Could not regenerate: Chrome closed / the bridge restarted.', chosen: 1,
+    attempts: [spriteAttempt(), spriteAttempt({ attempt: 2, sheetPath: 'second.png', gif: 'second_white.gif', transparentGif: 'second.gif' })] }));
+  assert.match(result, /GIF: second_white.gif\nTransparent GIF: second.gif/);
+  assert.match(result, /Regenerated once in a new chat because count: 16; expected 8; used attempt 2 of 2\./);
+  assert.match(result, /Other attempt: frog.png/);
+  assert.match(result, /Sprite sheet from ChatGPT: second.png/);
+  assert.match(result, /WARNING \u2014 Could not regenerate/);
+  assert.match(result, /ChatGPT conversation:/);
+  assert.doesNotMatch(result, /Tried to regenerate|second attempt did not finish/);
+});
+
+test('sprite regeneration with only one saved attempt reports an unfinished second attempt before its warning', () => {
+  for (const warning of ['Could not regenerate: Second chat failed', 'Could not regenerate: Cancelled',
+    'Could not regenerate: Chrome closed / the bridge restarted.']) {
+    const lines = resultLines(spriteJob({ regenerated: true, regenerateReason: 'count: 16; expected 8', warning }));
+    const line = 'Tried to regenerate once in a new chat because count: 16; expected 8, but the second attempt did not finish; used attempt 1.';
+    assert.ok(lines.includes(line));
+    assert.equal(lines[lines.indexOf(line) + 1], `WARNING \u2014 ${warning}`);
+    assert.doesNotMatch(lines.join('\n'), /Regenerated once|of 2|Other attempt:/);
+  }
+});
+
+test('local jobs say no ChatGPT and never claim a requested ChatGPT motion hint', () => {
+  const images = [{ path: 'walk.gif', gif: { frames: 8, durationMs: 640, loop: 0 } }];
+  const local = text(job({ status: 'succeeded', mode: 'local', motion: 'walk', images }));
+  assert.match(local, /^SUCCESS \u2014 local animation saved \(no ChatGPT\)\. Job img_1a2b3c4d\./);
+  assert.doesNotMatch(local, /Requested motion|ChatGPT may use a different count/);
+  assert.match(text(job({ status: 'succeeded', mode: 'generate', motion: 'walk', images })), /Requested motion: walk .*ChatGPT may use a different count/);
+});
 
 test('imageLines: all, sampled and first-frame GIF preview text and motion hints', () => {
   const { MOTIONS } = require('../lib/motion');
