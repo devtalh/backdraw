@@ -16,6 +16,7 @@ const { LEGACY_VERSIONS } = require('../lib/protocol');
 const { MOTION_NAMES } = require('../lib/motion');
 const { LIGHT_MOTIONS } = require('../lib/light-motion');
 const { SHEET_MOTIONS } = require('../lib/sprite-sheet');
+const { SPRITE_MOTIONS } = require('../lib/sprite-prompt');
 const { grid } = require('./sprite-fixture');
 const { encodePng, decodePng } = require('../lib/png-codec');
 const { gifInfo } = require('../lib/gif');
@@ -26,7 +27,7 @@ const PIPE = process.platform === 'win32' ? `\\\\.\\pipe\\${TAG}` : path.join(os
 const VERSION_KEY = 'io.modelcontextprotocol/protocolVersion';
 const SERVER_INFO_KEY = 'io.modelcontextprotocol/serverInfo';
 const MODERN = { [VERSION_KEY]: '2026-07-28', 'io.modelcontextprotocol/clientCapabilities': {} };
-const TOOL_NAMES = ['generate_image', 'job_status', 'cancel_job', 'fetch_images', 'list_projects', 'select_project', 'list_collections', 'animate_sheet', 'animate_image'];
+const TOOL_NAMES = ['generate_image', 'generate_sprite', 'job_status', 'cancel_job', 'fetch_images', 'list_projects', 'select_project', 'list_collections', 'animate_sheet', 'animate_image'];
 
 function animationFixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'backdraw-mcp-animate-'));
@@ -381,7 +382,7 @@ test('animate_image schema and instructions expose local motion separately from 
   assert.deepEqual(p.include_preview, { type: 'boolean', default: true });
   assert.deepEqual(tool.annotations, { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false });
   const init = await request('initialize', {});
-  assert.match(init.result.instructions, /use animate_image on a transparent PNG; for changing poses \(walking, waving\), use generate_image with motion/);
+  assert.match(init.result.instructions, /use animate_image on a transparent PNG; for changing poses \(walking, jumping, waving\), use generate_sprite; for a ready sprite sheet, use animate_sheet/);
 });
 
 test('animate_image saves a sibling GIF and PNG sheet even without a bridge; relative paths use the caller cwd', async t => {
@@ -476,6 +477,64 @@ test('animate_sheet rejects missing paths, non-PNGs, unknown motions and partial
 
 test('with a fake host', async t => {
   await startHost();
+
+  await t.test('generate_sprite schema and old-host guard prevent unsupported jobs', async () => {
+    const { result } = await request('tools/list');
+    const schema = result.tools.find(t => t.name === 'generate_sprite').inputSchema;
+    assert.deepEqual(schema.required, ['prompt', 'motion']); assert.equal(schema.additionalProperties, false);
+    assert.deepEqual(schema.properties.motion.enum, SPRITE_MOTIONS);
+    assert.deepEqual(schema.properties.frames.enum, [8, 16]); assert.equal(schema.properties.frames.default, 8);
+    assert.deepEqual(schema.properties.view.enum, ['side', 'front']);
+    assert.deepEqual(schema.properties.background.enum, ['transparent', 'white']);
+    assert.equal(schema.properties.size.minimum, 64); assert.equal(schema.properties.size.maximum, 1024);
+    assert.match((await request('initialize', {})).result.instructions, /for changing poses \(walking, jumping, waving\), use generate_sprite; for a ready sprite sheet, use animate_sheet/);
+    handlers = { status: () => ({ hostVersion: 'old' }) }; hostCalls.length = 0;
+    const res = await callTool('generate_sprite', { prompt: 'frog', motion: 'walk', wait_seconds: 0 });
+    assert.equal(res.result.isError, true);
+    assert.equal(textOf(res), 'ERROR \u2014 the installed bridge is older than this server; update Backdraw (node install.js), reload the extension and restart the client.');
+    assert.deepEqual(hostCalls, ['status']);
+  });
+
+  await t.test('generate_sprite passes defaults, references and options; attaches only the contact preview with its signature MIME', async t => {
+    const imagePath = animationFixture(t), sent = [];
+    handlers = { status: () => ({ features: ['sprite'] }),
+      generate: p => { sent.push(p); return fakeJob(); }, job: () => fakeJob() };
+    hostCalls.length = 0;
+    const args = { prompt: 'frog', motion: 'walk', wait_seconds: 0 };
+    assert.equal((await callTool('generate_sprite', args)).result.isError, false);
+    assert.deepEqual(hostCalls, ['status', 'generate', 'job']);
+    assert.deepEqual(sent[0].sprite, { motion: 'walk', frames: 8, view: 'side', background: 'transparent' });
+    await callTool('generate_sprite', { ...args, frames: 16, view: 'front', size: 256, background: 'white',
+      filename_hint: 'frog walk', output_dir: path.dirname(imagePath), reference_images: [imagePath] });
+    assert.deepEqual(sent[1].sprite, { motion: 'walk', frames: 16, view: 'front', size: 256, background: 'white' });
+    assert.equal(sent[1].filenameHint, 'frog walk'); assert.equal(sent[1].copyTo, path.dirname(imagePath));
+    assert.equal(sent[1].references[0].data, fs.readFileSync(imagePath).toString('base64'));
+    const attempt = { sheetPath: imagePath, gif: 'walk.gif', folder: 'walk_sheet', frames: 8, durationMs: 640,
+      width: 16, height: 16, bytes: 1024, gates: ['count', 'empty', 'identity', 'size', 'seam', 'edges'].map(id => ({ id, passed: true })) };
+    for (const [bytes, mime] of [[fs.readFileSync(imagePath), 'image/png'], [Buffer.from([255, 216, 255, 224]), 'image/jpeg']]) {
+      const preview = path.join(path.dirname(imagePath), 'contact.bin'); fs.writeFileSync(preview, bytes);
+      handlers.job = () => fakeJob({ status: 'succeeded', images: [{ path: 'walk.gif', preview }, { path: imagePath, preview: imagePath }],
+        sprite: { motion: 'walk', background: 'transparent', chosen: 0, attempts: [attempt] } });
+      const res = await callTool('generate_sprite', args);
+      assert.equal(res.result.content.length, 2); assert.equal(res.result.content[1].mimeType, mime);
+      assert.equal(res.result.content[1].data, bytes.toString('base64'));
+      const noPreview = await callTool('job_status', { job_id: JOB_ID, wait_seconds: 0, include_preview: false });
+      assert.equal(noPreview.result.content.length, 1);
+    }
+  });
+
+  await t.test('job_status uses preview signatures for non-sprite PNG and JPEG jobs', async t => {
+    const png = fs.readFileSync(animationFixture(t));
+    const preview = path.join(os.tmpdir(), `backdraw-mcp-preview-${process.pid}.bin`);
+    t.after(() => fs.rmSync(preview, { force: true }));
+    for (const [bytes, mime] of [[png, 'image/png'], [Buffer.from([255, 216, 255, 224]), 'image/jpeg']]) {
+      fs.writeFileSync(preview, bytes);
+      handlers = { job: () => fakeJob({ status: 'succeeded', images: [{ path: 'image.bin', preview }] }) };
+      const res = await callTool('job_status', { job_id: JOB_ID, wait_seconds: 0 });
+      assert.equal(res.result.content.length, 2); assert.equal(res.result.content[1].mimeType, mime);
+      assert.equal(res.result.content[1].data, bytes.toString('base64'));
+    }
+  });
 
   await t.test('animate_sheet registers kind, absolute white GIF path and exact preview frame counts; old hosts advise updating', async t => {
     const imagePath = sheetFixture(t, 17, 1);

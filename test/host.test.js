@@ -29,7 +29,7 @@ const REFS = path.join(DIR, 'refs');
 const PROJECT = { id: 'g-p-67a1b2c3d4e5f60718293a4b5c6d7e8f', name: 'Images', url: 'https://chatgpt.com/g/g-p-67a1b2c3d4e5f60718293a4b5c6d7e8f/project' };
 const CHAT_URL = 'https://chatgpt.com/g/g-p-67a1b2c3d4e5f60718293a4b5c6d7e8f/c/6812a3b4-1c2d-8000-9e8f-0123456789ab';
 
-for (const f of ['host.js', 'shared.js', 'identity.js', 'package.json', 'lib', 'platform']) fs.cpSync(path.join(ROOT, f), path.join(DIR, f), { recursive: true });
+for (const f of ['host.js', 'shared.js', 'identity.js', 'package.json', 'lib', 'platform', 'extension/gifframes.js']) fs.cpSync(path.join(ROOT, f), path.join(DIR, f), { recursive: true });
 fs.mkdirSync(path.join(DIR, 'data'));
 fs.writeFileSync(path.join(DIR, 'data', 'config.json'), JSON.stringify({ outputDir: IMAGES, collectionsDir: REFS, project: PROJECT }));
 // An old history entry has no motion field; both public summary paths should return null.
@@ -700,4 +700,375 @@ test('the host', async t => {
       assert.deepEqual(im.previewFrames, i === cases.length - 2 ? { shown: 16, total: 65 } : null);
     }
   });
+
+  const sheetBytes = name => fs.readFileSync(path.join(__dirname, 'fixtures', `frog-${name}.png`));
+  const sheetReply = (jobId, name, conversationUrl = CHAT_URL) => toHost({ type: 'result', jobId, ok: true,
+    conversationUrl, assistantText: 'Raw sheet reply', images: [{ mime: 'image/png', data: b64(sheetBytes(name)),
+      preview: b64(Buffer.concat([JPEG, Buffer.from(name)])),
+      crop: { data: b64(png(6, { width: 256, height: 256 })), width: 256, height: 256 } }] });
+  const readStored = id => JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8')).find(j => j.id === id);
+  const followingJob = async cancelledId => {
+    const next = await call('generate', { prompt: 'A normal job after sprite cancellation' });
+    assert.equal((await nextFromHost('run')).job.id, next.id);
+    toHost({ type: 'result', jobId: next.id, ok: true, images: [{ mime: 'image/png', data: b64(png(6, { width: 256, height: 256 })) }] });
+    const done = await finished(next.id);
+    assert.equal(done.status, 'succeeded', done.error);
+    assert.equal(fromHost.filter(m => m.type === 'run' && m.job.id === cancelledId).length, 0);
+    assert.deepEqual((await call('status')).queued, []);
+  };
+
+  await t.test('sprite parameters are validated before queuing and status advertises support', async () => {
+    assert.ok((await call('status')).features.includes('sprite'));
+    const before = JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8')).length;
+    for (const sprite of [null, [], false, 'walk', {}, { motion: 'fly' }, { motion: 'toString' },
+      { motion: 'walk', frames: 9 }, { motion: 'walk', frames: '8' }, { motion: 'walk', view: 'back' },
+      { motion: 'walk', size: 63 }, { motion: 'walk', size: 1025 }, { motion: 'walk', size: 64.5 },
+      { motion: 'walk', size: null }, { motion: 'walk', background: 'black' }]) {
+      await assert.rejects(call('generate', { prompt: 'frog', sprite }), { code: 'BAD_REQUEST' });
+    }
+    for (const conflict of [{ mode: 'collect' }, { startUrl: CHAT_URL }, { motion: 'walk' },
+      { animated: false }, { sendAsIs: false }]) {
+      await assert.rejects(call('generate', { prompt: 'frog', sprite: { motion: 'walk' }, ...conflict }), { code: 'BAD_REQUEST' });
+    }
+    await assert.rejects(call('generate', { prompt: '..!!', sprite: { motion: 'walk' } }), { code: 'BAD_REQUEST' });
+    assert.equal(JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8')).length, before);
+    assert.deepEqual((await call('status')).queued, []);
+  });
+
+  await t.test('sprite without a saved sheet preserves failed ChatGPT statuses and reply text', async () => {
+    for (const status of ['failed', 'text_reply', 'needs_reference', 'cancelled']) {
+      const job = await call('generate', { prompt: 'A frog', sprite: { motion: 'walk' } });
+      await nextFromHost('run');
+      toHost({ type: 'result', jobId: job.id, ok: false, status, assistantText: 'No sheet was generated', error: 'No image' });
+      const done = await finished(job.id);
+      assert.equal(done.status, status); assert.equal(done.assistantText, 'No sheet was generated');
+      assert.equal(done.sprite.attempts.length, 0); assert.equal(done.sprite.regenerated, false);
+      assert.match(resultLines(done).join('\n'), /No sheet was generated/);
+    }
+  });
+
+  await t.test('cancelling the first sprite generation stays cancelled even when ChatGPT returns a sheet', async () => {
+    for (const lateSheet of [false, true]) {
+      const job = await call('generate', { prompt: 'A frog', sprite: { motion: 'walk' } });
+      assert.equal((await nextFromHost('run')).job.id, job.id);
+      await call('cancel', { jobId: job.id });
+      assert.deepEqual(await nextFromHost('cancel'), { type: 'cancel', jobId: job.id });
+      assert.equal(readStored(job.id).cancelRequested, true);
+      if (lateSheet) sheetReply(job.id, 'jump-4x4');
+      else toHost({ type: 'result', jobId: job.id, ok: false, status: 'cancelled' });
+      const done = await finished(job.id);
+      assert.equal(done.status, 'cancelled'); assert.equal(done.sprite.attempts.length, 0);
+      assert.equal(done.sprite.regenerated, false); assert.deepEqual(done.images, []);
+      assert.equal(done.error, 'Cancelled.'); assert.equal(done.message, 'Cancelled.');
+      assert.equal((await call('cancel', { jobId: job.id })).status, 'cancelled');
+      await followingJob(job.id);
+    }
+  });
+
+  await t.test('cancelling a queued regeneration preserves the processed first sheet and never sends another run', async () => {
+    const job = await call('generate', { prompt: 'A frog', sprite: { motion: 'walk' } });
+    assert.equal((await nextFromHost('run')).job.id, job.id);
+    const blocker = await call('generate', { prompt: 'Keep Chrome busy while the sprite is processed' });
+    sheetReply(job.id, 'jump-4x4');
+    assert.equal((await nextFromHost('run')).job.id, blocker.id);
+    const queued = await call('job', { jobId: job.id });
+    assert.equal(queued.status, 'queued', JSON.stringify(queued));
+    const done = await call('cancel', { jobId: job.id });
+    assert.equal(done.status, 'cancelled'); assert.equal(done.sprite.attempts.length, 1);
+    assert.equal(done.sprite.regenerated, true); assert.equal(readStored(job.id).cancelRequested, true);
+    const attempt = done.sprite.attempts[0];
+    assert.deepEqual(done.images.map(i => i.path), [attempt.sheetPath]);
+    assert.deepEqual(fs.readFileSync(attempt.sheetPath), sheetBytes('jump-4x4'));
+    for (const file of ['atlas.png', 'manifest.json', 'frames', 'contact.png']) assert.ok(fs.existsSync(path.join(attempt.folder, file)));
+    assert.equal(done.error, `Cancelled. Saved sprite sheet(s): ${attempt.sheetPath}`);
+    assert.equal(done.message, done.error);
+    assert.equal((await call('status')).running.id, blocker.id);
+    assert.equal(fromHost.filter(m => m.type === 'cancel' && m.jobId === job.id).length, 0);
+    toHost({ type: 'result', jobId: blocker.id, ok: false, error: 'Blocker finished' });
+    await finished(blocker.id);
+    await followingJob(job.id);
+  });
+
+  await t.test('cancelling a running regeneration keeps the first sheet instead of succeeding or retrying', async () => {
+    for (const mode of ['requested', 'extension', 'late-sheet']) {
+      const job = await call('generate', { prompt: 'A frog', sprite: { motion: 'walk' } });
+      assert.equal((await nextFromHost('run')).job.id, job.id);
+      sheetReply(job.id, 'jump-4x4');
+      assert.equal((await nextFromHost('run')).job.id, job.id);
+      if (mode !== 'extension') {
+        await call('cancel', { jobId: job.id });
+        assert.deepEqual(await nextFromHost('cancel'), { type: 'cancel', jobId: job.id });
+      }
+      if (mode === 'late-sheet') sheetReply(job.id, 'walk-4x2');
+      else toHost({ type: 'result', jobId: job.id, ok: false, status: 'cancelled' });
+      const done = await finished(job.id), attempt = done.sprite.attempts[0];
+      assert.equal(done.status, 'cancelled'); assert.equal(done.sprite.attempts.length, 1);
+      assert.deepEqual(done.images.map(i => i.path), [attempt.sheetPath]);
+      assert.deepEqual(fs.readFileSync(attempt.sheetPath), sheetBytes('jump-4x4'));
+      assert.ok(fs.existsSync(path.join(attempt.folder, 'manifest.json')));
+      assert.equal(done.error, `Cancelled. Saved sprite sheet(s): ${attempt.sheetPath}`);
+      assert.equal(done.message, done.error);
+      await followingJob(job.id);
+    }
+  });
+
+  await t.test('sprite walk processes automatically, keeps original sheet bytes, and lists GIF and sheet in gallery', async () => {
+    const job = await call('generate', { prompt: 'A frog with a red scarf.', sprite: { motion: 'walk' } });
+    const { job: run } = await nextFromHost('run');
+    assert.equal(run.id, job.id); assert.equal(run.startUrl, PROJECT.url);
+    assert.match(run.text, /^Generate an image/); assert.match(run.text, /Sprite sheet of A frog with a red scarf, side view facing right, walk cycle/);
+    assert.match(run.text, /8 frames in a 4 x 2 grid/); assert.match(run.text, /Aspect ratio: 3:2/);
+    assert.match(run.text, /Background: fully transparent/); assert.equal(run.animated, false);
+    sheetReply(job.id, 'walk-4x2');
+    const done = await finished(job.id);
+    assert.equal(done.status, 'succeeded', done.error);
+    assert.equal(done.sprite.regenerated, false); assert.equal(done.sprite.chosen, 0);
+    assert.equal(done.sprite.attempts.length, 1); assert.equal(done.images.length, 2);
+    const [animation, source] = done.images, attempt = done.sprite.attempts[0];
+    assert.equal(animation.gif.frames, 8); assert.match(animation.path, /\.gif$/);
+    assert.equal(path.basename(animation.preview), `${job.id}-1.png`);
+    assert.deepEqual(animation.previewFrames, { shown: 8, total: 8 });
+    assert.equal(done.assistantText, null); assert.equal(attempt.assistantText, undefined);
+    for (const file of ['atlas.png', 'manifest.json', 'frames', 'contact.png']) assert.ok(fs.existsSync(path.join(attempt.folder, file)));
+    assert.ok(attempt.gates.every(g => g.passed), JSON.stringify(attempt.gates));
+    const items = (await call('gallery_list', { limit: 100 })).items.filter(i => i.jobId === job.id);
+    assert.deepEqual(items.map(i => i.path), [animation.path, source.path]);
+    const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+    assert.equal(sha(fs.readFileSync(items[1].path)), sha(sheetBytes('walk-4x2')));
+    assert.equal(readStored(job.id).sprite.attempts[0].result.sheet, undefined);
+    assert.deepEqual(await nextFromHost('gallery_changed'), { type: 'gallery_changed' });
+  });
+
+  await t.test('sprite regenerates once in a new chat, reattaches the same references and picks the passing sheet', async () => {
+    const refs = [{ name: 'frog.png', mime: 'image/png', data: b64(sheetBytes('walk-4x2')) }];
+    const job = await call('generate', { prompt: 'A frog', sprite: { motion: 'walk', background: 'white', size: 128 }, references: refs });
+    const first = (await nextFromHost('run')).job;
+    sheetReply(job.id, 'jump-4x4');
+    const second = (await nextFromHost('run')).job;
+    assert.equal(second.id, job.id); assert.equal(second.text, first.text); assert.equal(second.startUrl, PROJECT.url);
+    const refChunks = fromHost.filter(m => m.type === 'ref_chunk' && m.jobId === job.id);
+    assert.equal(refChunks.length, 2); assert.equal(refChunks[0].data, refChunks[1].data);
+    assert.match((await call('job', { jobId: job.id })).message, /Regenerating.*count:/);
+    assert.equal(readStored(job.id).sprite.regenerated, true);
+    const secondUrl = CHAT_URL.replace('6812a3b4', '7812a3b4');
+    sheetReply(job.id, 'walk-4x2', secondUrl);
+    const done = await finished(job.id);
+    assert.equal(done.status, 'succeeded', done.error); assert.equal(done.sprite.regenerated, true);
+    assert.equal(done.sprite.attempts.length, 2); assert.equal(done.sprite.chosen, 1);
+    assert.match(done.sprite.regenerateReason, /count:/); assert.equal(done.images.length, 3);
+    assert.equal(done.conversationUrl, secondUrl); assert.equal(done.images[0].gif.transparent, false);
+    assert.ok(fs.existsSync(done.sprite.attempts[1].transparentGif));
+    assert.deepEqual(fs.readFileSync(done.images[1].path), sheetBytes('walk-4x2'));
+    assert.deepEqual(fs.readFileSync(done.images[2].path), sheetBytes('jump-4x4'));
+    assert.notEqual(done.images[1].preview, done.images[2].preview);
+    assert.deepEqual(fs.readFileSync(done.images[1].preview), Buffer.concat([JPEG, Buffer.from('walk-4x2')]));
+    assert.deepEqual(fs.readFileSync(done.images[2].preview), Buffer.concat([JPEG, Buffer.from('jump-4x4')]));
+  });
+
+  await t.test('two failing count gates still finish with warnings and never queue a third run', async () => {
+    const job = await call('generate', { prompt: 'A frog', sprite: { motion: 'walk' } });
+    const runs = [];
+    for (let i = 0; i < 2; i++) {
+      runs.push((await nextFromHost('run')).job);
+      sheetReply(job.id, 'jump-4x4');
+    }
+    const done = await finished(job.id);
+    assert.equal(done.status, 'succeeded', done.error); assert.equal(done.sprite.attempts.length, 2);
+    assert.equal(done.sprite.chosen, 0); assert.equal(done.images.length, 3);
+    assert.match(resultLines(done).join('\n'), /WARNING.*count:/);
+    await sleep(150);
+    assert.equal(runs.filter(r => r.id === job.id).length + fromHost.filter(m => m.type === 'run' && m.job.id === job.id).length, 2);
+  });
+
+  await t.test('a failed second ChatGPT reply keeps the processed first attempt with a warning', async () => {
+    for (const status of ['failed', 'text_reply', 'needs_reference']) {
+      const job = await call('generate', { prompt: 'A frog', sprite: { motion: 'walk' } });
+      await nextFromHost('run'); sheetReply(job.id, 'jump-4x4'); await nextFromHost('run');
+      toHost({ type: 'result', jobId: job.id, ok: false, status, error: 'Second chat failed' });
+      const done = await finished(job.id);
+      assert.equal(done.status, 'succeeded', done.error); assert.equal(done.sprite.chosen, 0);
+      assert.match(done.sprite.warning, /Could not regenerate.*Second chat failed/);
+      assert.equal(done.conversationUrl, CHAT_URL); assert.equal(done.images.length, 2);
+      assert.match(resultLines(done).join('\n'), /Tried to regenerate once.*second attempt did not finish; used attempt 1\./);
+      assert.doesNotMatch(resultLines(done).join('\n'), /Regenerated once/);
+    }
+  });
+
+  await t.test('processing errors retry once, prefer a valid sheet and preserve both raw paths on total failure', async () => {
+    for (const recover of [true, false]) {
+      const job = await call('generate', { prompt: 'A frog', sprite: { motion: 'walk' } });
+      for (let i = 0; i < 2; i++) {
+        await nextFromHost('run');
+        if (i === 1 && recover) sheetReply(job.id, 'walk-4x2');
+        else toHost({ type: 'result', jobId: job.id, ok: true, images: [{ mime: 'image/png', data: b64(png(6, { width: 256, height: 256 })) }] });
+      }
+      const done = await finished(job.id);
+      assert.equal(done.sprite.attempts.length, 2);
+      if (recover) {
+        assert.equal(done.status, 'succeeded', done.error); assert.equal(done.sprite.chosen, 1);
+      } else {
+        assert.equal(done.status, 'failed'); assert.match(done.error, /animate_sheet/);
+        assert.equal(done.message, 'Sprite processing failed');
+        assert.equal(done.images.length, 2);
+        for (const image of done.images) { assert.ok(fs.existsSync(image.path)); assert.ok(done.error.includes(image.path)); }
+      }
+    }
+  });
+
+  await t.test('Chrome closing during regeneration finishes the saved first attempt without another run', async () => {
+    const job = await call('generate', { prompt: 'A frog', sprite: { motion: 'walk' } });
+    await nextFromHost('run'); sheetReply(job.id, 'jump-4x4'); await nextFromHost('run');
+    child.stdin.end(); await exited;
+    const done = readStored(job.id);
+    assert.equal(done.status, 'succeeded', done.error); assert.equal(done.sprite.chosen, 0);
+    assert.equal(done.images.length, 2); assert.match(done.sprite.warning, /Chrome closed \/ the bridge restarted/);
+    assert.equal(done.sprite.attempts.length, 1);
+  });
+
+  await t.test('startup completes saved processing and interrupted retries without Chrome or reference bytes', async () => {
+    const history = JSON.parse(fs.readFileSync(path.join(DIR, 'data', 'jobs.json'), 'utf8'));
+    const walk = history.find(j => j.sprite?.attempts.length === 1 && !j.sprite.regenerated);
+    const retried = history.find(j => j.sprite?.attempts.length === 2 && j.sprite.chosen === 1);
+    const failed = history.find(j => j.sprite?.attempts.length === 2 && j.status === 'failed');
+    const make = (source, id, state, status = 'running') => {
+      const job = JSON.parse(JSON.stringify(source));
+      Object.assign(job, { id, status, step: state, finishedAt: null, error: null, images: [] });
+      Object.assign(job.sprite, { state, chosen: null, warning: null });
+      return job;
+    };
+    const passing = make(walk, 'img_0000aa01', 'processing'); passing.sprite.attempts[0].result = null;
+    const count = make(retried, 'img_0000aa02', 'processing');
+    count.sprite.attempts = [count.sprite.attempts[0]]; count.sprite.attempts[0].result = null; count.sprite.regenerated = false;
+    const queued = make(retried, 'img_0000aa03', 'generating', 'queued'); queued.sprite.attempts = [queued.sprite.attempts[0]];
+    const running = make(queued, 'img_0000aa04', 'generating');
+    const second = make(retried, 'img_0000aa05', 'processing'); second.sprite.attempts[1].result = null;
+    const noSheet = make(walk, 'img_0000aa06', 'generating'); noSheet.sprite.attempts = [];
+    const error = make(failed, 'img_0000aa07', 'processing');
+    error.sprite.attempts = [error.sprite.attempts[0]]; error.sprite.attempts[0].result = null; error.sprite.regenerated = false;
+    const cancelledNoSheet = make(noSheet, 'img_0000aa08', 'generating'); cancelledNoSheet.cancelRequested = true;
+    const cancelledSheet = make(queued, 'img_0000aa09', 'generating', 'queued'); cancelledSheet.cancelRequested = true;
+    fs.writeFileSync(path.join(DIR, 'data', 'jobs.json'), JSON.stringify([
+      passing, count, queued, running, second, noSheet, error, cancelledNoSheet, cancelledSheet,
+    ]));
+    const restart = spawn(process.execPath, [path.join(DIR, 'host.js')], { cwd: DIR,
+      env: { ...process.env, [identity.PIPE_ENV]: PIPE }, stdio: ['pipe', 'ignore', 'ignore'] });
+    const restartExited = new Promise(resolve => restart.once('exit', resolve));
+    try {
+      for (let i = 0; ; i++) {
+        try { await call('status'); break; } catch (e) { if (i >= 500) throw e; await sleep(30); }
+      }
+      for (const job of [passing, count, queued, running, second]) {
+        const done = await call('job', { jobId: job.id });
+        assert.equal(done.status, 'succeeded', done.error);
+        assert.ok(done.images[0].gif); assert.ok(fs.existsSync(done.images[0].preview));
+        assert.equal(done.sprite.attempts.length, job.sprite.attempts.length);
+        if ([count, queued, running].includes(job)) assert.match(done.sprite.warning, /Chrome closed \/ the bridge restarted/);
+        else assert.equal(done.sprite.warning, null);
+        assert.equal(done.sprite.chosen, job === second ? 1 : 0);
+      }
+      assert.match((await call('job', { jobId: noSheet.id })).error, /Interrupted:/);
+      const failedJob = await call('job', { jobId: error.id });
+      assert.equal(failedJob.status, 'failed'); assert.match(failedJob.error, /animate_sheet/);
+      assert.equal(failedJob.images.length, 1); assert.ok(fs.existsSync(failedJob.images[0].path));
+      for (const job of [cancelledNoSheet, cancelledSheet]) {
+        const done = await call('job', { jobId: job.id });
+        assert.equal(done.status, 'cancelled'); assert.equal(done.message, done.error);
+        assert.deepEqual(done.images.map(i => i.path), job.sprite.attempts.map(a => a.sheet.path));
+        assert.equal(done.error, job === cancelledNoSheet ? 'Cancelled.' : `Cancelled. Saved sprite sheet(s): ${job.sprite.attempts[0].sheet.path}`);
+      }
+      assert.deepEqual((await call('status')).queued, []);
+    } finally { restart.stdin.end(); await restartExited; }
+  });
+});
+
+test('sprite cancellation clears its fallback and previews, and stale callbacks cannot disturb another run', () => {
+  const vm = require('node:vm');
+  // Load the real handlers without starting a pipe or touching persistent files.
+  const source = fs.readFileSync(path.join(ROOT, 'host.js'), 'utf8').split('// ---------------------------------------------------------------- start')[0];
+  const timers = [], immediates = [], messages = [];
+  const context = { module: { exports: {} }, Buffer,
+    process: { stdout: { write: frame => messages.push(JSON.parse(frame.subarray(4).toString('utf8'))) } },
+    require: name => {
+      if (name === './shared') return { LOG_DIR: DIR, readJson: (_file, fallback) => fallback, writeJson() {} };
+      if (name === 'fs') return { mkdirSync() {}, statSync: () => ({ size: 0 }), appendFileSync() {} };
+      if (name === 'net') return { createServer: () => ({}) };
+      return require(name.startsWith('.') ? path.join(ROOT, name) : name);
+    },
+    setTimeout: (callback, ms) => { const timer = { callback, ms, cleared: false }; timers.push(timer); return timer; },
+    clearTimeout: timer => { if (timer) timer.cleared = true; },
+    setImmediate: callback => immediates.push(callback),
+  };
+  vm.runInNewContext(source + '\nmodule.exports = { jobs, cancelJob, onResult, processSpriteJob, finishJob, cancelTimers, pump, ' +
+    'connect: () => { extension = { version: "test" }; }, running: () => runningId, setRunning: id => { runningId = id; } };', context);
+  const api = context.module.exports;
+  const makeJob = id => ({ id, status: 'running', prompt: 'A frog', references: [], images: [],
+    sprite: { state: 'generating', attempts: [], regenerated: false } });
+  const job = makeJob('cancelled-sprite');
+  const result = { gates: [] };
+  Object.defineProperty(result, 'sheet', { value: { png: Buffer.alloc(100) }, configurable: true });
+  job.sprite.attempts.push({ sheet: { path: 'saved-sheet.png' }, result });
+  api.jobs.push(job); api.setRunning(job.id);
+  api.cancelJob(job.id); api.cancelJob(job.id);
+  assert.equal(job.cancelRequested, true);
+  assert.equal(timers.length, 1); assert.equal(timers[0].ms, 20000);
+  assert.equal(messages.filter(m => m.type === 'cancel').length, 2);
+  api.onResult({ jobId: job.id, status: 'cancelled' });
+  assert.equal(job.status, 'cancelled'); assert.equal(api.running(), null);
+  assert.equal(timers[0].cleared, true); assert.equal(api.cancelTimers.size, 0);
+  assert.equal(Object.hasOwn(result, 'sheet'), false);
+  const next = makeJob('next-sprite'); api.jobs.push(next); api.setRunning(next.id);
+  const queuedCallbacks = immediates.length;
+  timers[0].callback();
+  assert.equal(job.status, 'cancelled'); assert.equal(next.status, 'running');
+  assert.equal(api.running(), next.id); assert.equal(immediates.length, queuedCallbacks);
+  // Even an unfinished old job cannot release a different job's current run.
+  job.status = 'running'; timers[0].callback();
+  assert.equal(job.status, 'running'); assert.equal(api.running(), next.id);
+  job.status = 'cancelled';
+
+  const processing = makeJob('processing-sprite');
+  processing.sprite.state = 'processing'; processing.cancelRequested = true;
+  processing.sprite.attempts.push({ sheet: { path: 'unprocessed-sheet.png' }, result: null });
+  api.jobs.push(processing);
+  api.processSpriteJob(processing);
+  assert.equal(processing.status, 'cancelled'); assert.equal(processing.sprite.regenerated, false);
+  assert.equal(processing.sprite.attempts[0].result, null);
+  assert.equal(processing.images[0].path, 'unprocessed-sheet.png');
+  assert.equal(api.running(), next.id);
+
+  for (const status of ['succeeded', 'failed']) {
+    const terminal = makeJob(`finished-${status}`), summary = {};
+    Object.defineProperty(summary, 'sheet', { value: { png: Buffer.alloc(100) }, configurable: true });
+    terminal.sprite.attempts.push({ sheet: { path: 'raw-sheet.png' }, result: summary });
+    api.finishJob(terminal, { status });
+    assert.equal(Object.hasOwn(summary, 'sheet'), false); assert.equal(terminal.sprite.state, 'done');
+  }
+
+  const failed = makeJob('disk-error');
+  failed.sprite.attempts.push({ sheet: { path: 'disk-error-sheet.png' }, result: { error: 'Disk full', code: 'ENOSPC', retryable: false } });
+  api.processSpriteJob(failed);
+  assert.equal(failed.status, 'failed'); assert.equal(failed.sprite.regenerated, false);
+  assert.equal(failed.sprite.attempts.length, 1); assert.equal(failed.message, 'Sprite processing failed');
+  assert.match(failed.error, /Disk full.*disk-error-sheet.png/);
+  assert.equal(api.running(), next.id);
+
+  const fallback = makeJob('no-extension-reply'); api.jobs.push(fallback); api.setRunning(fallback.id);
+  api.cancelJob(fallback.id);
+  const fallbackTimer = timers.at(-1);
+  assert.equal(fallbackTimer.ms, 20000); fallbackTimer.callback();
+  assert.equal(fallback.status, 'cancelled'); assert.equal(fallback.message, 'Cancelled.');
+  assert.equal(api.running(), null); assert.equal(fallbackTimer.cleared, true);
+  assert.equal(api.cancelTimers.size, 0);
+
+  // A watchdog expiring just after cancel_job must also honor the pending cancellation.
+  next.status = 'succeeded';
+  const timeout = { ...makeJob('watchdog-race'), status: 'queued', project: PROJECT, timeoutSec: 60 };
+  api.jobs.push(timeout); api.connect(); api.pump();
+  assert.equal(api.running(), timeout.id);
+  const watchdogTimer = timers.at(-1);
+  api.cancelJob(timeout.id);
+  const cancellationTimer = timers.at(-1);
+  watchdogTimer.callback();
+  assert.equal(timeout.status, 'cancelled'); assert.equal(timeout.error, 'Cancelled.');
+  assert.equal(api.running(), null); assert.equal(cancellationTimer.cleared, true);
 });

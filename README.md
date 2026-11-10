@@ -449,8 +449,8 @@ were copied.
 ## Local motion (animate_image)
 
 `animate_image` turns one PNG into a seamless looping GIF locally, in seconds, with no ChatGPT or
-Chrome. The character stays unchanged, ideal for stickers and emoji. Use `generate_image` with
-`motion` when poses must change, such as walking or waving.
+Chrome. The character stays unchanged, ideal for stickers and emoji. Use `generate_sprite`
+when poses must change, such as walking or waving.
 
 Example request: "Make the starfish sticker bounce."
 
@@ -482,6 +482,23 @@ Limits: non-interlaced PNG only, at most 20 MB and 16.7 million pixels (for exam
 The light-motion idea comes from [gif-factory](https://github.com/WoYun520/gif-factory) (MIT),
 and the pixel-scale idea from [sprite-gen](https://github.com/aldegad/sprite-gen) (Apache-2.0);
 no code was copied.
+
+## Sprite animation (generate_sprite)
+
+Ask "Claude, make a frog with a red scarf walk". With one `generate_sprite` call, ChatGPT draws
+a sprite sheet and Backdraw cuts and aligns its poses locally into a looping transparent GIF,
+`atlas.png`, `manifest.json`, individual frame PNGs and a numbered contact preview. The GIF and
+original sheet appear in the gallery. Follow the returned job id with `job_status`.
+
+Choose `walk`, `run`, `idle`, `jump`, `dance`, `wave` or `attack`, with `side` (default) or `front`
+view. The default 8 frames use a 4x2 grid; 16 frames use 4x4. If frame count, empty-frame or character
+identity checks fail, Backdraw regenerates exactly once in a new chat and uses the better attempt;
+remaining quality warnings are reported. Both source sheets are kept unchanged.
+
+For a second motion of the same character, pass a character PNG or a frame from the previous
+animation's `frames/` folder in `reference_images`. `size` (64-1024) limits the GIF's long edge;
+`background: white` also saves a white GIF. `output_dir` copies only the GIF and raw source
+sheet(s); `atlas.png`, `manifest.json` and `frames/` stay in the output folder next to each source sheet.
 
 ## Sprite sheet animation (animate_sheet)
 
@@ -566,6 +583,7 @@ file remains unchanged in your images folder.
 | Tool | Parameters (default) | What it does |
 |---|---|---|
 | `generate_image` | `prompt` (required), `animated` (false), `motion`, `aspect_ratio`, `transparent_background` (false), `reference_images`, `reference_collection`, `reference_files`, `conversation_url`, `auto_reattach` (false), `send_as_is` (false), `output_dir`, `filename_hint`, `wait_seconds` (45), `include_preview` (true) | Starts a new chat in your Project (or continues `conversation_url`) and generates or edits an image. |
+| `generate_sprite` | `prompt` (required), `motion` (required), `frames` (8 or 16, default 8), `view` (`side`), `reference_images`, `size`, `background` (`transparent`), `filename_hint`, `output_dir`, `wait_seconds` (45), `include_preview` (true) | Generates a sheet with ChatGPT and processes it locally into GIF, atlas, frames and manifest; regenerates once if needed. |
 | `job_status` | `job_id`, `wait_seconds` (45), `include_preview` (true) | Waits for a job and reports it. Without `job_id`: the bridge status (Chrome connected, selected Project, images folder, queue, recent jobs). |
 | `cancel_job` | `job_id` (required) | Cancels a queued or running job. If ChatGPT is already generating, it presses Stop in the background tab. |
 | `fetch_images` | `conversation_url` (required), `aspect_ratio`, `output_dir`, `wait_seconds` (45), `include_preview` (true) | Downloads the images of the latest answer in an existing chat, without sending anything. |
