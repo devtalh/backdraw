@@ -16,7 +16,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `jump`, `dance`, `wave`, `attack` and `custom`, with `fps` or `durations_ms` overrides. Quality
   checks (frame count, frame size, color drift, loop seam, edge halo) are reported as warnings. A
   new folder next to the unchanged source holds a transparent GIF, an atlas PNG, the frame PNGs,
-  `manifest.json` and a numbered contact preview, and the GIF appears in the gallery. (#17)
+  `manifest.json` and a numbered contact preview. While the bridge runs, the GIF also appears in
+  the gallery. (#17)
 - **`generate_sprite` tool.** One call asks ChatGPT for a transparent sprite sheet (8 frames in
   4x2 or 16 frames in 4x4), and the host turns it into the same GIF, atlas, frames and manifest as
   soon as it is saved. If the frame count, an empty frame or the character's look fails the check,
@@ -26,9 +27,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **Shorter sprite results.** `generate_sprite` and `animate_sheet` results have one quality line
-  and list only the checks that failed. Local animation results no longer show the "Requested
-  motion" hint meant for ChatGPT. (#18)
+- **Shorter sprite results.** `generate_sprite` and `animate_sheet` results show one quality line
+  when every check passes, and otherwise list only the checks that failed. In `job_status`, local
+  animations no longer show the "Requested motion" hint meant for ChatGPT. (#18)
+
+### Fixed
+
+- `job_status` no longer says ChatGPT generated a local animation; it reports a local save. (#18)
 
 ## [2.2.0] - 2026-11-09
 
