@@ -497,8 +497,9 @@ remaining quality warnings are reported. Both source sheets are kept unchanged.
 
 For a second motion of the same character, pass a character PNG or a frame from the previous
 animation's `frames/` folder in `reference_images`. `size` (64-1024) limits the GIF's long edge;
-`background: white` also saves a white GIF. `output_dir` copies only the GIF and raw source
-sheet(s); `atlas.png`, `manifest.json` and `frames/` stay in the output folder next to each source sheet.
+`background: white` also saves a white GIF. `output_dir` copies the complete export into a new
+subfolder per attempt: GIFs, raw sheet, `atlas.png`, `manifest.json`, `frames/` and `contact.png`.
+Result and gallery paths point to those copies; the central images folder keeps the originals.
 
 ## Sprite sheet animation (animate_sheet)
 
@@ -630,6 +631,10 @@ What a result can say:
 | `CHATGPT REPLIED WITHOUT AN IMAGE` | ChatGPT answered in text (a question, a refusal, a limit); up to 3,000 characters of it are included. |
 | `FAILED` / `CANCELLED` | With the reason, and the chat link if there is one. |
 
+Edit checks measure visible color differences separately from structural similarity. A high
+structural score can still contain a clear local edit. `changed: false` means no visible change
+was detected beyond encoding noise; these thumbnail measurements do not verify the requested edit.
+
 ## Fast return
 
 Generating usually takes 1-3 minutes, but `generate_image`, `fetch_images` and `job_status` return
@@ -710,7 +715,8 @@ project names, prompts and chat links are never printed.
 | `BRIDGE NOT RUNNING` | Chrome is closed, or the extension is not loaded or turned off. Open Chrome (the extension connects by itself) or turn Backdraw on at `chrome://extensions`. Check with `node cli.js status`. |
 | Red **!** on the Backdraw icon | The extension can't reach the local host. The popup shows the error and the fix. Run `npx backdraw@latest doctor --fix` (or `node install.js` again), then reload Backdraw at `chrome://extensions`. |
 | `NEEDS USER ACTION` | ChatGPT shows a login or a human verification (CAPTCHA). Open the ChatGPT tab in Chrome and finish it yourself; Backdraw never tries to get around it. The job waits up to 10 minutes for you; as soon as you finish, it continues by itself. After 10 minutes it fails and leaves the ChatGPT tab open. |
-| `⚠ EDIT CHECK (edited: false)` | ChatGPT drew a new picture instead of editing (a real edit keeps ~95-100% of the image). Ask again with the original in `reference_images` and without `conversation_url`, i.e. in a fresh chat. |
+| Edit check warns about a redraw | The composition differs substantially from the reference. If an exact local edit is needed, ask again with the original in `reference_images` and without `conversation_url`, in a fresh chat. |
+| `changed: false` | No visible change was detected, including when ChatGPT returned a re-encoded copy of the reference. Inspect the result before retrying. |
 | `NEEDS REFERENCE IMAGE` | ChatGPT lost track of the image in a long chat. Attach it with `reference_images` (best in a fresh chat) or use `auto_reattach`. |
 | `FAILED — ChatGPT did not finish in time` | A job gives up after about 10 minutes. If the result has a chat link, `fetch_images` (or `node cli.js collect <link>`) downloads the image once ChatGPT has finished; pass the same `aspect_ratio` again to crop it the same way. |
 | `No ChatGPT project is selected yet` | Select one in the popup, or ask Claude to list and select your Projects. |
