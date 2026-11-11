@@ -112,12 +112,13 @@ test('editCheckLines: no check, nothing to say', () => {
   assert.deepEqual(editCheckLines(job({ editCheck: { results: [] } })), []);
 });
 
-test('editCheckLines: 75% or more unchanged is a real edit', () => {
+test('editCheckLines: a legacy structural score alone does not prove an edit', () => {
   const lines = editCheckLines(job({ prompt: 'edit: close the eyes', editCheck: check(0.75) }));
   assert.equal(lines.length, 1);
-  assert.match(lines[0], /^Edit check: 75% of the image is unchanged compared with ref1\.png/);
-  assert.match(lines[0], /\(edited: true\)/);
-  assert.match(editCheckLines(job({ editCheck: check(0.98) }))[0], /98%.*edited: true/);
+  assert.match(lines[0], /^Edit check: structural similarity to ref1\.png: 75%/);
+  assert.match(lines[0], /Change detection is unavailable/);
+  assert.doesNotMatch(lines[0], /edited: true|image is unchanged/);
+  assert.match(editCheckLines(job({ editCheck: check(0.98) }))[0], /98%.*Change detection is unavailable/);
 });
 
 test('editCheckLines: under 75% with an edit request warns', () => {
@@ -130,8 +131,8 @@ test('editCheckLines: under 75% with an edit request warns', () => {
 test('editCheckLines: at the 75% boundary the verdict follows the shown percentage', () => {
   assert.match(editCheckLines(job({ prompt: 'keep everything else', editCheck: check(0.7449) }))[0], /EDIT CHECK \(edited: false\): only 74% /);
   assert.match(editCheckLines(job({ prompt: 'keep everything else', editCheck: check(0.74) }))[0], /EDIT CHECK \(edited: false\): only 74% /);
-  // The extension rounds to hundredths; anything shown as 75% counts as an edit.
-  assert.match(editCheckLines(job({ prompt: 'keep everything else', editCheck: check(0.7499) }))[0], /^Edit check: 75% .*\(edited: true\)/);
+  // The extension rounds to hundredths; a shown 75% does not warn about a redraw.
+  assert.match(editCheckLines(job({ prompt: 'keep everything else', editCheck: check(0.7499) }))[0], /^Edit check: structural similarity to ref1\.png: 75%/);
 });
 
 test('editCheckLines: under 75% without an edit request is a neutral note', () => {
@@ -157,14 +158,41 @@ test('editCheckLines: animated jobs report similarity without an edit verdict', 
   const fields = { animated: true, prompt: 'Edit the image: only change the eyes' };
   assert.deepEqual(editCheckLines(job({ ...fields, editCheck: check(0.9) })), [line(90)]);
   assert.deepEqual(editCheckLines(job({ ...fields, editCheck: check(0.1) })), [line(10)]);
-  assert.match(editCheckLines(job({ prompt: fields.prompt, editCheck: check(0.9) }))[0], /edited: true/);
+  assert.match(editCheckLines(job({ prompt: fields.prompt, editCheck: check(0.9) }))[0], /structural similarity.*90%/);
   assert.match(editCheckLines(job({ prompt: fields.prompt, editCheck: check(0.1) }))[0], /EDIT CHECK \(edited: false\)/);
 });
 
 test('editCheckLines: the least similar output decides', () => {
   const [line] = editCheckLines(job({ prompt: 'edit it', editCheck: check(0.97, 0.5, 0.9) }));
   assert.match(line, /EDIT CHECK \(edited: false\): only 50% of the image matches ref2\.png/);
-  assert.match(editCheckLines(job({ editCheck: check(0.9, 0.8) }))[0], /80% .* ref2\.png .*edited: true/);
+  assert.match(editCheckLines(job({ editCheck: check(0.9, 0.8) }))[0], /structural similarity to ref2\.png: 80%/);
+});
+
+test('editCheckLines: color differences are changes even with 100% structural similarity', () => {
+  const editCheck = { results: [{ similarity: 1, changed: true, changedFraction: 0.0022, against: 'original.png' }] };
+  const [line] = editCheckLines(job({ prompt: 'edit the colors', editCheck }));
+  assert.match(line, /visible changes detected.*0.22% of thumbnail pixels differ; structural similarity 100%.*changed: true/);
+  assert.doesNotMatch(line, /image is unchanged|no visible change|edited: false/);
+});
+
+test('editCheckLines: re-encoded output reports no visible change, independently for each output', () => {
+  const editCheck = { results: [
+    { similarity: 1, changed: false, changedFraction: 0, against: 'ref.png' },
+    { similarity: 0.98, changed: true, changedFraction: 0.035, against: 'ref.png' },
+  ] };
+  const lines = editCheckLines(job({ prompt: 'edit it', editCheck }));
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /no visible change detected.*0.00%.*changed: false.*re-encoded/);
+  assert.match(lines[1], /visible changes detected.*3.50%.*changed: true/);
+});
+
+test('editCheckLines: changed composition warns about redraws, while animations and collection references stay neutral', () => {
+  const editCheck = { results: [{ similarity: 0.4, changed: true, changedFraction: 0.65, against: 'ref.png' }] };
+  assert.match(editCheckLines(job({ prompt: 'edit only the hat', editCheck }))[0], /visible changes detected.*WARNING:.*redraw/);
+  assert.doesNotMatch(editCheckLines(job({ prompt: 'a castle', editCheck }))[0], /WARNING/);
+  assert.match(editCheckLines(job({ animated: true, editCheck }))[0], /not an edit check/);
+  const collection = { used: ['ref.png'] };
+  assert.match(editCheckLines(job({ collection, references: [{ name: 'ref.png' }], editCheck }))[0], /^Similarity/);
 });
 
 test('edit intent: English and Turkish wording', () => {

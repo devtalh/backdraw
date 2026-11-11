@@ -368,6 +368,8 @@ test('signature: paints white before drawing centered aspect-preserving thumbnai
     assert.deepEqual(calls, [
       ['fillRect', '#ffffff', 0, 0, 32, 32],
       expected,
+      ['fillRect', '#ffffff', 0, 0, 128, 128],
+      ['drawImage', ...expected.slice(1).map(n => n * 4)],
     ]);
   }
 });
@@ -379,5 +381,68 @@ test('signature: an opaque square keeps the legacy stretched signature exactly',
     pixels.set([(x * 5) & 0xff, (y * 3) & 0xff, (x + y * 2) & 0xff, 255], i);
   }
   const actual = await loadSignaturePage().signature(imageSource(64, 64, pixels));
-  assert.deepEqual(Array.from(actual), legacySquareSignature({ width: 64, height: 64, data: pixels }));
+  assert.deepEqual(Array.from(actual.gray), legacySquareSignature({ width: 64, height: 64, data: pixels }));
+});
+
+test('edit check: real color, spark and added-character changes are detected', async () => {
+  const { signature, compareSignatures } = loadSignaturePage();
+  const read = async name => {
+    const bytes = fs.readFileSync(path.join(__dirname, 'fixtures', `edit-${name}.png`));
+    const decoded = decodePng(bytes);
+    assert.ok(bytes.length <= 60 * 1024, name);
+    assert.ok(Math.max(decoded.width, decoded.height) <= 256, name);
+    return signature({ mime: 'image/png', data: bytes.toString('base64') });
+  };
+  for (const [a, b] of [['spreader-gray', 'spreader-red'], ['weld-1', 'weld-2'], ['spreader-red', 'proud-welder']]) {
+    const comparison = compareSignatures(await read(a), await read(b));
+    assert.equal(comparison.changed, true, `${a} -> ${b}: ${JSON.stringify(comparison)}`);
+    assert.ok(comparison.changedFraction > 0.01);
+  }
+});
+
+test('edit check: lossless PNG re-encoding stays unchanged for every real fixture', async () => {
+  const { encodePng } = require('../lib/png-codec');
+  const { signature, compareSignatures } = loadSignaturePage();
+  for (const name of ['spreader-gray', 'spreader-red', 'weld-1', 'weld-2', 'proud-welder']) {
+    const original = fs.readFileSync(path.join(__dirname, 'fixtures', `edit-${name}.png`));
+    const { width, height, data } = decodePng(original);
+    const reencoded = encodePng(width, height, new Uint8Array(data));
+    assert.notDeepEqual(reencoded, original, 'different encoding, same pixels');
+    const compare = compareSignatures(
+      await signature({ mime: 'image/png', data: original.toString('base64') }),
+      await signature({ mime: 'image/png', data: reencoded.toString('base64') }));
+    assert.equal(compare.changed, false, name);
+    assert.equal(compare.changedFraction, 0, name);
+  }
+});
+
+test('edit check: small equal-luminance recolor and small added object survive global averaging', async () => {
+  const { signature, compareSignatures } = loadSignaturePage();
+  const base = new Uint8ClampedArray(128 * 128 * 4);
+  for (let i = 0; i < base.length; i += 4) base.set([100, 100, 100, 255], i);
+  const reference = await signature(imageSource(128, 128, base));
+  for (const [label, rgb] of [['recolor', [200, 49, 100, 255]], ['new object', [240, 220, 20, 255]]]) {
+    const changed = base.slice();
+    for (let y = 44; y < 50; y++) for (let x = 63; x < 69; x++) changed.set(rgb, (y * 128 + x) * 4);
+    const result = compareSignatures(reference, await signature(imageSource(128, 128, changed)));
+    assert.equal(result.changed, true, label);
+    assert.ok(result.changedFraction < 0.005, 'less than 0.5% of the picture changed');
+  }
+});
+
+test('edit check: JPEG quality 90 re-encoding is unchanged despite codec noise', async () => {
+  const { signature, compareSignatures } = loadSignaturePage();
+  const read = name => signature({ mime: 'image/png', data: fs.readFileSync(path.join(__dirname, 'fixtures', name)).toString('base64') });
+  const result = compareSignatures(await read('edit-weld-1.png'), await read('edit-weld-1-jpeg90.png'));
+  assert.equal(result.changed, false, JSON.stringify(result));
+  assert.ok(result.similarity >= 0.95);
+});
+
+test('edit check: small encoding noise and white-matted transparency are not edits', async () => {
+  const { signature, compareSignatures } = loadSignaturePage();
+  const original = squareReferencePixels(true), noisy = original.slice();
+  for (let i = 0; i < noisy.length; i += 4) for (let c = 0; c < 3; c++) noisy[i + c] = Math.max(0, noisy[i + c] - i % 7);
+  const a = await signature(imageSource(64, 64, original));
+  assert.equal(compareSignatures(a, await signature(imageSource(64, 64, noisy))).changed, false);
+  assert.equal(compareSignatures(a, await signature(imageSource(64, 64, squareReferencePixels()))).changed, false);
 });
