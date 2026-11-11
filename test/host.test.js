@@ -23,6 +23,8 @@ const { gif } = require('./gif-fixture');
 const ROOT = path.join(__dirname, '..');
 const TAG = `backdraw-host-test-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
 const PIPE = process.platform === 'win32' ? `\\\\.\\pipe\\${TAG}` : path.join(os.tmpdir(), `${TAG}.sock`);
+process.env[identity.PIPE_ENV] = PIPE;
+const { copyResults } = require('../shared');
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), `${TAG}-`));
 const IMAGES = path.join(DIR, 'images');
 const REFS = path.join(DIR, 'refs');
@@ -839,9 +841,123 @@ test('the host', async t => {
     assert.deepEqual(await nextFromHost('gallery_changed'), { type: 'gallery_changed' });
   });
 
+  await t.test('sprite output_dir copies complete walk and idle exports, preserves central files and updates gallery paths', async () => {
+    for (const motion of ['walk', 'idle']) {
+      const output = path.join(DIR, `sprite-output-${motion}`);
+      const job = await call('generate', { prompt: 'A frog', sprite: { motion, background: 'white', size: 128 }, copyTo: output });
+      await nextFromHost('run'); sheetReply(job.id, 'walk-4x2');
+      const central = await finished(job.id), original = central.sprite.attempts[0];
+      const collision = path.join(output, path.basename(original.folder));
+      fs.mkdirSync(collision, { recursive: true });
+      fs.writeFileSync(path.join(collision, 'keep.txt'), 'leave existing outputs alone');
+      const copied = await copyResults(central), attempt = copied.sprite.attempts[0];
+      assert.equal(copied.copyError, undefined);
+      assert.notEqual(attempt.folder, collision);
+      assert.equal(path.dirname(attempt.folder), output);
+      assert.equal(fs.readFileSync(path.join(collision, 'keep.txt'), 'utf8'), 'leave existing outputs alone');
+      for (const key of ['gif', 'transparentGif', 'sheetPath', 'contact']) {
+        assert.equal(path.dirname(attempt[key]), attempt.folder, key);
+        assert.deepEqual(fs.readFileSync(attempt[key]), fs.readFileSync(original[key]), key);
+      }
+      const manifest = JSON.parse(fs.readFileSync(path.join(attempt.folder, 'manifest.json'), 'utf8'));
+      assert.equal(manifest.frameCount, 8);
+      for (const file of ['atlas.png', 'manifest.json', 'contact.png', ...manifest.frames.map(f => f.file)]) {
+        assert.deepEqual(fs.readFileSync(path.join(attempt.folder, file)), fs.readFileSync(path.join(original.folder, file)), file);
+      }
+      assert.deepEqual(fs.readFileSync(path.join(attempt.folder, manifest.source.file)), sheetBytes('walk-4x2'));
+      assert.equal((await call('gallery_list', { limit: 100 })).items.filter(i => i.jobId === job.id).every(i => path.dirname(i.path) === attempt.folder), true);
+      assert.equal((await call('job', { jobId: job.id })).sprite.attempts[0].folder, attempt.folder);
+      assert.equal(readStored(job.id).sprite.attempts[0].result.paths.frames.every(f => path.dirname(f) === path.join(attempt.folder, 'frames')), true);
+      const text = resultLines(copied).join('\n');
+      assert.ok(text.includes(`Folder: ${attempt.folder}`)); assert.ok(text.includes(`GIF: ${attempt.gif}`));
+      assert.ok(text.includes(`Sprite sheet from ChatGPT: ${attempt.sheetPath}`));
+      assert.deepEqual((await copyResults(copied)).copies, copied.copies);
+      assert.equal(fs.readdirSync(output).length, 2, 'polling does not copy again');
+    }
+  });
+
+  await t.test('sprite without output_dir keeps central paths and does not copy', async () => {
+    const job = await call('generate', { prompt: 'A frog', sprite: { motion: 'idle' } });
+    await nextFromHost('run'); sheetReply(job.id, 'walk-4x2');
+    const done = await finished(job.id);
+    assert.deepEqual(await copyResults(done), done);
+    assert.deepEqual(done.copies, []);
+    assert.equal(path.dirname(done.sprite.attempts[0].folder), IMAGES);
+    assert.equal(path.dirname(done.images[1].path), IMAGES);
+    assert.equal(done.images[0].centralPath, undefined);
+  });
+
+  await t.test('incomplete sprite exports report a copy error without marking success or losing central files', async () => {
+    const output = path.join(DIR, 'sprite-incomplete-output');
+    const job = await call('generate', { prompt: 'A frog', sprite: { motion: 'walk' }, copyTo: output });
+    await nextFromHost('run'); sheetReply(job.id, 'walk-4x2');
+    const done = await finished(job.id), attempt = done.sprite.attempts[0];
+    fs.unlinkSync(path.join(attempt.folder, 'frames', 'frame_08.png'));
+    const result = await copyResults(done);
+    assert.match(result.copyError, /frame_08\.png/);
+    assert.deepEqual(result.copies, []);
+    assert.deepEqual(fs.readdirSync(output), []);
+    assert.deepEqual((await call('job', { jobId: job.id })).images, done.images);
+    assert.ok(fs.existsSync(attempt.gif)); assert.ok(fs.existsSync(attempt.sheetPath));
+  });
+
+  await t.test('sprite copy rejects missing white or transparent GIFs without changing host paths', async () => {
+    for (const key of ['gif', 'transparentGif']) {
+      const output = path.join(DIR, `sprite-missing-${key}`);
+      const job = await call('generate', { prompt: 'A frog', sprite: { motion: 'walk', background: 'white' }, copyTo: output });
+      await nextFromHost('run'); sheetReply(job.id, 'walk-4x2');
+      const done = await finished(job.id), attempt = done.sprite.attempts[0];
+      fs.unlinkSync(attempt[key]);
+      const result = await copyResults(done);
+      assert.ok(result.copyError?.includes(path.basename(attempt[key])), key);
+      assert.deepEqual(result.copies, []);
+      assert.deepEqual(fs.readdirSync(output), []);
+      const stored = await call('job', { jobId: job.id });
+      assert.deepEqual(stored.images, done.images);
+      assert.deepEqual(stored.sprite, done.sprite);
+    }
+  });
+
+  await t.test('sprite copy cleans up earlier exports if an unselected retry GIF is missing', async () => {
+    const output = path.join(DIR, 'sprite-missing-retry-gif');
+    const job = await call('generate', { prompt: 'A frog', sprite: { motion: 'walk', background: 'white' }, copyTo: output });
+    await nextFromHost('run'); sheetReply(job.id, 'jump-4x4');
+    await nextFromHost('run'); sheetReply(job.id, 'jump-4x4');
+    const done = await finished(job.id), [first, second] = done.sprite.attempts;
+    assert.equal(done.sprite.chosen, 0); assert.equal(done.sprite.attempts.length, 2);
+    fs.unlinkSync(second.transparentGif);
+    const result = await copyResults(done);
+    assert.ok(result.copyError?.includes(path.basename(second.transparentGif)));
+    assert.deepEqual(result.copies, []);
+    assert.deepEqual(fs.readdirSync(output), [], 'the already copied first export is removed');
+    const stored = await call('job', { jobId: job.id });
+    assert.deepEqual(stored.images, done.images); assert.deepEqual(stored.sprite, done.sprite);
+    assert.ok(fs.existsSync(first.gif)); assert.ok(fs.existsSync(first.transparentGif));
+  });
+
+  await t.test('sprite copy cleans up files after a write fails partway through an export', async () => {
+    const output = path.join(DIR, 'sprite-write-failure');
+    const job = await call('generate', { prompt: 'A frog', sprite: { motion: 'walk' }, copyTo: output });
+    await nextFromHost('run'); sheetReply(job.id, 'walk-4x2');
+    const done = await finished(job.id), copy = fs.copyFileSync;
+    let writes = 0, result;
+    fs.copyFileSync = (source, dest, flags) => {
+      if (dest.startsWith(output + path.sep) && ++writes === 3) throw new Error('Simulated sprite copy write failure');
+      return copy(source, dest, flags);
+    };
+    try { result = await copyResults(done); } finally { fs.copyFileSync = copy; }
+    assert.equal(writes, 3);
+    assert.match(result.copyError, /Simulated sprite copy write failure/);
+    assert.deepEqual(result.copies, []);
+    assert.deepEqual(fs.readdirSync(output), []);
+    assert.deepEqual((await call('job', { jobId: job.id })).images, done.images);
+    assert.ok(fs.existsSync(done.sprite.attempts[0].gif));
+  });
+
   await t.test('sprite regenerates once in a new chat, reattaches the same references and picks the passing sheet', async () => {
     const refs = [{ name: 'frog.png', mime: 'image/png', data: b64(sheetBytes('walk-4x2')) }];
-    const job = await call('generate', { prompt: 'A frog', sprite: { motion: 'walk', background: 'white', size: 128 }, references: refs });
+    const job = await call('generate', { prompt: 'A frog', sprite: { motion: 'walk', background: 'white', size: 128 }, references: refs,
+      copyTo: path.join(DIR, 'sprite-retried-output') });
     const first = (await nextFromHost('run')).job;
     sheetReply(job.id, 'jump-4x4');
     const second = (await nextFromHost('run')).job;
@@ -863,6 +979,15 @@ test('the host', async t => {
     assert.notEqual(done.images[1].preview, done.images[2].preview);
     assert.deepEqual(fs.readFileSync(done.images[1].preview), Buffer.concat([JPEG, Buffer.from('walk-4x2')]));
     assert.deepEqual(fs.readFileSync(done.images[2].preview), Buffer.concat([JPEG, Buffer.from('jump-4x4')]));
+    const copied = await copyResults(done);
+    assert.equal(copied.copyError, undefined);
+    assert.equal(copied.sprite.chosen, 1);
+    for (const attempt of copied.sprite.attempts) {
+      assert.equal(path.dirname(attempt.folder), done.copyTo);
+      assert.equal(path.dirname(attempt.sheetPath), attempt.folder);
+      assert.ok(fs.existsSync(path.join(attempt.folder, 'manifest.json')));
+    }
+    assert.deepEqual(copied.images.map(im => im.path), [copied.sprite.attempts[1].gif, copied.sprite.attempts[1].sheetPath, copied.sprite.attempts[0].sheetPath]);
   });
 
   await t.test('two failing count gates still finish with warnings and never queue a third run', async () => {
