@@ -810,8 +810,25 @@ const handlers = {
   // The MCP server copies finished images into the caller's output_dir and records it here once.
   mark_copied: p => {
     const job = findJob(p.jobId);
+    if (job.sprite && job.status === 'succeeded' && p.spriteCopies) {
+      const moved = new Map(p.spriteCopies);
+      const relocate = file => moved.get(file) || file;
+      for (const image of job.images) {
+        image.centralPath = image.centralPath || image.path;
+        image.path = relocate(image.path);
+      }
+      for (const attempt of job.sprite.attempts) {
+        attempt.sheet.path = relocate(attempt.sheet.path);
+        if (!attempt.result?.paths) continue;
+        attempt.result.folder = relocate(attempt.result.folder);
+        for (const [key, value] of Object.entries(attempt.result.paths)) {
+          attempt.result.paths[key] = Array.isArray(value) ? value.map(relocate) : relocate(value);
+        }
+      }
+    }
     job.copies = Array.from(new Set([...(job.copies || []), ...(p.paths || [])]));
     saveJobs();
+    if (job.sprite && extension) toExtension({ type: 'gallery_changed' });
     return publicJob(job);
   },
   cancel: p => publicJob(cancelJob(p.jobId)),

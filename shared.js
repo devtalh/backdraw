@@ -97,6 +97,10 @@ async function copyResults(job) {
   if (job.status !== 'succeeded' || !job.copyTo || (job.copies && job.copies.length)) return job;
   try {
     fs.mkdirSync(job.copyTo, { recursive: true });
+    if (job.sprite) {
+      const { copies, spriteCopies } = copySpriteResults(job);
+      return await call('mark_copied', { jobId: job.id, paths: copies, spriteCopies });
+    }
     const copies = job.images.map(im => {
       const ext = path.extname(im.path);
       const base = path.basename(im.path, ext);
@@ -108,6 +112,59 @@ async function copyResults(job) {
     return await call('mark_copied', { jobId: job.id, paths: copies });
   } catch (e) {
     return { ...job, copyError: e.message };
+  }
+}
+
+// Keep each export together: manifest paths are relative to its folder. Reserve a new folder
+// before writing, so repeated names never overwrite another sprite or its frame files.
+function copySpriteResults(job) {
+  const moved = new Map(), owned = [];
+  const filesIn = folder => fs.readdirSync(folder, { withFileTypes: true }).flatMap(entry => {
+    const file = path.join(folder, entry.name);
+    if (entry.isDirectory()) return filesIn(file);
+    if (!entry.isFile()) throw new Error(`Cannot copy sprite artifact: ${file}`);
+    return [file];
+  });
+  try {
+    for (const attempt of job.sprite.attempts) {
+      if (!attempt.folder || attempt.error) continue;
+      const required = ['atlas.png', 'manifest.json', 'contact.png', ...Array.from({ length: attempt.frames },
+        (_, i) => `frames/frame_${String(i + 1).padStart(2, '0')}.png`)];
+      for (const file of new Set([attempt.gif, attempt.transparentGif, ...required.map(relative => path.join(attempt.folder, relative))])) {
+        if (!fs.statSync(file).isFile()) throw new Error(`Missing sprite artifact: ${file}`);
+      }
+      // Snapshot first, including when output_dir happens to be inside the source folder.
+      const files = filesIn(attempt.folder);
+      const base = path.join(job.copyTo, path.basename(attempt.folder));
+      let folder;
+      for (let n = 1; ; n++) {
+        const candidate = n === 1 ? base : `${base}_${n}`;
+        try { fs.mkdirSync(candidate); folder = candidate; break; }
+        catch (e) { if (e.code !== 'EEXIST') throw e; }
+      }
+      owned.push(folder);
+      moved.set(attempt.folder, folder);
+      for (const source of [...files, attempt.sheetPath]) {
+        const relative = source === attempt.sheetPath ? path.basename(source) : path.relative(attempt.folder, source);
+        const dest = path.join(folder, relative);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(source, dest, fs.constants.COPYFILE_EXCL);
+        moved.set(source, dest);
+      }
+    }
+    const copies = job.images.map(im => {
+      if (moved.has(im.path)) return moved.get(im.path);
+      const ext = path.extname(im.path), base = path.basename(im.path, ext);
+      for (let n = 1; ; n++) {
+        const dest = path.join(job.copyTo, `${base}${n === 1 ? '' : `_${n}`}${ext}`);
+        try { fs.copyFileSync(im.path, dest, fs.constants.COPYFILE_EXCL); owned.push(dest); moved.set(im.path, dest); return dest; }
+        catch (e) { if (e.code !== 'EEXIST') throw e; }
+      }
+    });
+    return { copies, spriteCopies: [...moved] };
+  } catch (e) {
+    for (const file of owned.reverse()) fs.rmSync(file, { recursive: true, force: true });
+    throw e;
   }
 }
 

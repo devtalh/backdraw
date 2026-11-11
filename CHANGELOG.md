@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `generate_sprite` with `output_dir` now copies the complete sprite export, including frames,
+  atlas, manifest and contact preview. Result and gallery paths point to the copied export.
+- Edit checks now detect color changes and small visible regions separately from structural
+  similarity, and distinguish unchanged re-encoded images from visible edits.
+
 ## [2.3.0] - 2026-11-10
 
 ### Added

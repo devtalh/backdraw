@@ -507,8 +507,9 @@ denemeyi seçer; kalan kalite uyarılarını bildirir. İki kaynak sheet de değ
 
 Aynı karakterin ikinci hareketi için karakter PNG'sini veya önceki animasyonun `frames/`
 klasöründeki bir kareyi `reference_images` ile ver. `size` (64-1024), GIF'in uzun kenarını sınırlar;
-`background: white` ayrıca beyaz GIF kaydeder. `output_dir`, yalnız GIF ve ham kaynak sheet'leri
-kopyalar; `atlas.png`, `manifest.json` ve `frames/`, her kaynak sheet'in yanındaki çıktı klasöründe kalır.
+`background: white` ayrıca beyaz GIF kaydeder. `output_dir`, her deneme için yeni bir alt klasöre
+bütün çıktıyı kopyalar: GIF'ler, ham sheet, `atlas.png`, `manifest.json`, `frames/` ve `contact.png`.
+Sonuç ve galeri yolları bu kopyaları gösterir; merkezi görsel klasörü orijinalleri saklar.
 
 ## Sprite sheet animasyonu (animate_sheet)
 
@@ -640,6 +641,10 @@ Bir sonuç şunları söyleyebilir:
 | `CHATGPT REPLIED WITHOUT AN IMAGE` | ChatGPT metinle cevap verdi (bir soru, bir ret, bir limit); metnin ilk 3.000 karakteri sonuçtadır. |
 | `FAILED` / `CANCELLED` | Nedeniyle ve varsa sohbet bağlantısıyla birlikte. |
 
+Düzenleme kontrolü, görünür renk farklarını yapısal benzerlikten ayrı ölçer. Yapısal benzerliği
+yüksek bir görselde belirgin bir bölgesel düzenleme olabilir. `changed: false`, kodlama gürültüsünü
+aşan görünür değişim saptanmadığı anlamına gelir; bu küçük önizleme ölçümleri istenen düzenlemeyi doğrulamaz.
+
 ## Hızlı dönüş
 
 Görsel üretmek genellikle 1-3 dakika sürer, ama `generate_image`, `fetch_images` ve `job_status`
@@ -720,7 +725,8 @@ görünür; proje adları, istemler ve sohbet bağlantıları hiç yazılmaz.
 | `BRIDGE NOT RUNNING` | Chrome kapalı ya da eklenti yüklü değil veya kapalı. Chrome'u aç (eklenti kendiliğinden bağlanır) ya da Backdraw'ı `chrome://extensions` sayfasından aç. `node cli.js status` ile kontrol et. |
 | Backdraw simgesinde kırmızı **!** | Eklenti yerel host'a ulaşamıyor. Açılır pencere hatayı ve çözümünü gösterir. `npx backdraw@latest doctor --fix` (ya da yeniden `node install.js`) çalıştır, ardından Backdraw'ı `chrome://extensions` sayfasından yeniden yükle. |
 | `NEEDS USER ACTION` | ChatGPT bir giriş ekranı ya da insan doğrulaması (CAPTCHA) gösteriyor. Chrome'da ChatGPT sekmesini açıp işlemi kendin tamamla; Backdraw bunu asla atlatmaya çalışmaz. İş seni 10 dakikaya kadar bekler; işlemi bitirdiğin anda kendiliğinden devam eder. 10 dakika dolarsa iş başarısız olur ve ChatGPT sekmesi açık kalır. |
-| `⚠ EDIT CHECK (edited: false)` | ChatGPT düzenlemek yerine yeni bir resim çizdi (gerçek bir düzenleme görselin ~%95-100'ünü korur). Orijinali `reference_images` ile ve `conversation_url` olmadan, yani yeni bir sohbette tekrar iste. |
+| Düzenleme kontrolü yeniden çizim uyarısı veriyor | Kompozisyon referanstan belirgin biçimde farklı. Tam bir bölgesel düzenleme gerekiyorsa orijinali `reference_images` ile ve `conversation_url` olmadan, yeni bir sohbette tekrar iste. |
+| `changed: false` | Görünür değişim saptanmadı; ChatGPT referansı yeniden kodlayarak döndürdüğünde de bu sonuç gelir. Yeniden denemeden önce sonucu incele. |
 | `NEEDS REFERENCE IMAGE` | ChatGPT uzun bir sohbette görseli gözden kaçırdı. Görseli `reference_images` ile ekle (tercihen yeni bir sohbette) ya da `auto_reattach` kullan. |
 | `FAILED — ChatGPT did not finish in time` | Bir iş yaklaşık 10 dakika sonra vazgeçer. Sonuçta bir sohbet bağlantısı varsa, ChatGPT işini bitirdiğinde `fetch_images` (ya da `node cli.js collect <link>`) görseli indirir; aynı şekilde kırpılması için aynı `aspect_ratio`'yu yeniden ver. |
 | `No ChatGPT project is selected yet` | Açılır pencereden bir proje seç ya da Claude'dan Projelerini listeleyip seçmesini iste. |

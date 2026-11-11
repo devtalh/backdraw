@@ -413,32 +413,34 @@
 
   // ------------------------------------------------------------ edit check
 
-  // Aspect-preserving 32x32 grayscale thumbnail on white. Images are decoded from their bytes:
+  // Keep the 32px structural signature and a 128px color thumbnail for local changes. Decode bytes:
   // img.decode() can stall for minutes in a background tab that is never painted.
   async function signature(source) {
     const blob = source instanceof HTMLImageElement
       ? await (await fetch(source.currentSrc || source.src)).blob()
       : b64ToBlob(source.data, source.mime);
     const bitmap = await createImageBitmap(blob);
-    const canvas = document.createElement('canvas');
-    canvas.width = 32;
-    canvas.height = 32;
-    const g = canvas.getContext('2d', { willReadFrequently: true });
-    g.imageSmoothingEnabled = true;
-    g.imageSmoothingQuality = 'high';
-    g.fillStyle = '#ffffff';
-    g.fillRect(0, 0, 32, 32);
-    const scale = 32 / Math.max(bitmap.width, bitmap.height);
-    const dw = Math.max(1, Math.round(bitmap.width * scale));
-    const dh = Math.max(1, Math.round(bitmap.height * scale));
-    const dx = Math.floor((32 - dw) / 2);
-    const dy = Math.floor((32 - dh) / 2);
-    g.drawImage(bitmap, dx, dy, dw, dh);
-    if (bitmap.close) bitmap.close();
-    const d = g.getImageData(0, 0, 32, 32).data;
-    const gray = new Array(1024);
-    for (let i = 0; i < 1024; i++) gray[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
-    return gray;
+    const thumbnail = size => {
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const g = canvas.getContext('2d', { willReadFrequently: true });
+      g.imageSmoothingEnabled = true;
+      g.imageSmoothingQuality = 'high';
+      g.fillStyle = '#ffffff';
+      g.fillRect(0, 0, size, size);
+      const scale = size / Math.max(bitmap.width, bitmap.height);
+      const width = Math.max(1, Math.round(bitmap.width * scale));
+      const height = Math.max(1, Math.round(bitmap.height * scale));
+      const x = Math.floor((size - width) / 2), y = Math.floor((size - height) / 2);
+      g.drawImage(bitmap, x, y, width, height);
+      return { data: g.getImageData(0, 0, size, size).data, x, y, width, height };
+    };
+    try {
+      const d = thumbnail(32).data, gray = new Array(1024);
+      for (let i = 0; i < 1024; i++) gray[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+      return { gray, color: thumbnail(128) };
+    } finally { if (bitmap.close) bitmap.close(); }
   }
 
   // Share of the 64 blocks (4x4 px of the contrast-normalised thumbnail) that stayed the same.
@@ -450,8 +452,8 @@
       const sd = Math.sqrt(v.reduce((s, x) => s + (x - m) ** 2, 0) / v.length) || 1;
       return v.map(x => (x - m) / sd);
     };
-    const za = norm(a);
-    const zb = norm(b);
+    const za = norm(a.gray);
+    const zb = norm(b.gray);
     let same = 0;
     for (let by = 0; by < 8; by++) {
       for (let bx = 0; bx < 8; bx++) {
@@ -461,6 +463,29 @@
       }
     }
     return same / 64;
+  }
+
+  function compareSignatures(a, b) {
+    let pixels = 0, different = 0, peak = 0;
+    const inside = (c, x, y) => x >= c.x && x < c.x + c.width && y >= c.y && y < c.y + c.height;
+    for (let by = 0; by < 128; by += 8) for (let bx = 0; bx < 128; bx += 8) {
+      let local = 0, count = 0;
+      for (let y = by; y < by + 8; y++) for (let x = bx; x < bx + 8; x++) {
+        // Padding is not part of the picture and must not inflate its unchanged share.
+        if (!inside(a.color, x, y) && !inside(b.color, x, y)) continue;
+        count++;
+        const i = (y * 128 + x) * 4;
+        // Ignore small encoding/resampling noise, but retain hue changes at equal luminance.
+        if (Math.max(...[0, 1, 2].map(c => Math.abs(a.color.data[i + c] - b.color.data[i + c]))) > 24) local++;
+      }
+      pixels += count;
+      different += local;
+      if (count) peak = Math.max(peak, local / count);
+    }
+    const changedFraction = different / Math.max(1, pixels);
+    // A small coherent region counts, while isolated codec noise does not.
+    const changed = different >= 8 && changedFraction >= 0.001 && (peak >= 0.08 || changedFraction >= 0.01);
+    return { similarity: similarity(a, b), changedFraction, changed };
   }
 
   // Compares each new image with the reference images and with the images earlier in the chat.
@@ -485,10 +510,13 @@
       try { out = await signature(img); } catch { continue; }
       let best = null;
       for (const c of sigs) {
-        const s = similarity(out, c.sig);
-        if (!best || s > best.similarity) best = { similarity: Math.round(s * 100) / 100, against: c.label };
+        const comparison = compareSignatures(out, c.sig);
+        if (!best || comparison.similarity > best.similarity ||
+            comparison.similarity === best.similarity && comparison.changedFraction < best.changedFraction) {
+          best = { ...comparison, against: c.label };
+        }
       }
-      if (best) results.push(best);
+      if (best) results.push({ ...best, similarity: Math.round(best.similarity * 100) / 100 });
     }
     return results.length ? { results, compared: sigs.length } : null;
   }
@@ -635,6 +663,6 @@
   globalThis.__cgb = {
     version: VERSION, probe, composerState, clearComposer, setPrompt, clickSend, pressEnter, clickStop,
     dismissDialogs, listProjects, openProject, sidebar, clickLabel, fetchImage, snapshot, counts,
-    attachFiles, attachmentState, removeAttachments, latestEarlierImage, signature, similarity, editCheck, replyText, busyIn,
+    attachFiles, attachmentState, removeAttachments, latestEarlierImage, signature, similarity, compareSignatures, editCheck, replyText, busyIn,
   };
 })();
