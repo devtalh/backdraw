@@ -169,6 +169,278 @@ function element(text, options = {}) {
   return { className: '', childElementCount: 0, closest() { return null; }, matches() { return false; }, textContent: text, innerText: text, ...options };
 }
 
+const CHAT_ID = '12345678-abcd-1234-abcd-123456789abc';
+
+// A small tree for cleanup selectors. Unknown selectors match nothing, like an absent composer.
+function cleanupElement(tag, text = '', attrs = {}, children = []) {
+  const node = element(text, {
+    tagName: tag.toUpperCase(), attrs, children, parent: null, clicks: 0, events: [],
+    getAttribute(name) { return this.attrs[name] ?? null; },
+    getBoundingClientRect() { return { width: this.hidden ? 0 : 100, height: 30 }; },
+    dispatchEvent(event) { this.events.push(event); },
+    click() { this.clicks++; },
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
+    querySelectorAll(selector) {
+      const all = this.children.flatMap(child => [child, ...child.querySelectorAll('*')]);
+      if (selector === '*') return all;
+      return all.filter(child => selector.split(',').some(part => {
+        const sel = part.trim();
+        if (sel === 'header button[aria-haspopup="menu"]') {
+          return child.tagName === 'BUTTON' && child.attrs['aria-haspopup'] === 'menu' && child.inHeader;
+        }
+        const contains = sel.match(/^\[([\w-]+)\*="([^"]*)" i\]$/);
+        if (contains) return (child.attrs[contains[1]] || '').toLowerCase().includes(contains[2].toLowerCase());
+        const present = sel.match(/^\[([\w-]+)\]$/);
+        if (present) return child.attrs[present[1]] !== undefined;
+        // Compound selector: tag, classes and one attribute test; "a b" also needs an ancestor matching a.
+        const simple = (node, text) => {
+          const match = text.match(/^([a-z][a-z0-9]*)?((?:\.[\w-]+)*)(?:\[([\w-]+)(\*?)="([^"]*)"\])?$/i);
+          if (!match) return false;
+          const [, name, classes, attr, partial, value] = match;
+          if (name && node.tagName !== name.toUpperCase()) return false;
+          const have = (node.attrs.class || '').split(/\s+/);
+          if (classes && !classes.slice(1).split('.').every(c => have.includes(c))) return false;
+          if (!attr) return true;
+          return partial ? (node.attrs[attr] || '').includes(value) : node.attrs[attr] === value;
+        };
+        const [last, ...before] = sel.split(/\s+/).reverse();
+        if (!simple(child, last)) return false;
+        let ancestor = child.parent;
+        for (const text of before) {
+          while (ancestor && !simple(ancestor, text)) ancestor = ancestor.parent;
+          if (!ancestor) return false;
+          ancestor = ancestor.parent;
+        }
+        return true;
+      }));
+    },
+  });
+  children.forEach(child => { child.parent = node; });
+  if (tag === 'header') {
+    const mark = el => { el.inHeader = true; el.children.forEach(mark); };
+    children.forEach(mark);
+  }
+  return node;
+}
+
+function loadCleanupPage({ path = `/c/${CHAT_ID}`, hostname = 'chatgpt.com', lang = 'en-US', title = 'Example chat', children = [] } = {}) {
+  const document = cleanupElement('document', '', {}, children);
+  Object.assign(document, { title, documentElement: { lang }, body: cleanupElement('body'),
+    getElementById(id) { return this.querySelectorAll('*').find(el => el.attrs.id === id) || null; } });
+  const sandbox = { document, location: { hostname, pathname: path },
+    PointerEvent: class { constructor(type, init) { Object.assign(this, { type }, init); } },
+    KeyboardEvent: class { constructor(type, init) { Object.assign(this, { type }, init); } } };
+  vm.runInNewContext(source, sandbox, { filename: 'inpage.js' });
+  return { page: sandbox.__cgb, document };
+}
+
+test('chatPageState accepts only exact conversation UUID paths and reports language', () => {
+  for (const path of [`/c/${CHAT_ID}`, `/g/g-p-abc123/c/${CHAT_ID}/`, `/g/g-p-abc123-my-project/c/${CHAT_ID.toUpperCase()}`]) {
+    const { page } = loadCleanupPage({ path, lang: 'en-GB' });
+    assert.equal(page.chatPageState(CHAT_ID).onChat, true, path);
+    assert.equal(page.chatPageState(CHAT_ID).lang, 'en-GB');
+  }
+  for (const path of [`/c/${CHAT_ID.replace(/^1/, '2')}`, `/c/0${CHAT_ID}`, `/c/${CHAT_ID}0`, `/share/${CHAT_ID}`]) {
+    assert.equal(loadCleanupPage({ path }).page.chatPageState(CHAT_ID).onChat, false, path);
+  }
+  assert.equal(loadCleanupPage({ hostname: 'example.com' }).page.chatPageState(CHAT_ID).onChat, false);
+});
+
+const GONE_NOTICE = "You don't have access to this conversation. Make sure you're logged in to the right account, or ask the conversation owner to send you a share link.";
+
+test('chatPageState reports a chat ChatGPT already lost: home page redirect plus the visible access notice', () => {
+  const alert = (text = GONE_NOTICE, attrs = { role: 'alert' }) => cleanupElement('div', text, attrs);
+  const gone = (children, options = {}) => loadCleanupPage({ path: '/', children, ...options }).page.chatPageState(CHAT_ID);
+  assert.equal(gone([alert()]).gone, true);
+  assert.equal(gone([alert()]).onChat, false);
+  assert.equal(gone([alert(GONE_NOTICE.replace("don't", 'don\u2019t'))]).gone, true);
+  assert.equal(gone([alert(GONE_NOTICE.toUpperCase())]).gone, true);
+  assert.equal(gone([alert(' You  don\'t have\naccess to this conversation. ')]).gone, true);
+  assert.equal(gone([alert(GONE_NOTICE, { 'data-testid': 'Toast-Item' })]).gone, true);
+  assert.equal(gone([alert(GONE_NOTICE, { role: 'status' })]).gone, true);
+  assert.equal(gone([alert(GONE_NOTICE, { role: 'dialog' })]).gone, true);
+  assert.equal(gone([alert(GONE_NOTICE, { 'aria-live': 'polite' })]).gone, true);
+  assert.equal(gone([cleanupElement('div', GONE_NOTICE, { 'data-testid': 'toast' }, [cleanupElement('span', 'x')])]).gone, true);
+});
+
+test('chatPageState does not report gone without both the home page and a visible access notice', () => {
+  const alert = (text = GONE_NOTICE, attrs = { role: 'alert' }) => cleanupElement('div', text, attrs);
+  const state = (children, options = {}) => loadCleanupPage({ children, ...options }).page.chatPageState(CHAT_ID);
+  // The same notice on a conversation page is not a redirect.
+  const onChat = state([alert()]);
+  assert.equal(onChat.onChat, true);
+  assert.equal(onChat.gone, false);
+  assert.equal(state([alert()], { path: `/c/${CHAT_ID.replace(/^1/, '2')}` }).gone, false);
+  assert.equal(state([alert()], { path: '/c' }).gone, false);
+  assert.equal(state([alert()], { path: '/share/abc' }).gone, false);
+  assert.equal(state([alert()], { path: '/', hostname: 'example.com' }).gone, false);
+  // The home page without the notice, or with another notice, is an ordinary unexpected page.
+  assert.equal(state([], { path: '/' }).gone, false);
+  assert.equal(state([alert('Something went wrong. Please try again.')], { path: '/' }).gone, false);
+  assert.equal(state([alert('Error: ' + GONE_NOTICE)], { path: '/' }).gone, false);
+  assert.equal(state([alert('You do not have access to this conversation.')], { path: '/' }).gone, false);
+  // A hidden notice is stale markup, not something the page is showing.
+  const hidden = alert();
+  hidden.hidden = true;
+  assert.equal(state([hidden], { path: '/' }).gone, false);
+  // Elements that are not alert-like regions never match, and a huge region does not match by its start alone.
+  assert.equal(state([alert(GONE_NOTICE, {})], { path: '/' }).gone, false);
+  assert.equal(state([alert(GONE_NOTICE + ' ' + 'x'.repeat(400))], { path: '/' }).gone, false);
+  assert.equal(state([alert((GONE_NOTICE + ' ').padEnd(400, 'x'))], { path: '/' }).gone, true);
+  assert.equal(state([alert((GONE_NOTICE + ' ').padEnd(401, 'x'))], { path: '/' }).gone, false);
+});
+
+// The access notice as ChatGPT renders it: a Sonner toast with typographic apostrophes and no
+// role, aria-live or test id anywhere in the tree.
+const SONNER_NOTICE = GONE_NOTICE.replace("don't", 'don’t').replace("you're", 'you’re');
+const sonnerToast = (text = SONNER_NOTICE, { toaster = 'codex-sonner-toaster', item = 'toast-abc' } = {}) => {
+  const root = cleanupElement('div', text, { class: 'alert-root' });
+  const toast = cleanupElement('ol', '', { class: toaster }, [
+    cleanupElement('li', '', { class: item }, [cleanupElement('div', '', {}, [root])]),
+  ]);
+  return { toast, root };
+};
+
+test('chatPageState recognises the access notice rendered as a Sonner toast without role or aria attributes', () => {
+  const state = (children, options = {}) => loadCleanupPage({ path: '/', children, ...options }).page.chatPageState(CHAT_ID);
+  const { toast, root } = sonnerToast();
+  assert.deepEqual(root.attrs, { class: 'alert-root' });
+  assert.equal(state([toast]).gone, true);
+  assert.equal(state([toast]).onChat, false);
+  // The alert root alone, outside any toaster.
+  assert.equal(state([cleanupElement('div', SONNER_NOTICE, { class: 'alert-root' })]).gone, true);
+  // The toast item alone, whether it is found by its toaster or by its own class.
+  const inToaster = cleanupElement('ol', '', { class: 'codex-sonner-toaster' }, [cleanupElement('li', SONNER_NOTICE, { class: 'x' })]);
+  assert.equal(state([inToaster]).gone, true);
+  assert.equal(state([cleanupElement('li', SONNER_NOTICE, { class: 'toast-abc' })]).gone, true);
+  // Neither an item outside a toaster nor an unrelated list item is a toast.
+  assert.equal(state([cleanupElement('li', SONNER_NOTICE, { class: 'x' })]).gone, false);
+  assert.equal(state([cleanupElement('ol', '', { class: 'menu' }, [cleanupElement('li', SONNER_NOTICE, { class: 'x' })])]).gone, false);
+});
+
+test('chatPageState ignores Sonner toasts that are on a chat page, show other text, are hidden or are too long', () => {
+  const homeState = (children) => loadCleanupPage({ path: '/', children }).page.chatPageState(CHAT_ID);
+  // The same toast on a conversation page is not a redirect.
+  const onChat = loadCleanupPage({ children: [sonnerToast().toast] }).page.chatPageState(CHAT_ID);
+  assert.equal(onChat.onChat, true);
+  assert.equal(onChat.gone, false);
+  assert.equal(homeState([sonnerToast('Something went wrong. Please try again.').toast]).gone, false);
+  assert.equal(homeState([sonnerToast('Error: ' + SONNER_NOTICE).toast]).gone, false);
+  const hidden = sonnerToast();
+  hidden.root.hidden = true;
+  assert.equal(homeState([hidden.toast]).gone, false);
+  assert.equal(homeState([sonnerToast(SONNER_NOTICE + ' ' + 'x'.repeat(400)).toast]).gone, false);
+  assert.equal(homeState([sonnerToast((SONNER_NOTICE + ' ').padEnd(400, 'x')).toast]).gone, true);
+  assert.equal(homeState([sonnerToast((SONNER_NOTICE + ' ').padEnd(401, 'x')).toast]).gone, false);
+  assert.equal(homeState([cleanupElement('div', SONNER_NOTICE, { class: 'alert-root' })]).gone, true);
+  assert.equal(homeState([cleanupElement('div', SONNER_NOTICE + ' ' + 'x'.repeat(400), { class: 'alert-root' })]).gone, false);
+  assert.equal(homeState([cleanupElement('li', SONNER_NOTICE + ' ' + 'x'.repeat(400), { class: 'toast-abc' })]).gone, false);
+});
+
+test('openChatMenu selects the header title, excludes the model switcher and rejects ambiguity', () => {
+  const model = cleanupElement('button', 'Example chat', { 'aria-haspopup': 'menu', 'data-testid': 'model-switcher-dropdown-button' });
+  const title = cleanupElement('button', ' Example  chat ', { 'aria-haspopup': 'menu' });
+  const other = cleanupElement('button', 'Other menu', { 'aria-haspopup': 'menu' });
+  const header = cleanupElement('header', '', {}, [model, title, other]);
+  const { page } = loadCleanupPage({ children: [header] });
+  assert.equal(page.openChatMenu(CHAT_ID).ok, true);
+  assert.equal(title.clicks, 1);
+  assert.equal(model.clicks + other.clicks, 0);
+  assert.equal(page.chatPageState(CHAT_ID).title, 'Example chat');
+  assert.equal(page.openChatMenu('other').error, 'wrong_page');
+  const ambiguous = loadCleanupPage({ title: 'Unknown', children: [header] });
+  assert.equal(ambiguous.page.openChatMenu(CHAT_ID).error, 'menu_trigger_not_found');
+  assert.equal(title.clicks, 1);
+  assert.equal(other.clicks, 0);
+});
+
+test('chat menu clicks use exact labels inside visible menus only', () => {
+  const outside = cleanupElement('div', 'Archive', { role: 'menuitem' });
+  const unarchive = cleanupElement('div', 'Unarchive', { role: 'menuitem' });
+  const menu = cleanupElement('div', '', { role: 'menu' }, [unarchive]);
+  const trigger = cleanupElement('button', 'Example chat', { 'aria-haspopup': 'menu', 'aria-expanded': 'true' });
+  const { page, document } = loadCleanupPage({ children: [cleanupElement('header', '', {}, [trigger]), outside, menu] });
+  assert.equal(page.clickChatMenuItem('Archive').error, 'item_not_found');
+  assert.equal(outside.clicks + unarchive.clicks, 0);
+  const archive = cleanupElement('div', '  ARCHIVE  ', { role: 'menuitem' });
+  menu.children.push(archive);
+  assert.equal(page.clickChatMenuItem('Archive').clicked, true);
+  assert.equal(archive.clicks, 1);
+  menu.children.push(cleanupElement('div', 'Archive', { role: 'menuitem' }));
+  assert.equal(page.clickChatMenuItem('Archive').error, 'item_ambiguous');
+  menu.hidden = true;
+  assert.equal(page.chatMenuItems().length, 0);
+  page.closeChatMenu();
+  assert.equal(document.body.events[0].key, 'Escape');
+});
+
+test('chat menu stays bound to the open title trigger and validates the expected title', () => {
+  const archiveA = cleanupElement('div', 'Archive', { role: 'menuitem' });
+  const archiveB = cleanupElement('div', 'Archive', { role: 'menuitem' });
+  const menuA = cleanupElement('div', '', { role: 'menu', id: 'menu-a' }, [archiveA]);
+  const menuB = cleanupElement('div', '', { role: 'menu', id: 'menu-b' }, [archiveB]);
+  const trigger = cleanupElement('button', 'Example chat', {
+    'aria-haspopup': 'menu', 'aria-expanded': 'true', 'aria-controls': 'menu-a',
+  });
+  const { page } = loadCleanupPage({ children: [cleanupElement('header', '', {}, [trigger]), menuA, menuB] });
+  assert.deepEqual(Array.from(page.chatMenuItems()), ['Archive']);
+  assert.equal(page.clickChatMenuItem('Archive', ' example   CHAT ').clicked, true);
+  assert.equal(archiveA.clicks, 1);
+  assert.equal(archiveB.clicks, 0);
+  assert.equal(page.clickChatMenuItem('Archive', 'Other chat').error, 'title_mismatch');
+  assert.equal(archiveA.clicks, 1);
+  delete trigger.attrs['aria-controls'];
+  assert.equal(page.chatMenuItems().length, 0);
+  assert.equal(page.clickChatMenuItem('Archive').error, 'menu_unexpected');
+  trigger.attrs['aria-controls'] = 'menu-a';
+  trigger.attrs['aria-expanded'] = 'false';
+  assert.equal(page.chatMenuItems().length, 0);
+  assert.equal(page.clickChatMenuItem('Archive').error, 'menu_unexpected');
+  trigger.attrs['data-state'] = 'open';
+  menuA.hidden = true;
+  assert.equal(page.clickChatMenuItem('Archive').error, 'menu_unexpected');
+  menuA.hidden = false;
+  menuA.attrs.role = 'dialog';
+  assert.equal(page.clickChatMenuItem('Archive').error, 'menu_unexpected');
+  assert.equal(archiveA.clicks, 1);
+  assert.equal(archiveB.clicks, 0);
+});
+
+test('delete confirmation validates the exact title and cancels missing or ambiguous confirmations', () => {
+  for (const apostrophe of ["'", '’']) {
+    const cancel = cleanupElement('button', 'Cancel');
+    const confirm = cleanupElement('button', 'Delete chat');
+    const heading = cleanupElement('h2', 'Delete chat?');
+    const dialog = cleanupElement('div', `Delete chat?\nThis will permanently delete Example chat. This can${apostrophe}t be undone.`,
+      { role: 'dialog' }, [heading, cancel, confirm]);
+    const { page } = loadCleanupPage({ children: [dialog] });
+    assert.equal(page.deleteDialogState().title, 'Example chat');
+    assert.equal(page.confirmDeleteChat('Other chat').error, 'title_mismatch');
+    assert.equal(cancel.clicks, 1);
+    assert.equal(confirm.clicks, 0);
+    assert.equal(page.confirmDeleteChat(' example   CHAT ').ok, true);
+    assert.equal(confirm.clicks, 1);
+    dialog.children.push(cleanupElement('button', 'Delete chat'));
+    assert.equal(page.confirmDeleteChat('Example chat').error, 'confirm_button_not_found');
+    assert.equal(cancel.clicks, 2);
+    dialog.innerText = 'Delete chat?';
+    assert.equal(page.confirmDeleteChat('Example chat').error, 'title_mismatch');
+    assert.equal(confirm.clicks, 1);
+  }
+});
+
+test('delete dialog requires one exact heading, including aria-labelledby or the first line', () => {
+  for (const kind of ['labelled', 'first-line']) {
+    const label = cleanupElement('span', 'Delete chat?', { id: 'dialog-title' });
+    const dialog = cleanupElement('div', kind === 'first-line' ? 'Delete chat?\nBody' : 'Body',
+      { role: 'dialog', ...(kind === 'labelled' ? { 'aria-labelledby': 'dialog-title' } : {}) });
+    const { page, document } = loadCleanupPage({ children: [label, dialog] });
+    assert.equal(page.deleteDialogState().found, true);
+    document.children.push(cleanupElement('div', 'Delete chat?\nBody', { role: 'dialog' }));
+    assert.equal(page.confirmDeleteChat('Example chat').error, 'dialog_not_found');
+  }
+});
+
 test('inpage loads without accessing the DOM or location', () => {
   const page = loadPage();
   assert.equal(page.version, '2.0.0');

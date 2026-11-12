@@ -254,10 +254,13 @@ function card(it) {
     meta.append(el('span', { className: 'pill', textContent: text, title }));
   }
   if (it.aspect) meta.append(el('span', { className: 'pill', textContent: it.aspect }));
+  if (it.chatState === 'archived') meta.append(el('span', { className: 'pill', textContent: t('chatArchived') }));
 
   const hasChat = CHAT.test(it.conversationUrl || '');
-  const chat = iconButton('chat', t(hasChat ? 'openChat' : 'noChatLink'), () => chrome.tabs.create({ url: it.conversationUrl }));
-  chat.disabled = !hasChat;
+  const chatTitle = it.chatState === 'deleted' ? t('chatDeleted') : it.chatState === 'gone' ? t('chatGone')
+    : hasChat && it.chatState === 'archived' ? t('openArchivedChat') : t(hasChat ? 'openChat' : 'noChatLink');
+  const chat = iconButton('chat', chatTitle, () => chrome.tabs.create({ url: it.conversationUrl }));
+  chat.disabled = !hasChat || it.chatState === 'deleted' || it.chatState === 'gone';
   const reveal = iconButton('folder', t('showInFolder'), async () => {
     reveal.disabled = true;
     try {

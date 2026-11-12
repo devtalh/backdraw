@@ -25,6 +25,10 @@ const { MAX_REFS, MAX_REF_BYTES, MAX_REFS_TOTAL_BYTES, MAX_COLLECTION_BYTES, MAX
 const { withCollection, isInside } = require('./lib/collections');
 const store = require('./lib/collection-store');
 const { callAssembler, answerCall } = require('./lib/extension-calls');
+const { CHAT_STATES, chatIdFromUrl, ownedChatIds, referencedChatIds, cleanupPlan, eligibleForJob } = require('./lib/chat-cleanup');
+// Fixed failure codes the extension may report; anything else is stored as 'not_confirmed'.
+const CLEANUP_ERROR_CODES = new Set(['bad_target', 'wrong_page', 'menu_trigger_not_found', 'menu_unexpected',
+  'item_not_found', 'item_ambiguous', 'dialog_not_found', 'title_mismatch', 'confirm_button_not_found', 'not_confirmed']);
 const gallery = require('./lib/gallery');
 const platform = require('./platform');
 
@@ -45,6 +49,24 @@ let saveTimer = null;
 const pending = new Map();
 const refStore = new Map(); // jobId -> reference images (kept in memory only, until the job ends)
 const cancelTimers = new Map();
+const cleanupReservations = new Map(); // chat id -> expiry time
+let cleanupReservationTimer = null;
+const CHAT_GONE_MESSAGE = 'This ChatGPT conversation no longer exists in ChatGPT. Start a new chat and pass the saved image in reference_images instead.';
+const CHAT_DELETED_MESSAGE = 'This ChatGPT conversation was deleted by Backdraw chat cleanup. Start a new chat and pass the saved image in reference_images instead.';
+
+function scheduleCleanupReservations() {
+  clearTimeout(cleanupReservationTimer);
+  const time = Date.now();
+  for (const [id, expiresAt] of cleanupReservations) {
+    if (expiresAt <= time) cleanupReservations.delete(id);
+  }
+  if (cleanupReservations.size) {
+    cleanupReservationTimer = setTimeout(() => {
+      scheduleCleanupReservations();
+      pump();
+    }, Math.max(1, Math.min(...cleanupReservations.values()) - time));
+  }
+}
 
 function now() { return new Date().toISOString(); }
 
@@ -162,6 +184,16 @@ const extensionCalls = callAssembler(Math.ceil(MAX_COLLECTION_BYTES / 3) * 4 + 4
 
 function clamp(n, lo, hi) { return Math.min(hi, Math.max(lo, n)); }
 
+// 'deleted' (by Backdraw cleanup) or 'gone' (already missing from ChatGPT) when a chat can no longer be opened.
+function closedChatState(chatId) {
+  if (!chatId) return null;
+  for (const job of jobs) {
+    const state = job.chatStates?.[chatId]?.state;
+    if (state === 'deleted' || state === 'gone') return state;
+  }
+  return null;
+}
+
 function findJob(id) {
   const job = jobs.find(j => j.id === id);
   if (!job) throw new shared.BridgeError(`Unknown job id "${id}".`, 'NOT_FOUND');
@@ -206,6 +238,9 @@ function createJob(p) {
   if (mode === 'collect' && !/\/c\/[0-9a-f-]{8,}/i.test(startUrl || '')) {
     throw new shared.BridgeError('A ChatGPT conversation link (https://chatgpt.com/…/c/…) is required.', 'BAD_REQUEST');
   }
+  const sid = chatIdFromUrl(startUrl);
+  const closed = closedChatState(sid);
+  if (closed) throw new shared.BridgeError(closed === 'gone' ? CHAT_GONE_MESSAGE : CHAT_DELETED_MESSAGE, closed === 'gone' ? 'CHAT_GONE' : 'CHAT_DELETED');
   if (!startUrl && !config.project) {
     throw new shared.BridgeError('No ChatGPT project is selected yet. Call list_projects, then select_project ' +
       "with the user's images project.", 'NO_PROJECT');
@@ -259,8 +294,17 @@ function createJob(p) {
 
 function pump() {
   if (runningId || !extension) return;
-  const job = jobs.find(j => j.status === 'queued');
+  const job = jobs.find(j => j.status === 'queued' &&
+    ![...referencedChatIds(j)].some(id => (cleanupReservations.get(id) || 0) > Date.now()));
   if (!job) return;
+  const startId = chatIdFromUrl(job.startUrl);
+  const closed = closedChatState(startId);
+  if (closed) {
+    finishJob(job, closed === 'gone'
+      ? { status: 'failed', reason: 'chat_gone', error: CHAT_GONE_MESSAGE }
+      : { status: 'failed', reason: 'chat_deleted', error: CHAT_DELETED_MESSAGE });
+    return;
+  }
   runningId = job.id;
   Object.assign(job, { status: 'running', step: 'starting', message: job.sprite?.regenerated ? `Regenerating the sprite sheet once in a new chat: ${job.sprite.regenerateReason}` : 'Starting', startedAt: now() });
   saveJobs();
@@ -303,6 +347,10 @@ function finishJob(job, fields) {
   refStore.delete(job.id);
   if (runningId === job.id) { runningId = null; clearTimeout(watchdog); }
   saveJobs();
+  if (job.status === 'succeeded') {
+    const chats = eligibleForJob(jobs, job);
+    if (chats.length && extension) toExtension({ type: 'chat_done', jobId: job.id, chats });
+  }
   log('info', `job ${job.id} ${job.status}`, { error: job.error, conversation: job.conversationUrl, files: job.images.map(i => i.path) });
   setImmediate(pump);
 }
@@ -770,6 +818,7 @@ function publicJob(j) {
     aspect: j.aspect ? j.aspect.target.label : null, transparent: !!j.transparent, animated: !!j.animated, animatedRetry: !!j.animatedRetry, motion: j.motion || null,
     copyTo: j.copyTo || null, copies: j.copies || [],
     collection: j.collection || null,
+    chatStates: j.chatStates || null,
     sprite: j.sprite ? {
       ...Object.fromEntries(['motion', 'frames', 'columns', 'rows', 'view', 'background', 'regenerated',
         'regenerateReason', 'warning', 'chosen'].map(key => [key, j.sprite[key]])),
@@ -807,6 +856,64 @@ const handlers = {
   add_local_animation: p => addLocalAnimation(p),
   generate: p => publicJob(createWithCollection(p)),
   job: p => publicJob(findJob(p.jobId)),
+  chat_cleanup_list: () => ({ ...cleanupPlan(jobs), maxJobs: MAX_JOBS }),
+  chat_cleanup_check: p => {
+    if (!Array.isArray(p.ids) || p.ids.length > 200) {
+      throw new shared.BridgeError('ids must be an array of at most 200 chat ids.', 'BAD_REQUEST');
+    }
+    const plan = cleanupPlan(jobs);
+    const eligible = new Set(plan.eligible.map(chat => chat.id));
+    const ids = p.ids.filter(id => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
+      .map(id => id.toLowerCase()).filter(id => eligible.has(id));
+    if (p.reserve === true && p.ids.length === 1 && ids.length === 1) {
+      cleanupReservations.set(ids[0], Date.now() + 3 * 60 * 1000);
+      scheduleCleanupReservations();
+    }
+    return { eligible: ids };
+  },
+  chat_cleanup_release: p => {
+    if (typeof p.id === 'string') cleanupReservations.delete(p.id.toLowerCase());
+    scheduleCleanupReservations();
+    setImmediate(pump);
+    return {};
+  },
+  chat_cleanup_mark: p => {
+    if (typeof p.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.id)) {
+      throw new shared.BridgeError('id must be a chat UUID.', 'BAD_REQUEST');
+    }
+    if (!CHAT_STATES.has(p.state)) throw new shared.BridgeError('Invalid chat cleanup state.', 'BAD_REQUEST');
+    const id = p.id.toLowerCase(), state = p.state;
+    if (!jobs.some(job => ownedChatIds(job).has(id))) {
+      throw new shared.BridgeError('Not a chat this bridge opened.', 'BAD_REQUEST');
+    }
+    let latest = null;
+    for (const job of jobs) {
+      const prior = job.chatStates?.[id];
+      if (prior && (!latest || String(prior.at || '') >= String(latest.at || ''))) latest = prior;
+    }
+    if (latest?.state === 'deleted') throw new shared.BridgeError('This chat was already deleted.', 'BAD_REQUEST');
+    if (latest?.state === 'archived' && state === 'deleted') {
+      throw new shared.BridgeError('This chat is archived; the bridge does not delete archived chats.', 'BAD_REQUEST');
+    }
+    if (latest?.state === 'archived' && state === 'failed') {
+      throw new shared.BridgeError('This chat is archived; the bridge leaves archived chats as they are.', 'BAD_REQUEST');
+    }
+    if (latest?.state === 'gone') throw new shared.BridgeError('This chat is already gone from ChatGPT.', 'BAD_REQUEST');
+    const entry = { state, at: now(), error: state === 'failed' ? (CLEANUP_ERROR_CODES.has(p.error) ? p.error : 'not_confirmed') : null };
+    for (const job of jobs) {
+      if (referencedChatIds(job).has(id)) {
+        job.chatStates ||= {};
+        job.chatStates[id] = entry;
+      }
+    }
+    saveJobs();
+    cleanupReservations.delete(id);
+    scheduleCleanupReservations();
+    setImmediate(pump);
+    if (extension) toExtension({ type: 'gallery_changed' });
+    log('info', `chat ${id} ${state}`);
+    return { id, state };
+  },
   // The MCP server copies finished images into the caller's output_dir and records it here once.
   mark_copied: p => {
     const job = findJob(p.jobId);

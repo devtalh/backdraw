@@ -143,8 +143,9 @@ test('fileNameFor: number, slug of the source file name, extension from the byte
   assert.ok(c.isPlainFile(c.fileNameFor(6, `https://example.com/${'%2F..'.repeat(50)}`, 'png')));
 });
 
-test('the extension may only call the collection and gallery methods', () => {
+test('the extension may only call the collection, gallery and chat cleanup methods', () => {
   assert.deepEqual([...c.EXTENSION_METHODS].sort(), [
+    'chat_cleanup_check', 'chat_cleanup_list', 'chat_cleanup_mark', 'chat_cleanup_release',
     'collection_add', 'collection_add_job_image', 'collection_thumbs', 'delete_collection', 'delete_collection_image',
     'gallery_animation', 'gallery_list', 'gallery_thumb', 'list_collections', 'rename_collection', 'reveal_image',
   ]);

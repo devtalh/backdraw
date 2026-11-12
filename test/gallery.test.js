@@ -38,13 +38,26 @@ test('listGallery: succeeded jobs only, newest first, a job\'s images in order, 
   assert.deepEqual(page.items.map(x => `${x.jobId}:${x.n}`), ['img_00000005:1', 'img_00000003:1', 'img_00000003:4', 'img_00000001:1']);
   assert.deepEqual(page.items[1], {
     jobId: 'img_00000003', n: 1, createdAt: '2026-10-03T10:00:00.000Z', prompt: 'prompt of img_00000003',
-    conversationUrl: 'https://chatgpt.com/c/img_00000003', path: abs('c1.png'), width: 1024, height: 1536,
+    conversationUrl: 'https://chatgpt.com/c/img_00000003', chatState: null, path: abs('c1.png'), width: 1024, height: 1536,
     format: 'PNG', frames: null, durationMs: null, aspect: null, preview: false,
   });
   assert.equal(page.items[0].prompt, '');
   assert.equal(page.items[2].preview, true);
   // A malformed entry keeps its place: n is always the index in job.images plus one.
   assert.equal(g.findJobImage(JOBS, 'img_00000003', 4).image.path, abs('c4.png'));
+});
+
+test('listGallery: chat states follow the conversation id, including project links and failed or absent states', () => {
+  const id = '6812a3b4-1c2d-8000-9e8f-0123456789ab';
+  for (const conversationUrl of [`https://chatgpt.com/c/${id}`, `https://chatgpt.com/g/g-p-0123abcd-art/c/${id}`]) {
+    for (const state of ['archived', 'deleted', 'gone', 'failed', undefined]) {
+      const j = job('img_state', 'succeeded', [im('state.png')], { conversationUrl,
+        ...(state ? { chatStates: { [id]: { state } } } : {}) });
+      assert.equal(g.listGallery([j]).items[0].chatState, ['archived', 'deleted', 'gone'].includes(state) ? state : null);
+    }
+    const unrelated = job('img_other', 'succeeded', [im('other.png')], { conversationUrl, chatStates: { unrelated: { state: 'deleted' } } });
+    assert.equal(g.listGallery([unrelated]).items[0].chatState, null);
+  }
 });
 
 test('listGallery: format comes only from the file extension; GIF details are validated independently', () => {

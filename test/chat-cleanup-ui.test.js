@@ -1,0 +1,364 @@
+'use strict';
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const test = require('node:test');
+const vm = require('node:vm');
+
+const read = f => fs.readFileSync(path.join(__dirname, '..', 'extension', f), 'utf8');
+const ctx = vm.createContext({});
+for (const f of ['i18n.js', 'chat-cleanup-ui.js']) vm.runInContext(read(f), ctx, { filename: f });
+const { keptSummary, progressText, finishText, errorText, stopText } = ctx.backdrawCleanupText;
+const translate = lang => (key, vars) => ctx.i18n.translate(lang, key, vars);
+
+test('kept summaries: exact preview and result examples, singulars, plurals and empty totals', () => {
+  for (const [lang, preview, done] of [
+    ['tr', '3 sohbet açık bırakılacak: 2 başarısız iş, 1 ChatGPT sorusu.', '3 sohbet açık bırakıldı: 2 başarısız iş, 1 ChatGPT sorusu.'],
+    ['en', '3 chats will stay open: 2 failed jobs, 1 ChatGPT question.', '3 chats were left open: 2 failed jobs, 1 ChatGPT question.'],
+  ]) {
+    const t = translate(lang);
+    assert.equal(keptSummary({ text_reply: 1, failed: 2 }, 3, t), preview);
+    assert.equal(keptSummary({ text_reply: 1, failed: 2 }, 3, t, true), done);
+    assert.equal(keptSummary({}, 0, t), '');
+    assert.equal(keptSummary({ failed: 1 }, 1, t), t('cleanupKeptPreview_one', { n: 1, list: `1 ${t('reason_failed_one')}` }));
+    assert.equal(keptSummary({ failed: 1 }, 1, t, true), t('cleanupKeptDone_one', { n: 1, list: `1 ${t('reason_failed_one')}` }));
+    assert.equal(keptSummary({ failed: 2 }, 2, t), t('cleanupKeptPreview', { n: 2, list: `2 ${t('reason_failed_other')}` }));
+  }
+});
+
+test('kept summaries: fixed reason order and all singular/plural labels', () => {
+  const reasons = ['failed', 'timeout', 'text_reply', 'needs_reference', 'cancelled', 'no_images', 'active', 'not_created', 'other'];
+  const kept = Object.fromEntries([...reasons].reverse().map(code => [code, 1]));
+  for (const lang of ['en', 'tr']) {
+    const t = translate(lang);
+    assert.equal(keptSummary(kept, 9, t), t('cleanupKeptPreview', { n: 9,
+      list: reasons.map(code => `1 ${t(`reason_${code}_one`)}`).join(', ') }));
+    for (const code of reasons) for (const n of [1, 2]) {
+      const key = `reason_${code}_${n === 1 ? 'one' : 'other'}`;
+      assert.ok(ctx.i18n.STRINGS[lang][key]);
+      assert.ok(keptSummary({ [code]: n }, n, t).includes(`${n} ${t(key)}`));
+    }
+  }
+});
+
+test('progress and finish texts: exact totals, zero omission and both actions in both languages', () => {
+  for (const [lang, archiving, deleting, done, empty] of [
+    ['en', 'Archiving 3/12', 'Deleting 3/12', 'Done: 10 archived, 1 already archived, 2 deleted, 1 skipped, 1 failed.', 'Nothing was changed.'],
+    ['tr', 'Arşivleniyor 3/12', 'Siliniyor 3/12', 'Bitti: 10 arşivlendi, 1 zaten arşivliydi, 2 silindi, 1 atlandı, 1 hata.', 'Hiçbir şey değişmedi.'],
+  ]) {
+    const t = translate(lang);
+    const p = { done: 3, total: 12, failed: 0 };
+    assert.equal(progressText({ ...p, action: 'archive' }, t), archiving);
+    assert.equal(progressText({ ...p, action: 'delete' }, t), deleting);
+    assert.equal(progressText({ ...p, action: 'archive', failed: 1 }, t), archiving + (lang === 'en' ? ' · 1 failed' : ' · 1 hata'));
+    assert.equal(finishText({ archived: 10, alreadyArchived: 1, deleted: 2, skipped: 1, failed: 1 }, t), done);
+    assert.equal(finishText({ archived: 0, deleted: 0, failed: 0 }, t), empty);
+    assert.equal(finishText({ archived: 1 }, t), lang === 'en' ? 'Done: 1 archived.' : 'Bitti: 1 arşivlendi.');
+  }
+});
+
+test('cleanup errors: all codes and unknown values have safe texts in both languages', () => {
+  for (const lang of ['en', 'tr']) {
+    const t = translate(lang);
+    for (const code of ['unsupported_language', 'login', 'challenge', 'too_many_failures', 'tab_closed', 'not_connected', 'unknown', 'toString']) {
+      const text = errorText(code, t);
+      assert.ok(text.length > 20, `${lang}: ${code}`);
+      assert.doesNotMatch(text, /cleanupErr|undefined/);
+    }
+    assert.equal(errorText('not_connected', t), t('errNotConnected'));
+    assert.equal(errorText('login', t), errorText('challenge', t));
+    assert.equal(errorText('unknown', t), t('cleanupErrUnknown'));
+  }
+});
+
+test('finish text includes unprocessed chats with singular and plural wording', () => {
+  for (const [lang, singular, plural] of [['en', '1 not processed', '7 not processed'], ['tr', '1 işlenmedi', '7 işlenmedi']]) {
+    const t = translate(lang);
+    assert.ok(finishText({ notProcessed: 1 }, t).includes(singular));
+    assert.ok(finishText({ failed: 3, notProcessed: 7 }, t).includes(plural));
+    assert.ok(!finishText({ notProcessed: 0 }, t).includes(plural));
+  }
+});
+
+// Minimal DOM stand-in: execute the actual popup handlers, without Chrome or a browser.
+class Element {
+  constructor(tag = 'div') { this.tagName = tag; this.children = []; this.hidden = false; this.disabled = false; this.value = ''; this.dataset = {}; this.attrs = {}; }
+  append(...children) { this.children.push(...children); }
+  replaceChildren(...children) { this.children = [...children]; this._text = ''; }
+  set textContent(value) { this._text = String(value); this.children = []; }
+  get textContent() { return (this._text || '') + this.children.map(c => typeof c === 'object' ? c.textContent : String(c)).join(''); }
+  setAttribute(key, value) { this.attrs[key] = value; }
+  querySelectorAll() { return []; }
+}
+const settle = async () => { for (let i = 0; i < 4; i++) await new Promise(r => setImmediate(r)); };
+
+async function popup({ stored = {}, reply = () => undefined } = {}) {
+  const nodes = new Map([...read('popup.html').matchAll(/id="([^"]+)"/g)].map(([, id]) => [id, new Element()]));
+  nodes.get('settings').hidden = true;
+  const saved = [], sent = [], listeners = [], timers = new Map(), lifecycle = {};
+  let timerId = 0;
+  const schedule = (fn, ms) => { timers.set(++timerId, { fn, ms }); return timerId; };
+  const doc = { documentElement: new Element(), getElementById: id => nodes.get(id), createElement: tag => new Element(tag), querySelectorAll: () => [] };
+  const sandbox = vm.createContext({ document: doc, localStorage: { getItem() {}, setItem() {} },
+    setTimeout: schedule, clearTimeout: id => timers.delete(id), setInterval: schedule, clearInterval: id => timers.delete(id),
+    window: { addEventListener: (type, fn) => { lifecycle[type] = fn; } },
+    chrome: {
+      i18n: { getUILanguage: () => 'en' },
+      storage: { local: { get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).filter(k => k in stored).map(k => [k, stored[k]])),
+        set: async values => { saved.push({ ...values }); Object.assign(stored, values); for (const fn of listeners) fn(Object.fromEntries(Object.entries(values).map(([k, v]) => [k, { newValue: v }])), 'local'); } },
+        onChanged: { addListener: fn => listeners.push(fn) } },
+      tabs: { query: async () => [] }, runtime: { getManifest: () => ({}), sendMessage: async msg => {
+        sent.push(JSON.parse(JSON.stringify(msg)));
+        return reply(msg) ?? (msg.type === 'popup:status' ? { connected: false } : { ok: true, progress: null, queued: 0 });
+      } },
+    },
+  });
+  for (const f of ['i18n.js', 'settings.js', 'setup.js', 'chat-cleanup-ui.js', 'popup.js']) vm.runInContext(read(f), sandbox, { filename: f });
+  await settle();
+  const findButton = (id, text) => {
+    const visit = node => node instanceof Element && node.tagName === 'button' && node.textContent === text ? node
+      : node?.children?.map(visit).find(Boolean);
+    const found = visit(nodes.get(id));
+    assert.ok(found, `${id}: button ${text}`);
+    return found;
+  };
+  const click = async (id, text) => { const b = text ? findButton(id, text) : nodes.get(id); assert.ok(!b.disabled); await b.onclick(); await settle(); };
+  const change = async value => { nodes.get('chatCleanup').value = value; nodes.get('chatCleanup').onchange(); await settle(); };
+  const poll = async () => { const entry = [...timers].find(([, t]) => t.ms === 1000); assert.ok(entry); timers.delete(entry[0]); await entry[1].fn(); await settle(); };
+  return { nodes, saved, sent, sandbox, timers, lifecycle, click, change, poll };
+}
+
+test('popup setting: defaults to keep, validates stored modes, saves archive/keep, confirms delete and restores on cancel', async () => {
+  const p = await popup();
+  assert.equal(p.nodes.get('chatCleanup').value, 'keep');
+  assert.equal(p.saved.length, 0);
+  for (const value of [undefined, null, 'bad', 1]) assert.equal(p.sandbox.backdrawSettings.cleanupMode(value), 'keep');
+  await p.change('archive');
+  assert.deepEqual(p.saved, [{ chatCleanup: 'archive' }]);
+  await p.change('delete');
+  assert.equal(p.saved.length, 1);
+  assert.equal(p.nodes.get('cleanupSettingConfirm').hidden, false);
+  await p.click('cleanupSettingConfirm', 'Cancel');
+  assert.equal(p.nodes.get('chatCleanup').value, 'archive');
+  assert.equal(p.saved.length, 1);
+  await p.change('delete');
+  await p.click('cleanupSettingConfirm', 'Delete after each job');
+  assert.deepEqual(p.saved[1], { chatCleanup: 'delete' });
+  await p.change('keep');
+  assert.deepEqual(p.saved[2], { chatCleanup: 'keep' });
+  assert.match(p.nodes.get('cleanupHint').textContent, /last 100 jobs; older chats are not known/);
+});
+
+test('popup delete all: first click sends nothing, cancel keeps preview, second confirmation sends confirmed true', async () => {
+  const p = await popup({ reply: m => m.type === 'cleanup:preview' ? { ok: true, result: { eligible: [{ id: 'a' }, { id: 'b' }], kept: {}, keptTotal: 0, maxJobs: 87 } }
+    : m.type === 'cleanup:start' ? { ok: true, queued: 0 } : undefined });
+  await p.click('cleanupNow');
+  assert.match(p.nodes.get('cleanupHint').textContent, /last 87 jobs/);
+  const before = p.sent.length;
+  await p.click('cleanupView', 'Delete all');
+  assert.equal(p.sent.length, before);
+  assert.match(p.nodes.get('cleanupView').textContent, /Delete 2 chats\? This can't be undone/);
+  await p.click('cleanupView', 'Cancel');
+  assert.equal(p.sent.length, before);
+  await p.click('cleanupView', 'Delete all');
+  await p.click('cleanupView', 'Delete 2 chats');
+  assert.deepEqual(p.sent.filter(m => m.type === 'cleanup:start'), [{ type: 'cleanup:start', action: 'delete', confirmed: true }]);
+  assert.equal(p.nodes.get('cleanupView').textContent, 'No Backdraw chats to clean up.');
+});
+
+test('popup archive: progress, stop, finished totals and kept reasons use persisted progress', async () => {
+  let progress = null;
+  const p = await popup({ reply: m => {
+    if (m.type === 'cleanup:preview') return { ok: true, result: { eligible: [{}], kept: {}, keptTotal: 0 } };
+    if (m.type === 'cleanup:start') {
+      progress = { running: true, action: 'archive', done: 0, total: 2, failed: 0, kept: { failed: 2, text_reply: 1 }, keptTotal: 3 };
+      return { ok: true, queued: 2, kept: { failed: 2, text_reply: 1 }, keptTotal: 3 };
+    }
+    if (m.type === 'cleanup:status') return { ok: true, progress };
+  } });
+  await p.click('cleanupNow'); await p.click('cleanupView', 'Archive all');
+  assert.deepEqual(p.sent.find(m => m.type === 'cleanup:start'), { type: 'cleanup:start', action: 'archive' });
+  assert.match(p.nodes.get('cleanupView').textContent, /Archiving 0\/2/);
+  progress = { ...progress, done: 1, archived: 1 };
+  await p.poll();
+  assert.match(p.nodes.get('cleanupView').textContent, /Archiving 1\/2/);
+  await p.click('cleanupView', 'Stop');
+  assert.ok(p.sent.some(m => m.type === 'cleanup:stop'));
+  progress = { ...progress, running: false, error: 'tab_closed' };
+  await p.poll();
+  assert.match(p.nodes.get('cleanupView').textContent, /Done: 1 archived\.3 chats were left open: 2 failed jobs, 1 ChatGPT question\./);
+  assert.match(p.nodes.get('cleanupView').textContent, /background ChatGPT tab was closed/);
+  assert.equal([...p.timers.values()].some(t => t.ms === 1000), false);
+});
+
+test('popup reopen shows auto language errors and persisted manual kept counts until dismissed', async () => {
+  for (const lang of ['en', 'tr']) for (const source of ['auto', 'manual']) {
+    let progress = { running: false, source, error: 'unsupported_language', notProcessed: 7,
+      kept: source === 'manual' ? { failed: 2, text_reply: 1 } : {}, keptTotal: source === 'manual' ? 3 : 0 };
+    const reply = m => {
+      if (m.type === 'cleanup:status') return { ok: true, progress };
+      if (m.type === 'cleanup:dismiss') { progress = null; return { ok: true }; }
+    };
+    const stored = { [ctx.i18n.LANGUAGE_KEY]: lang };
+    const p = await popup({ stored, reply });
+    assert.equal(p.nodes.get('settings').hidden, false);
+    const text = p.nodes.get('cleanupView').textContent;
+    assert.ok(text.includes(translate(lang)('cleanupErrLanguage')));
+    assert.ok(text.includes(keptSummary(progress.kept, progress.keptTotal, translate(lang), true)));
+    assert.ok(text.includes(lang === 'en' ? '7 not processed' : '7 işlenmedi'));
+    await p.click('cleanupView', lang === 'en' ? 'OK' : 'Tamam');
+    assert.ok(p.sent.some(m => m.type === 'cleanup:dismiss'));
+    assert.equal(p.nodes.get('cleanupView').hidden, true);
+    const reopened = await popup({ stored, reply });
+    assert.equal(reopened.nodes.get('cleanupView').hidden, true);
+  }
+  const success = await popup({ reply: m => m.type === 'cleanup:status'
+    ? { ok: true, progress: { running: false, archived: 1, error: null } } : undefined });
+  assert.equal(success.nodes.get('cleanupView').hidden, true);
+});
+
+test('popup reopen resumes running progress, clears timers on close and does not stop the worker', async () => {
+  const p = await popup({ reply: m => m.type === 'cleanup:status'
+    ? { ok: true, progress: { running: true, action: 'delete', done: 3, total: 12, failed: 1 } } : undefined });
+  assert.equal(p.nodes.get('settings').hidden, false);
+  assert.match(p.nodes.get('cleanupView').textContent, /Deleting 3\/12 · 1 failed/);
+  p.lifecycle.pagehide(); p.lifecycle.unload();
+  assert.equal(p.timers.size, 0);
+  assert.equal(p.sent.some(m => m.type === 'cleanup:stop'), false);
+});
+
+test('popup preview: disconnected errors and no eligible chats show no archive/delete actions', async () => {
+  for (const response of [{ ok: false, error: 'not_connected' }, { ok: true, result: { eligible: [], kept: { failed: 1 }, keptTotal: 1 } }]) {
+    const p = await popup({ reply: m => m.type === 'cleanup:preview' ? response : undefined });
+    await p.click('cleanupNow');
+    const text = p.nodes.get('cleanupView').textContent;
+    assert.doesNotMatch(text, /Archive all|Delete all/);
+    if (response.ok) assert.equal(text, 'No Backdraw chats to clean up.1 chat will stay open: 1 failed job.');
+    else assert.equal(text, translate('en')('errNotConnected'));
+  }
+});
+
+test('preview text: one eligible count covers both actions, with singulars and empty totals', () => {
+  const chats = count => Array.from({ length: count }, (_, i) => ({ id: String(i) }));
+  for (const [lang, cases] of [
+    ['en', [
+      [{ eligible: chats(3) }, '3 chats can be archived or deleted.'],
+      [{ eligible: chats(1) }, '1 chat can be archived or deleted.'],
+      [{ eligible: [], cleaned: { archived: 1 } }, 'No Backdraw chats to clean up.'],
+      [{ eligible: chats(4) }, '4 chats can be archived or deleted.'],
+      [{ eligible: [] }, 'No Backdraw chats to clean up.'],
+    ]],
+    ['tr', [
+      [{ eligible: chats(3) }, '3 sohbet arşivlenebilir veya silinebilir.'],
+      [{ eligible: [], cleaned: { archived: 1 } }, 'Temizlenecek Backdraw sohbeti yok.'],
+      [{ eligible: [] }, 'Temizlenecek Backdraw sohbeti yok.'],
+      [{ eligible: chats(1) }, '1 sohbet arşivlenebilir veya silinebilir.'],
+    ]],
+  ]) for (const [preview, text] of cases) assert.equal(ctx.backdrawCleanupText.previewText(preview, translate(lang)), text);
+});
+
+test('popup preview: both actions use the eligible count, including delete confirmation', async () => {
+  const p = await popup({ reply: m => m.type === 'cleanup:preview'
+    ? { ok: true, result: { eligible: [{ id: 'a' }, { id: 'b' }], cleaned: { archived: 0 }, kept: {}, keptTotal: 0 } }
+    : m.type === 'cleanup:start' ? { ok: true, queued: 0 } : undefined });
+  await p.click('cleanupNow');
+  assert.equal(p.nodes.get('cleanupView').textContent, '2 chats can be archived or deleted.Archive allDelete all');
+  await p.click('cleanupView', 'Delete all');
+  assert.match(p.nodes.get('cleanupView').textContent, /Delete 2 chats\? This can't be undone/);
+  await p.click('cleanupView', 'Delete 2 chats');
+  assert.deepEqual(p.sent.filter(m => m.type === 'cleanup:start'), [{ type: 'cleanup:start', action: 'delete', confirmed: true }]);
+});
+
+test('popup preview: a single eligible chat offers both actions', async () => {
+  const p = await popup({ reply: m => m.type === 'cleanup:preview'
+    ? { ok: true, result: { eligible: [{ id: 'a' }], kept: {}, keptTotal: 0 } } : undefined });
+  await p.click('cleanupNow');
+  assert.equal(p.nodes.get('cleanupView').textContent, '1 chat can be archived or deleted.Archive allDelete all');
+  assert.match(p.nodes.get('cleanupView').textContent, /Delete all/);
+  await p.click('cleanupView', 'Archive all');
+});
+
+test('popup preview: archived hints use exact English and Turkish wording, even with no eligible chats', async () => {
+  for (const [lang, hint] of [
+    ['en', 'Chats already in the archive are not deleted here; to delete them, open Settings > Archived chats in ChatGPT.'],
+    ['tr', "Arşivdeki sohbetler burada silinmez; silmek için ChatGPT'de Settings > Archived chats sayfasını aç."],
+  ]) for (const n of [0, 1]) for (const archived of [0, 2]) {
+    const p = await popup({ stored: { [ctx.i18n.LANGUAGE_KEY]: lang }, reply: m => m.type === 'cleanup:preview'
+      ? { ok: true, result: { eligible: Array(n).fill({}), cleaned: { archived }, kept: {}, keptTotal: 0 } } : undefined });
+    await p.click('cleanupNow');
+    const text = p.nodes.get('cleanupView').textContent;
+    assert.equal(text.includes(hint), archived > 0);
+    if (!n) {
+      assert.ok(text.startsWith(translate(lang)('cleanupEmpty')));
+      await assert.rejects(() => p.click('cleanupView', translate(lang)('cleanupArchiveAll')));
+      await assert.rejects(() => p.click('cleanupView', translate(lang)('cleanupDeleteAll')));
+    }
+  }
+});
+
+test('popup finish: archived hint appears only for delete with already archived results', async () => {
+  for (const lang of ['en', 'tr']) for (const action of ['archive', 'delete']) for (const alreadyArchived of [0, 1]) {
+    let progress = { running: true, action, alreadyArchived, done: 1, total: 1 };
+    const p = await popup({ stored: { [ctx.i18n.LANGUAGE_KEY]: lang }, reply: m => m.type === 'cleanup:status'
+      ? { ok: true, progress } : undefined });
+    progress = { ...progress, running: false };
+    await p.poll();
+    assert.equal(p.nodes.get('cleanupView').textContent.includes(translate(lang)('cleanupArchivedHint')),
+      action === 'delete' && alreadyArchived > 0);
+  }
+});
+
+test('finish text: chats already gone from ChatGPT are listed with exact English and Turkish wording', () => {
+  for (const [lang, one, many, combined] of [
+    ['en', 'Done: 1 chat was already gone from ChatGPT.', 'Done: 3 chats were already gone from ChatGPT.',
+      'Done: 2 archived, 3 chats were already gone from ChatGPT, 1 failed.'],
+    ['tr', 'Bitti: 1 sohbet ChatGPT\'de zaten yoktu.', 'Bitti: 3 sohbet ChatGPT\'de zaten yoktu.',
+      'Bitti: 2 arşivlendi, 3 sohbet ChatGPT\'de zaten yoktu, 1 hata.'],
+  ]) {
+    const t = translate(lang);
+    assert.equal(finishText({ gone: 1 }, t), one);
+    assert.equal(finishText({ gone: 3 }, t), many);
+    assert.equal(finishText({ archived: 2, gone: 3, failed: 1 }, t), combined);
+    assert.equal(finishText({ gone: 0 }, t), t('cleanupUnchanged'));
+  }
+  assert.equal(finishText({ gone: 3 }, translate('tr')), 'Bitti: 3 sohbet ChatGPT\'de zaten yoktu.');
+});
+
+test('stop text: names the step that stopped the cleanup in both languages, with a safe fallback', () => {
+  const steps = {
+    load: ['opening the chat', 'sohbeti açma'], language: ['checking the language', 'dili kontrol etme'],
+    open_menu: ['opening the chat menu', 'sohbet menüsünü açma'], menu_items: ['reading the menu', 'menüyü okuma'],
+    click_item: ['choosing Archive or Delete', 'Arşivle veya Sil\'i seçme'],
+    delete_dialog: ['waiting for the delete dialog', 'silme penceresini bekleme'],
+    confirm_delete: ['confirming the delete', 'silmeyi onaylama'], verify: ['checking the result', 'sonucu doğrulama'],
+  };
+  for (const [step, [en, tr]] of Object.entries(steps)) {
+    const progress = { error: 'too_many_failures', stop: { step, code: 'menu_trigger_not_found' } };
+    assert.equal(stopText(progress, translate('en')), `Stopped at: ${en} (menu_trigger_not_found)`);
+    assert.equal(stopText(progress, translate('tr')), `Durduğu adım: ${tr} (menu_trigger_not_found)`);
+  }
+  assert.equal(stopText({ error: 'login', stop: { step: 'nope', code: 'login' } }, translate('en')), 'Stopped at: unknown step (login)');
+  assert.equal(stopText({ error: 'login', stop: { step: 'toString', code: 'login' } }, translate('tr')), 'Durduğu adım: bilinmeyen adım (login)');
+  assert.equal(stopText({ error: 'login', stop: { step: 'load', code: 'Private title: free text' } }, translate('en')), 'Stopped at: opening the chat (unknown)');
+  for (const progress of [null, {}, { error: 'login' }, { error: 'login', stop: null }, { stop: { step: 'load', code: 'wrong_page' } }, { error: 'login', stop: 'load' }]) {
+    assert.equal(stopText(progress, translate('en')), '');
+  }
+});
+
+test('popup finished view shows the totals, the error and the step the cleanup stopped at', async () => {
+  for (const [lang, done, step] of [
+    ['en', 'Done: 1 archived, 3 chats were already gone from ChatGPT, 3 failed.', 'Stopped at: opening the chat (wrong_page)'],
+    ['tr', 'Bitti: 1 arşivlendi, 3 sohbet ChatGPT\'de zaten yoktu, 3 hata.', 'Durduğu adım: sohbeti açma (wrong_page)'],
+  ]) {
+    const progress = { running: false, error: 'too_many_failures', archived: 1, gone: 3, failed: 3, notProcessed: 0,
+      stop: { step: 'load', code: 'wrong_page' }, kept: {}, keptTotal: 0 };
+    const p = await popup({ stored: { [ctx.i18n.LANGUAGE_KEY]: lang }, reply: m => m.type === 'cleanup:status' ? { ok: true, progress } : undefined });
+    const text = p.nodes.get('cleanupView').textContent;
+    assert.ok(text.includes(done), text);
+    assert.ok(text.includes(translate(lang)('cleanupErrFailures')), text);
+    assert.ok(text.includes(step), text);
+  }
+  const noStop = await popup({ reply: m => m.type === 'cleanup:status'
+    ? { ok: true, progress: { running: false, error: 'tab_closed', stop: null } } : undefined });
+  assert.doesNotMatch(noStop.nodes.get('cleanupView').textContent, /Stopped at/);
+});

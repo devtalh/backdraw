@@ -158,15 +158,16 @@ function loadPixelWorker() {
   return worker;
 }
 
-function loadWorker() {
+function loadWorker(configure) {
   const posted = [];
-  const event = () => ({ addListener() {} });
+  const listeners = [];
+  const event = (list = []) => ({ addListener(fn) { list.push(fn); } });
   const port = { onMessage: event(), onDisconnect: event(), postMessage: m => posted.push(m) };
   const made = [];
   const sandbox = {
     console: { log() {}, error() {} }, setTimeout, clearTimeout, atob, btoa, Blob, CompressionStream, Response,
     chrome: {
-      runtime: { id: 'test', getManifest: () => ({ version: '0.0.0' }), connectNative: () => port, onStartup: event(), onInstalled: event(), onMessage: event() },
+      runtime: { id: 'test', getManifest: () => ({ version: '0.0.0' }), connectNative: () => port, onStartup: event(), onInstalled: event(), onMessage: event(listeners) },
       alarms: { create() {}, onAlarm: event() },
       contextMenus: { onClicked: event(), removeAll: async () => {}, create() {}, update: async () => {} },
       windows: { onRemoved: event() },
@@ -178,14 +179,1169 @@ function loadWorker() {
     nextBitmap: null,
     createImageBitmap: async () => sandbox.nextBitmap,
   };
+  if (configure) configure(sandbox, port);
   const ctx = vm.createContext(sandbox);
   sandbox.self = ctx;
   sandbox.importScripts = (...files) => {
     for (const f of files) vm.runInContext(fs.readFileSync(path.join(EXT, f), 'utf8'), ctx, { filename: f });
   };
   vm.runInContext(fs.readFileSync(path.join(EXT, 'background.js'), 'utf8'), ctx, { filename: 'background.js' });
-  return { ctx: sandbox, posted, made };
+  return { ctx: sandbox, posted, made, listeners };
 }
+
+const CLEANUP_ID = '12345678-abcd-1234-abcd-123456789abc';
+const cleanupChat = (n = 0) => {
+  const id = CLEANUP_ID.slice(0, -1) + n.toString(16);
+  return { id, url: `https://chatgpt.com/g/g-p-abc123-project/c/${id}` };
+};
+const plain = value => JSON.parse(JSON.stringify(value));
+
+function cleanupWorker(options = {}) {
+  const pages = [], scripts = [], created = [], updated = [], reloaded = [], removed = [], logs = [], writes = [];
+  const session = plain(options.session || {});
+  const local = options.setting === undefined ? {} : { chatCleanup: options.setting };
+  const tabs = new Map();
+  const updateListeners = new Set();
+  const updates = { added: 0, removed: 0 };
+  const emitUpdated = (id, status) => {
+    for (const listener of updateListeners) listener(id, { status });
+  };
+  let worker, now = 100000, navigated = false;
+  worker = loadWorker((sandbox, port) => {
+    sandbox.URL = URL;
+    sandbox.Date = { now: () => now };
+    sandbox.console = { log: (...args) => logs.push(args), error: (...args) => logs.push(args) };
+    sandbox.setTimeout = (fn, ms) => {
+      // Host call deadlines remain real and are cleared by replies. Only page waits advance time.
+      if (ms >= 60000) return setTimeout(fn, ms);
+      if (ms === 30000 && options.onReloadWait) return options.onReloadWait(() => { now += ms; fn(); });
+      return setTimeout(() => { now += ms; options.onSleep?.(ms, worker); fn(); }, ms === 30000 ? 25 : 0);
+    };
+    sandbox.chrome.runtime.getURL = p => `chrome-extension://test/${p}`;
+    sandbox.chrome.contextMenus.removeAll = cb => cb();
+    sandbox.chrome.contextMenus.create = (item, cb) => cb();
+    sandbox.chrome.storage.session = {
+      get: async key => Array.isArray(key) ? plain(session) : { [key]: session[key] },
+      set: async value => { const copy = plain(value); writes.push(copy); Object.assign(session, copy); },
+      remove: async key => { delete session[key]; },
+    };
+    sandbox.chrome.storage.local.get = async key => ({ [key]: local[key] });
+    sandbox.chrome.windows.getLastFocused = async () => ({ id: 1, type: 'normal' });
+    sandbox.chrome.tabs = {
+      ...sandbox.chrome.tabs,
+      onUpdated: {
+        addListener(fn) { updates.added++; updateListeners.add(fn); },
+        removeListener(fn) { assert.ok(updateListeners.delete(fn)); updates.removed++; },
+      },
+      create: async args => {
+        const tab = { id: 50 + created.length, active: !!options.activeTab, url: args.url };
+        created.push(args); tabs.set(tab.id, tab); navigated = false;
+        return tab;
+      },
+      get: async id => {
+        if (!tabs.has(id)) throw new Error('No tab with id');
+        return tabs.get(id);
+      },
+      update: async (id, args) => {
+        updated.push({ id, ...args });
+        if (args.url) navigated = false;
+        return Object.assign(tabs.get(id), args);
+      },
+      reload: async id => {
+        assert.equal(updates.added - updates.removed, 1);
+        reloaded.push(id);
+        if (!tabs.has(id)) throw new Error('No tab with id');
+        await options.onReload?.(id, worker);
+        navigated = false;
+        if (!options.manualReloadEvents) setImmediate(() => {
+          emitUpdated(id, 'loading');
+          setImmediate(() => emitUpdated(id, 'complete'));
+        });
+      },
+      remove: async id => { await options.onRemove?.(id); removed.push(id); tabs.delete(id); },
+    };
+    sandbox.chrome.scripting = { executeScript: async args => {
+      scripts.push(args);
+      if (!tabs.has(args.target.tabId)) throw new Error('No tab with id');
+      if (args.files) return [];
+      const [name, params] = args.args;
+      pages.push({ name, params: plain(params), tabId: args.target.tabId });
+      const custom = await options.page?.(name, params, { tabs, pages, worker });
+      if (custom !== undefined) return [{ result: custom }];
+      let result;
+      if (name === 'chatPageState') result = { onChat: !navigated, trigger: true, lang: 'en-US', title: 'Private cleanup title', login: false, challenge: null };
+      else if (name === 'openChatMenu') result = { ok: true, title: 'Private cleanup title' };
+      else if (name === 'chatMenuItems') result = options.unarchive ? ['Unarchive', 'Delete'] : ['Archive', 'Delete'];
+      else if (name === 'clickChatMenuItem') { navigated = params[0] === 'Archive'; result = { clicked: true }; }
+      else if (name === 'closeChatMenu') result = { ok: true };
+      else if (name === 'deleteDialogState') result = { found: true, title: 'Private cleanup title' };
+      else if (name === 'confirmDeleteChat') { navigated = true; result = { ok: true }; }
+      else throw new Error(`Unexpected page helper: ${name}`);
+      return [{ result }];
+    } };
+    const original = port.postMessage;
+    port.postMessage = msg => {
+      original(msg);
+      if (msg.type !== 'call') return;
+      Promise.resolve().then(async () => {
+        let result = await options.host?.(msg);
+        if (result === undefined) {
+          if (msg.method === 'chat_cleanup_check') result = { eligible: options.ineligible ? [] : msg.params.ids };
+          else if (msg.method === 'chat_cleanup_mark') result = { id: msg.params.id, state: msg.params.state };
+          else if (msg.method === 'chat_cleanup_release') result = {};
+          else if (msg.method === 'chat_cleanup_list') result = { eligible: options.chats || [cleanupChat()], kept: { active: 2 }, keptTotal: 2, cleaned: { archived: 1, deleted: 0 } };
+          else throw new Error(`Unexpected host call: ${msg.method}`);
+        }
+        await worker.ctx.onHostMessage({ type: 'reply', reqId: msg.reqId, ok: !result.__error, result, error: result.__error });
+      });
+    };
+  });
+  const send = (msg, sender = { id: 'test', url: 'chrome-extension://test/popup.html' }) => new Promise(resolve => {
+    let open = false;
+    for (const listener of worker.listeners) if (listener(msg, sender, resolve) === true) open = true;
+    if (!open) setImmediate(() => resolve(undefined));
+  });
+  const welcome = () => worker.ctx.onHostMessage({ type: 'welcome' });
+  const done = chats => worker.ctx.onHostMessage({ type: 'chat_done', chats: chats || [cleanupChat()] });
+  const state = () => plain(vm.runInContext('({ queue: cleanupQueue, progress: cleanupProgress, running: cleanupRunning })', worker.ctx));
+  const wait = async predicate => {
+    for (let i = 0; i < 500; i++) {
+      if (predicate()) return;
+      await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    assert.fail('Cleanup did not reach the expected state');
+  };
+  const finish = async () => {
+    await wait(() => !!state().progress?.finishedAt && !state().running);
+    assert.equal(updates.added, updates.removed);
+    assert.equal(updateListeners.size, 0);
+  };
+  const calls = method => worker.posted.filter(msg => msg.type === 'call' && msg.method === method);
+  return { ...worker, pages, scripts, created, updated, reloaded, removed, logs, session, writes, local, tabs, send, welcome, done, state, wait, finish, calls, updates, emitUpdated };
+}
+
+test('chat cleanup: keep is the silent default, including unknown settings', async () => {
+  for (const setting of [undefined, 'keep', 'unknown']) {
+    const w = cleanupWorker({ setting });
+    await w.welcome();
+    await w.done();
+    assert.equal(w.created.length, 0);
+    assert.equal(w.scripts.length, 0);
+    assert.equal(w.posted.filter(msg => /^chat_cleanup_/.test(msg.method || '')).length, 0);
+    assert.equal(w.logs.length, 0);
+  }
+});
+
+test('chat cleanup: archive checks eligibility and marks only the UUID and result', async () => {
+  const w = cleanupWorker({ setting: 'archive' });
+  await w.welcome();
+  await w.done();
+  await w.finish();
+  assert.deepEqual(plain(w.calls('chat_cleanup_check')[0].params), { ids: [cleanupChat().id], reserve: true, action: 'archive' });
+  assert.deepEqual(plain(w.calls('chat_cleanup_mark')[0].params), { id: cleanupChat().id, state: 'archived', error: null });
+  assert.deepEqual(w.pages.filter(p => p.name === 'clickChatMenuItem').map(p => p.params), [['Archive', 'Private cleanup title']]);
+  assert.equal(w.state().progress.archived, 1);
+  assert.equal(w.state().progress.done, 1);
+  assert.equal(w.created[0].active, false);
+  assert.deepEqual(w.removed, [50]);
+  assert.equal(w.session.cleanupQueue.length, 0);
+  assert.ok(w.writes.some(write => write.cleanupQueue?.length === 1 && write.cleanupProgress?.running));
+  const outgoing = JSON.stringify([w.posted, w.logs]);
+  assert.doesNotMatch(outgoing, /token|cookie|Authorization|Private cleanup title|https:\/\/chatgpt\.com/i);
+});
+
+test('chat cleanup: an archived chat is skipped for both actions without clicking or confirming', async () => {
+  const archive = cleanupWorker({ setting: 'archive', unarchive: true });
+  await archive.welcome(); await archive.done(); await archive.finish();
+  assert.equal(archive.pages.filter(p => p.name === 'clickChatMenuItem').length, 0);
+  assert.equal(archive.state().progress.alreadyArchived, 1);
+  assert.equal(archive.calls('chat_cleanup_mark')[0].params.state, 'archived');
+  assert.equal(archive.pages.some(p => ['deleteDialogState', 'confirmDeleteChat'].includes(p.name)), false);
+  assert.ok(archive.pages.some(p => p.name === 'closeChatMenu'));
+
+  const del = cleanupWorker({ setting: 'delete', unarchive: true });
+  await del.welcome(); await del.done(); await del.finish();
+  assert.deepEqual(plain(del.calls('chat_cleanup_check')[0].params), { ids: [cleanupChat().id], reserve: true, action: 'delete' });
+  assert.equal(del.pages.filter(p => p.name === 'clickChatMenuItem').length, 0);
+  assert.equal(del.pages.some(p => ['deleteDialogState', 'confirmDeleteChat'].includes(p.name)), false);
+  assert.equal(del.calls('chat_cleanup_mark')[0].params.state, 'archived');
+  assert.equal(del.state().progress.deleted, 0);
+  assert.equal(del.state().progress.alreadyArchived, 1);
+  assert.equal(del.state().progress.failed, 0);
+  assert.ok(del.pages.some(p => p.name === 'closeChatMenu'));
+});
+
+test('chat cleanup: manual start queues only the eligible list for either action', async () => {
+  const open = cleanupChat(1), archived = { ...cleanupChat(2), archived: true };
+  for (const [action, expected] of [['delete', [open.id]], ['archive', [open.id]]]) {
+    const w = cleanupWorker({ chats: [open], host: msg => msg.method === 'chat_cleanup_list'
+      ? { eligible: [open], deletable: [open, archived] } : undefined });
+    await w.welcome();
+    const started = await w.send({ type: 'cleanup:start', action, ...(action === 'delete' ? { confirmed: true } : {}) });
+    assert.equal(started.queued, expected.length);
+    await w.finish();
+    assert.deepEqual(w.calls('chat_cleanup_check').map(msg => msg.params.ids[0]), expected);
+    assert.ok(w.calls('chat_cleanup_check').every(msg => msg.params.action === action));
+  }
+});
+
+test('chat cleanup: already archived preserves the delete brake and resets the archive brake', async () => {
+  for (const action of ['archive', 'delete']) {
+    const w = cleanupWorker({ setting: action, page: (name, params, { tabs }) => {
+      const id = name === 'chatPageState' ? params[0] : [...tabs.values()][0]?.url.split('/').pop();
+      if (id !== cleanupChat(2).id && name === 'chatPageState') return { onChat: false, trigger: false, lang: 'en-US' };
+      if (name === 'chatMenuItems') return ['Unarchive', 'Delete'];
+    } });
+    await w.welcome(); await w.done([0, 1, 2, 3].map(cleanupChat)); await w.finish();
+    const p = w.state().progress;
+    assert.equal(p.alreadyArchived, 1);
+    assert.equal(p.failed, 3);
+    assert.equal(p.consecutiveFailures, action === 'delete' ? 3 : 1);
+    assert.equal(p.error, action === 'delete' ? 'too_many_failures' : null);
+    assert.equal(w.writes.find(write => write.cleanupProgress?.done === 3).cleanupProgress.consecutiveFailures,
+      action === 'delete' ? 2 : 0);
+    assert.equal(w.calls('chat_cleanup_mark')[2].params.state, 'archived');
+    assert.equal(w.pages.some(p => ['clickChatMenuItem', 'deleteDialogState', 'confirmDeleteChat'].includes(p.name)), false);
+  }
+});
+
+const retryableMenuFailure = (kind, name) => kind === 'trigger'
+  ? (name === 'chatPageState' ? { onChat: true, trigger: false, lang: 'en-US' } : undefined)
+  : (name === 'chatMenuItems' ? ['Auto', 'Instant'] : undefined);
+
+test('chat cleanup: reload waits for this tab loading then complete before the second attempt', async () => {
+  const w = cleanupWorker({ setting: 'delete', manualReloadEvents: true, onReloadWait: () => {},
+    page: name => !w.reloaded.length ? retryableMenuFailure('items', name) : undefined });
+  await w.welcome(); await w.done(); await w.wait(() => w.reloaded.length === 1);
+  const before = w.pages.length;
+  assert.equal(w.updates.added, 1);
+  for (const [id, status] of [[50, 'complete'], [51, 'loading'], [51, 'complete'], [50, 'loading']]) {
+    w.emitUpdated(id, status);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(w.pages.length, before);
+    assert.equal(w.calls('chat_cleanup_mark').length, 0);
+  }
+  w.emitUpdated(50, 'complete');
+  await w.finish();
+  assert.equal(w.state().progress.deleted, 1);
+  assert.ok(w.pages.slice(before).some(p => p.name === 'chatPageState'));
+});
+
+test('chat cleanup: reload timeout preserves the first failure and ignores late completion', async () => {
+  let expire;
+  const w = cleanupWorker({ setting: 'archive', manualReloadEvents: true, onReloadWait: fn => { expire = fn; },
+    page: name => !w.reloaded.length ? retryableMenuFailure('items', name) : undefined });
+  await w.welcome(); await w.done(); await w.wait(() => w.reloaded.length === 1);
+  const before = w.pages.length;
+  w.emitUpdated(50, 'loading');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(w.pages.length, before);
+  expire();
+  await w.finish();
+  assert.equal(w.state().progress.archived, 0);
+  assert.equal(w.state().progress.failed, 1);
+  assert.equal(w.state().progress.consecutiveFailures, 1);
+  assert.equal(w.pages.length, before);
+  for (const name of ['chatPageState', 'openChatMenu']) {
+    assert.equal(w.pages.slice(before).filter(p => p.name === name).length, 0);
+  }
+  assert.deepEqual(w.calls('chat_cleanup_mark').map(m => plain(m.params)), [
+    { id: cleanupChat().id, state: 'failed', error: 'menu_unexpected' },
+  ]);
+  assert.equal(w.calls('chat_cleanup_check').length, 1);
+  assert.equal(w.updates.removed, 1);
+  const warnings = w.posted.filter(m => m.type === 'log' && m.msg === 'chat cleanup: reload did not finish');
+  assert.deepEqual(warnings.map(m => [m.level, plain(m.data)]), [['warn', { id: cleanupChat().id }]]);
+  const settled = plain({ state: w.state(), posted: w.posted, writes: w.writes });
+  for (const status of ['loading', 'complete']) {
+    w.emitUpdated(50, status);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(w.pages.length, before);
+    assert.deepEqual(plain({ state: w.state(), posted: w.posted, writes: w.writes }), settled);
+    assert.equal(w.updates.removed, 1);
+  }
+});
+
+test('chat cleanup: stop during reload records the first failure without a second menu interaction', async () => {
+  for (const timeout of [false, true]) {
+    let expire;
+    const w = cleanupWorker({ setting: 'delete', manualReloadEvents: true, onReloadWait: fn => { expire = fn; },
+      page: name => !w.reloaded.length ? retryableMenuFailure('items', name) : undefined });
+    await w.welcome(); await w.done([cleanupChat(), cleanupChat(1)]);
+    await w.wait(() => w.reloaded.length === 1);
+    const before = w.pages.length;
+    await w.send({ type: 'cleanup:stop' });
+    if (timeout) expire();
+    else { w.emitUpdated(50, 'loading'); w.emitUpdated(50, 'complete'); }
+    await w.finish();
+    assert.equal(w.pages.length, before);
+    assert.equal(w.pages.filter(p => p.name === 'openChatMenu').length, 1);
+    for (const name of ['clickChatMenuItem', 'deleteDialogState', 'confirmDeleteChat']) {
+      assert.equal(w.pages.filter(p => p.name === name).length, 0);
+    }
+    assert.deepEqual(w.calls('chat_cleanup_mark').map(m => plain(m.params)), [
+      { id: cleanupChat().id, state: 'failed', error: 'menu_unexpected' },
+    ]);
+    assert.equal(w.calls('chat_cleanup_check').length, 1);
+    assert.equal(w.calls('chat_cleanup_release').length, 0);
+    const p = w.state().progress;
+    assert.equal(p.failed, 1);
+    assert.equal(p.consecutiveFailures, 1);
+    assert.equal(p.done, 1);
+    assert.equal(p.notProcessed, 1);
+    assert.equal(w.updates.removed, 1);
+  }
+});
+
+test('chat cleanup: either retryable menu failure reloads once, for manual and automatic actions', async () => {
+  for (const kind of ['trigger', 'items']) for (const source of ['auto', 'manual']) for (const action of ['archive', 'delete']) {
+    const w = cleanupWorker({ setting: action, page: name => !w.reloaded.length ? retryableMenuFailure(kind, name) : undefined,
+      onReload: () => {
+        assert.equal(w.calls('chat_cleanup_check').length, 1);
+        assert.equal(w.calls('chat_cleanup_mark').length, 0);
+        assert.equal(w.calls('chat_cleanup_release').length, 0);
+      } });
+    await w.welcome();
+    if (source === 'auto') await w.done();
+    else await w.send({ type: 'cleanup:start', action, ...(action === 'delete' ? { confirmed: true } : {}) });
+    await w.finish();
+    const p = w.state().progress;
+    assert.deepEqual(w.reloaded, [50]);
+    assert.equal(p.source, source);
+    assert.equal(p[action === 'delete' ? 'deleted' : 'archived'], 1);
+    assert.equal(p.failed, 0);
+    assert.equal(p.consecutiveFailures, 0);
+    assert.equal(w.calls('chat_cleanup_check').length, 1);
+    assert.deepEqual(w.calls('chat_cleanup_mark').map(m => plain(m.params)), [
+      { id: cleanupChat().id, state: action === 'delete' ? 'deleted' : 'archived', error: null },
+    ]);
+    assert.equal(w.calls('chat_cleanup_release').length, 0);
+    const retries = w.posted.filter(m => m.type === 'log' && m.msg === 'chat cleanup: retrying after reload');
+    assert.equal(retries.length, 1);
+    assert.deepEqual(plain(retries[0].data), { id: cleanupChat().id,
+      step: kind === 'trigger' ? 'load' : 'menu_items', code: kind === 'trigger' ? 'menu_trigger_not_found' : 'menu_unexpected' });
+  }
+});
+
+test('chat cleanup: two failed attempts count once and never cause a third attempt', async () => {
+  for (const kind of ['trigger', 'items']) {
+    const w = cleanupWorker({ setting: 'archive', page: name => retryableMenuFailure(kind, name) });
+    await w.welcome(); await w.done(); await w.finish();
+    assert.deepEqual(w.reloaded, [50]);
+    assert.equal(w.state().progress.failed, 1);
+    assert.equal(w.state().progress.consecutiveFailures, 1);
+    assert.equal(w.calls('chat_cleanup_check').length, 1);
+    assert.equal(w.calls('chat_cleanup_mark').length, 1);
+    assert.deepEqual(plain(w.calls('chat_cleanup_mark')[0].params), { id: cleanupChat().id, state: 'failed',
+      error: kind === 'trigger' ? 'menu_trigger_not_found' : 'menu_unexpected' });
+    if (kind === 'items') assert.equal(w.pages.filter(p => p.name === 'openChatMenu').length, 2);
+  }
+});
+
+test('chat cleanup: three chats that fail again after reload still trip the failure brake', async () => {
+  const w = cleanupWorker({ setting: 'archive', page: name => retryableMenuFailure('items', name) });
+  await w.welcome(); await w.done([0, 1, 2, 3].map(cleanupChat)); await w.finish();
+  const p = w.state().progress;
+  assert.equal(p.error, 'too_many_failures');
+  assert.deepEqual(p.stop, { step: 'menu_items', code: 'menu_unexpected' });
+  assert.equal(p.failed, 3);
+  assert.equal(p.consecutiveFailures, 3);
+  assert.equal(p.notProcessed, 1);
+  assert.deepEqual(w.reloaded, [50, 50, 50]);
+  assert.equal(w.calls('chat_cleanup_check').length, 3);
+  assert.deepEqual(w.calls('chat_cleanup_mark').map(m => m.params.state), ['failed', 'failed', 'failed']);
+  assert.equal(w.pages.filter(p => p.name === 'openChatMenu').length, 6);
+});
+
+test('chat cleanup: gone on the retry neither adds to nor resets the brake', async () => {
+  const w = cleanupWorker({ setting: 'archive', page: (name, params, { tabs }) => {
+    const id = name === 'chatPageState' ? params[0] : [...tabs.values()][0]?.url.split('/').pop();
+    if (id !== cleanupChat(2).id) return name === 'chatPageState' ? LOST_PAGE : undefined;
+    if (w.reloaded.length) return name === 'chatPageState' ? GONE_PAGE : undefined;
+    return retryableMenuFailure('items', name);
+  } });
+  await w.welcome(); await w.done([0, 1, 2, 3, 4].map(cleanupChat)); await w.finish();
+  const p = w.state().progress;
+  assert.equal(p.gone, 1);
+  assert.equal(p.failed, 3);
+  assert.equal(p.consecutiveFailures, 3);
+  assert.equal(p.error, 'too_many_failures');
+  assert.equal(p.notProcessed, 1);
+  assert.deepEqual(w.reloaded, [50]);
+  assert.equal(w.writes.find(write => write.cleanupProgress?.done === 3).cleanupProgress.consecutiveFailures, 2);
+  assert.deepEqual(plain(w.calls('chat_cleanup_mark')[2].params), { id: cleanupChat(2).id, state: 'gone', error: null });
+});
+
+test('chat cleanup: other codes and the same code at another step never reload', async () => {
+  for (const scenario of [
+    { page: name => name === 'chatPageState' ? LOST_PAGE : undefined, error: 'wrong_page' },
+    { page: name => name === 'clickChatMenuItem' ? { clicked: false, error: 'item_not_found' } : undefined, error: 'item_not_found' },
+    { page: name => name === 'deleteDialogState' ? { found: false } : undefined, error: 'dialog_not_found' },
+    { page: name => name === 'openChatMenu' ? { ok: false, error: 'menu_trigger_not_found' } : undefined, error: 'menu_trigger_not_found' },
+    { page: name => name === 'clickChatMenuItem' ? { clicked: false, error: 'menu_unexpected' } : undefined, error: 'menu_unexpected' },
+  ]) {
+    const w = cleanupWorker({ setting: 'delete', page: scenario.page });
+    await w.welcome(); await w.done(); await w.finish();
+    assert.deepEqual(w.reloaded, []);
+    assert.equal(w.calls('chat_cleanup_mark')[0].params.error, scenario.error);
+    assert.equal(w.state().progress.failed, 1);
+  }
+});
+
+test('chat cleanup: stop after the first attempt records that result without reloading', async () => {
+  const w = cleanupWorker({ setting: 'archive', page: async name => {
+    if (name === 'closeChatMenu') await w.send({ type: 'cleanup:stop' });
+    return retryableMenuFailure('items', name);
+  } });
+  await w.welcome(); await w.done(); await w.finish();
+  assert.deepEqual(w.reloaded, []);
+  assert.equal(w.state().progress.failed, 1);
+  assert.equal(w.state().progress.consecutiveFailures, 1);
+  assert.deepEqual(plain(w.calls('chat_cleanup_mark')[0].params), { id: cleanupChat().id, state: 'failed', error: 'menu_unexpected' });
+});
+
+test('chat cleanup: gates on the retry stop normally without a failed mark', async () => {
+  for (const [extra, code, step] of [[{ login: true }, 'login', 'load'], [{ challenge: 'captcha' }, 'challenge', 'load'],
+    [{ lang: 'tr' }, 'unsupported_language', 'language']]) {
+    const w = cleanupWorker({ setting: 'archive', page: name => !w.reloaded.length ? retryableMenuFailure('items', name)
+      : name === 'chatPageState' ? { onChat: true, trigger: true, lang: 'en-US', ...extra } : undefined });
+    await w.welcome(); await w.done(); await w.finish();
+    assert.deepEqual(w.reloaded, [50]);
+    assert.equal(w.state().progress.error, code);
+    assert.deepEqual(w.state().progress.stop, { step, code });
+    assert.equal(w.state().progress.failed, 0);
+    assert.equal(w.calls('chat_cleanup_mark').length, 0);
+    assert.equal(w.calls('chat_cleanup_release').length, 1);
+  }
+});
+
+test('chat cleanup: reload exceptions use the existing load error rules', async () => {
+  for (const [message, code] of [['No tab with id', 'tab_closed'], ['Private reload error', 'not_confirmed']]) {
+    const w = cleanupWorker({ setting: 'archive', page: name => retryableMenuFailure('items', name),
+      onReload: () => { throw new Error(message); } });
+    await w.welcome(); await w.done(); await w.finish();
+    assert.deepEqual(w.reloaded, [50]);
+    assert.equal(w.calls('chat_cleanup_check').length, 1);
+    if (code === 'tab_closed') {
+      assert.equal(w.state().progress.error, code);
+      assert.deepEqual(w.state().progress.stop, { step: 'load', code });
+      assert.equal(w.calls('chat_cleanup_mark').length, 0);
+      assert.equal(w.calls('chat_cleanup_release').length, 1);
+    } else {
+      assert.equal(w.state().progress.failed, 1);
+      assert.equal(w.state().progress.consecutiveFailures, 1);
+      assert.equal(w.calls('chat_cleanup_mark')[0].params.error, code);
+    }
+    assert.equal(JSON.stringify(w.posted).includes(message), false);
+  }
+});
+
+test('chat cleanup: a different failure on the retry replaces the first menu error', async () => {
+  const w = cleanupWorker({ setting: 'delete', page: name => !w.reloaded.length ? retryableMenuFailure('items', name)
+    : name === 'clickChatMenuItem' ? { clicked: false, error: 'item_not_found' } : undefined });
+  await w.welcome(); await w.done(); await w.finish();
+  assert.deepEqual(w.reloaded, [50]);
+  assert.equal(w.state().progress.failed, 1);
+  assert.equal(w.state().progress.consecutiveFailures, 1);
+  assert.deepEqual(w.calls('chat_cleanup_mark').map(m => plain(m.params)), [
+    { id: cleanupChat().id, state: 'failed', error: 'item_not_found' },
+  ]);
+});
+
+test('chat cleanup: a tab closed during the second attempt stops at load and releases the reservation', async () => {
+  const w = cleanupWorker({ setting: 'archive', page: name => {
+    if (!w.reloaded.length) return retryableMenuFailure('items', name);
+    if (name === 'chatPageState') throw new Error('No tab with id');
+  } });
+  await w.welcome(); await w.done(); await w.finish();
+  assert.deepEqual(w.reloaded, [50]);
+  assert.equal(w.state().progress.error, 'tab_closed');
+  assert.deepEqual(w.state().progress.stop, { step: 'load', code: 'tab_closed' });
+  assert.equal(w.state().progress.failed, 0);
+  assert.equal(w.calls('chat_cleanup_check').length, 1);
+  assert.equal(w.calls('chat_cleanup_mark').length, 0);
+  assert.equal(w.calls('chat_cleanup_release').length, 1);
+});
+
+test('chat cleanup: a new manual archive drops a stopped delete queue', async () => {
+  let language = 'tr';
+  const chats = [cleanupChat(), cleanupChat(1)];
+  const w = cleanupWorker({ chats, page: name => name === 'chatPageState' && language === 'tr'
+    ? { onChat: true, trigger: true, lang: language } : undefined });
+  await w.welcome();
+  await w.send({ type: 'cleanup:start', action: 'delete', confirmed: true });
+  await w.finish();
+  assert.equal(w.state().progress.error, 'unsupported_language');
+  assert.equal(w.state().queue.length, 0);
+  assert.equal(w.state().progress.notProcessed, 2);
+  assert.equal(w.calls('chat_cleanup_release').length, 1);
+  language = 'en';
+  const started = await w.send({ type: 'cleanup:start', action: 'archive' });
+  assert.equal(started.queued, 2);
+  await w.finish();
+  assert.deepEqual(w.pages.filter(p => p.name === 'clickChatMenuItem').map(p => p.params[0]), ['Archive', 'Archive']);
+  assert.equal(w.pages.some(p => p.name === 'confirmDeleteChat'), false);
+});
+
+test('chat cleanup: manual archive updates pending deletes without changing the in-flight chat', async () => {
+  let release, entered;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const opening = new Promise(resolve => { entered = resolve; });
+  let opens = 0;
+  const w = cleanupWorker({ setting: 'delete', chats: [0, 1, 2].map(cleanupChat), page: async name => {
+    if (name === 'openChatMenu' && ++opens === 1) { entered(); await blocked; }
+  } });
+  await w.welcome(); await w.done([0, 1, 2].map(cleanupChat)); await opening;
+  const started = await w.send({ type: 'cleanup:start', action: 'archive' });
+  assert.equal(started.queued, 2);
+  assert.deepEqual(w.state().queue.map(item => [item.action, item.source]), [['delete', 'auto'], ['archive', 'manual'], ['archive', 'manual']]);
+  release(); await w.finish();
+  assert.deepEqual(w.pages.filter(p => p.name === 'clickChatMenuItem').map(p => p.params), [
+    ['Delete', 'Private cleanup title'], ['Archive', 'Private cleanup title'], ['Archive', 'Private cleanup title'],
+  ]);
+});
+
+test('chat cleanup: a manual request during a running cleanup updates the progress action and source', async () => {
+  for (const [setting, manual, extra] of [['archive', 'delete', { confirmed: true }], ['delete', 'archive', {}]]) {
+    let release, entered;
+    const blocked = new Promise(resolve => { release = resolve; });
+    const opening = new Promise(resolve => { entered = resolve; });
+    let opens = 0;
+    const w = cleanupWorker({ setting, chats: [0, 1, 2].map(cleanupChat), page: async name => {
+      if (name === 'openChatMenu' && ++opens === 1) { entered(); await blocked; }
+    } });
+    await w.welcome(); await w.done([0, 1, 2].map(cleanupChat)); await opening;
+    assert.equal(w.state().progress.action, setting);
+    assert.equal(w.state().progress.source, 'auto');
+    await w.send({ type: 'cleanup:start', action: manual, ...extra });
+    assert.equal(w.state().progress.action, manual);
+    assert.equal(w.state().progress.source, 'manual');
+    release(); await w.finish();
+  }
+});
+
+test('chat cleanup: an auto item whose setting turned to keep is skipped without a reservation release', async () => {
+  let changed = false;
+  const w = cleanupWorker({ setting: 'archive', onSleep(ms) {
+    if (ms === 1000 && !changed) { changed = true; w.local.chatCleanup = 'keep'; }
+  } });
+  await w.welcome(); await w.done([cleanupChat(), cleanupChat(1)]); await w.finish();
+  assert.equal(changed, true);
+  assert.equal(w.state().progress.skipped, 1);
+  assert.equal(w.calls('chat_cleanup_check').length, 1);
+  assert.equal(w.calls('chat_cleanup_release').length, 0);
+});
+
+test('chat cleanup: items queued after an error finishes are discarded instead of left in the queue', async () => {
+  let release, entered;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const closing = new Promise(resolve => { entered = resolve; });
+  let closes = 0;
+  const w = cleanupWorker({ setting: 'archive', page: name => name === 'chatPageState'
+    ? { onChat: true, trigger: true, lang: 'tr' } : undefined, onRemove: async () => {
+    if (++closes === 1) { entered(); await blocked; }
+  } });
+  await w.welcome(); await w.done(); await closing;
+  assert.equal(w.state().progress.error, 'unsupported_language');
+  await w.done([cleanupChat(1)]);
+  assert.equal(w.state().queue.length, 1);
+  release(); await w.finish();
+  await w.wait(() => w.state().queue.length === 0 && w.session.cleanupQueue.length === 0);
+  assert.equal(w.state().progress.notProcessed, 2);
+  assert.equal(w.session.cleanupProgress.notProcessed, 2);
+  assert.equal(w.calls('chat_cleanup_check').length, 1);
+});
+
+test('chat cleanup: an idle manual archive replaces deletes preserved after a host error', async () => {
+  let checks = 0;
+  const w = cleanupWorker({ chats: [cleanupChat(), cleanupChat(1)], host: msg => {
+    if (msg.method === 'chat_cleanup_check' && ++checks === 1) return { __error: 'not connected' };
+  } });
+  await w.welcome();
+  await w.send({ type: 'cleanup:start', action: 'delete', confirmed: true });
+  await w.finish();
+  assert.equal(w.state().progress.error, 'not_connected');
+  assert.equal(w.state().queue.length, 2);
+  const started = await w.send({ type: 'cleanup:start', action: 'archive' });
+  assert.equal(started.queued, 2);
+  await w.finish();
+  assert.deepEqual(w.pages.filter(p => p.name === 'clickChatMenuItem').map(p => p.params[0]), ['Archive', 'Archive']);
+});
+
+test('chat cleanup: auto items reread keep, invalid and changed actions before processing', async () => {
+  for (const next of ['keep', 'invalid', 'archive']) {
+    let changed = false;
+    const w = cleanupWorker({ setting: 'delete', onSleep(ms) {
+      if (ms === 1000 && !changed) { changed = true; w.local.chatCleanup = next; }
+    } });
+    await w.welcome(); await w.done([cleanupChat(), cleanupChat(1)]); await w.finish();
+    assert.equal(changed, true);
+    const labels = w.pages.filter(p => p.name === 'clickChatMenuItem').map(p => p.params[0]);
+    assert.deepEqual(labels, next === 'archive' ? ['Delete', 'Archive'] : ['Delete']);
+    assert.equal(w.calls('chat_cleanup_mark').length, next === 'archive' ? 2 : 1);
+    assert.equal(w.state().progress.skipped, next === 'archive' ? 0 : 1);
+  }
+});
+
+test('chat cleanup: stop or a current job after reservation releases before driving the chat', async () => {
+  for (const reason of ['stop', 'current']) {
+    let release, entered;
+    const blocked = new Promise(resolve => { release = resolve; });
+    const checking = new Promise(resolve => { entered = resolve; });
+    let checks = 0;
+    const w = cleanupWorker({ setting: 'archive', host: async msg => {
+      if (msg.method === 'chat_cleanup_check' && ++checks === 1) { entered(); await blocked; }
+    } });
+    await w.welcome(); await w.done(); await checking;
+    if (reason === 'stop') await w.send({ type: 'cleanup:stop' });
+    else vm.runInContext('current = { job: { id: "active" } }', w.ctx);
+    release();
+    await w.wait(() => w.calls('chat_cleanup_release').length === 1);
+    assert.equal(w.created.length, 0);
+    assert.equal(w.calls('chat_cleanup_mark').length, 0);
+    if (reason === 'current') await w.send({ type: 'cleanup:stop' });
+    await w.finish();
+    assert.equal(w.state().progress.notProcessed, 1);
+  }
+});
+
+test('chat cleanup: dismiss clears a stored error and persists the acknowledgement', async () => {
+  const w = cleanupWorker({ setting: 'archive', page: name => name === 'chatPageState'
+    ? { onChat: true, trigger: true, lang: 'tr' } : undefined });
+  await w.welcome(); await w.done(); await w.finish();
+  assert.equal((await w.send({ type: 'cleanup:status' })).progress.error, 'unsupported_language');
+  assert.deepEqual(plain(await w.send({ type: 'cleanup:dismiss' })), { ok: true });
+  assert.equal(w.session.cleanupProgress, null);
+  assert.equal((await w.send({ type: 'cleanup:status' })).progress, null);
+});
+
+test('chat cleanup: ineligible chats are skipped before any tab or page interaction', async () => {
+  const w = cleanupWorker({ setting: 'archive', ineligible: true });
+  await w.welcome(); await w.done(); await w.finish();
+  assert.equal(w.scripts.length, 0);
+  assert.equal(w.created.length, 0);
+  assert.equal(w.calls('chat_cleanup_mark').length, 0);
+  assert.equal(w.state().progress.skipped, 1);
+});
+
+test('chat cleanup: waits for the current job, then reuses one separate helper tab', async () => {
+  let waits = 0;
+  const w = cleanupWorker({ setting: 'archive', onSleep(ms, worker) {
+    if (ms === 3000 && ++waits === 2) vm.runInContext('current = null', worker.ctx);
+  } });
+  await w.welcome();
+  vm.runInContext('current = { job: { id: "active" } }; workerTabId = 99', w.ctx);
+  await w.done([cleanupChat(), cleanupChat(1)]);
+  assert.equal(w.calls('chat_cleanup_check').length, 0);
+  assert.equal(w.created.length, 0);
+  await w.finish();
+  assert.equal(waits, 2);
+  assert.equal(w.created.length, 1);
+  assert.equal(w.updated.filter(args => args.url).length, 1);
+  assert.ok(w.pages.every(p => p.tabId === 50));
+  assert.equal(vm.runInContext('workerTabId', w.ctx), 99);
+});
+
+test('chat cleanup: three consecutive failures mark fixed codes and clear remaining items', async () => {
+  const w = cleanupWorker({ setting: 'archive', page: name => name === 'openChatMenu' ? { ok: false, error: 'menu_trigger_not_found' } : undefined });
+  await w.welcome(); await w.done(Array.from({ length: 10 }, (_, n) => cleanupChat(n))); await w.finish();
+  assert.equal(w.state().progress.error, 'too_many_failures');
+  assert.equal(w.state().progress.failed, 3);
+  assert.equal(w.state().progress.done, 3);
+  assert.equal(w.state().progress.notProcessed, 7);
+  assert.equal(w.session.cleanupProgress.notProcessed, 7);
+  assert.equal(w.calls('chat_cleanup_check').length, 3);
+  assert.deepEqual(w.calls('chat_cleanup_mark').map(msg => plain(msg.params)), [0, 1, 2].map(n => ({
+    id: cleanupChat(n).id, state: 'failed', error: 'menu_trigger_not_found',
+  })));
+  assert.equal(w.state().queue.length, 0);
+});
+
+test('chat cleanup: non-English, empty language, login and challenge stop without clicks or marks', async () => {
+  for (const [extra, error] of [[{ lang: 'tr' }, 'unsupported_language'], [{ lang: '' }, 'unsupported_language'],
+    [{ login: true }, 'login'], [{ challenge: 'captcha' }, 'challenge']]) {
+    const w = cleanupWorker({ setting: 'archive', page: name => name === 'chatPageState'
+      ? { onChat: true, trigger: true, lang: 'en', ...extra } : undefined });
+    await w.welcome(); await w.done([cleanupChat(), cleanupChat(1)]); await w.finish();
+    assert.equal(w.state().progress.error, error);
+    assert.ok(w.pages.every(p => p.name === 'chatPageState'));
+    assert.equal(w.calls('chat_cleanup_mark').length, 0);
+    assert.equal(w.calls('chat_cleanup_check').length, 1);
+    assert.equal(w.calls('chat_cleanup_release').length, 1);
+    assert.equal(w.state().queue.length, 0);
+    assert.equal(w.state().progress.notProcessed, 2);
+  }
+});
+
+test('chat cleanup: manual delete requires explicit confirmation and extension-page provenance', async () => {
+  const w = cleanupWorker();
+  await w.welcome();
+  assert.equal((await w.send({ type: 'cleanup:start', action: 'delete' })).error, 'confirmation_required');
+  assert.equal((await w.send({ type: 'cleanup:start', action: 'delete', confirmed: 'true' })).error, 'confirmation_required');
+  assert.equal((await w.send({ type: 'cleanup:start', action: 'other' })).error, 'invalid_action');
+  assert.equal(await w.send({ type: 'cleanup:start', action: 'archive' }, { id: 'test', url: 'https://chatgpt.com/' }), undefined);
+  assert.equal(await w.send({ type: 'cleanup:start', action: 'archive' }, { id: 'other', url: 'chrome-extension://test/popup.html' }), undefined);
+  assert.equal(w.calls('chat_cleanup_list').length, 0);
+  assert.equal(w.state().queue.length, 0);
+  const preview = await w.send({ type: 'cleanup:preview' });
+  assert.equal(preview.ok, true);
+  assert.equal(preview.result.eligible.length, 1);
+  const started = await w.send({ type: 'cleanup:start', action: 'delete', confirmed: true });
+  assert.deepEqual(plain(started), { ok: true, queued: 1, kept: { active: 2 }, keptTotal: 2, cleaned: { archived: 1, deleted: 0 } });
+  await w.finish();
+  assert.equal(w.state().progress.deleted, 1);
+  assert.equal(w.state().progress.source, 'manual');
+  assert.deepEqual(w.session.cleanupProgress.kept, { active: 2 });
+  assert.equal(w.session.cleanupProgress.keptTotal, 2);
+});
+
+test('chat cleanup: disconnected preview and start return stable errors without host calls', async () => {
+  const w = cleanupWorker();
+  for (const type of ['cleanup:preview', 'cleanup:start']) {
+    assert.deepEqual(plain(await w.send({ type, action: 'archive' })), { ok: false, error: 'not_connected' });
+  }
+  assert.equal(w.calls('chat_cleanup_list').length, 0);
+});
+
+test('chat cleanup: title mismatch marks a fixed failure code without a successful confirmation', async () => {
+  const w = cleanupWorker({ setting: 'delete', page: name => name === 'confirmDeleteChat' ? { ok: false, error: 'title_mismatch' } : undefined });
+  await w.welcome(); await w.done(); await w.finish();
+  assert.deepEqual(plain(w.calls('chat_cleanup_mark')[0].params), { id: cleanupChat().id, state: 'failed', error: 'title_mismatch' });
+  assert.equal(w.state().progress.deleted, 0);
+  assert.equal(w.pages.filter(p => p.name === 'chatPageState').length, 3);
+  // The real helper's Cancel/Delete clicks are covered by the DOM tests, rather than this script fake.
+  assert.equal(w.pages.filter(p => p.name === 'confirmDeleteChat').length, 1);
+  assert.doesNotMatch(JSON.stringify([w.posted, w.logs]), /token|cookie|Authorization|Private cleanup title|https:\/\/chatgpt\.com/i);
+});
+
+test('chat cleanup: validates targets and deduplicates queued UUIDs while manual work adds to the total', async () => {
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const w = cleanupWorker({ setting: 'archive', chats: [cleanupChat(), cleanupChat(1)],
+    host: async msg => { if (msg.method === 'chat_cleanup_check') await blocked; } });
+  await w.welcome();
+  const valid = cleanupChat();
+  await w.done([valid, { id: 'bad', url: valid.url }, { ...valid, url: valid.url + '0' },
+    { ...valid, url: valid.url.replace('https:', 'http:') }, { ...valid, url: valid.url.replace('chatgpt.com', 'example.com') },
+    { ...valid, url: cleanupChat(1).url }, { ...valid, url: `https://chatgpt.com/share/${valid.id}` }]);
+  await w.done([{ ...valid, id: valid.id.toUpperCase() }]);
+  const started = await w.send({ type: 'cleanup:start', action: 'archive' });
+  assert.equal(started.queued, 1);
+  assert.equal(w.state().queue.length, 2);
+  assert.equal(w.state().progress.total, 2);
+  release(); await w.finish();
+  assert.equal(w.calls('chat_cleanup_mark').length, 2);
+});
+
+test('chat cleanup: stop finishes the in-flight chat and discards queued chats', async () => {
+  let release, entered;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const opening = new Promise(resolve => { entered = resolve; });
+  const w = cleanupWorker({ setting: 'archive', page: async name => {
+    if (name === 'openChatMenu') { entered(); await blocked; }
+  } });
+  await w.welcome(); await w.done([cleanupChat(), cleanupChat(1)]);
+  await opening;
+  assert.equal((await w.send({ type: 'cleanup:stop' })).ok, true);
+  assert.equal((await w.send({ type: 'cleanup:status' })).queued, 0);
+  release(); await w.finish();
+  assert.equal(w.state().progress.archived, 1);
+  assert.equal(w.calls('chat_cleanup_check').length, 1);
+  assert.equal(w.session.cleanupQueue.length, 0);
+  assert.equal(w.state().progress.notProcessed, 1);
+});
+
+test('chat cleanup: closed helper stops without marking and active helpers remain open', async () => {
+  const closed = cleanupWorker({ setting: 'archive', page(name, params, { tabs }) {
+    if (name === 'openChatMenu') { tabs.clear(); throw new Error('Tab was closed'); }
+  } });
+  await closed.welcome(); await closed.done(); await closed.finish();
+  assert.equal(closed.state().progress.error, 'tab_closed');
+  assert.equal(closed.calls('chat_cleanup_mark').length, 0);
+  assert.equal(closed.calls('chat_cleanup_release').length, 1);
+  assert.equal(closed.state().progress.notProcessed, 1);
+  const active = cleanupWorker({ setting: 'archive', activeTab: true });
+  await active.welcome(); await active.done(); await active.finish();
+  assert.equal(active.removed.length, 0);
+});
+
+test('chat cleanup: stop during a gate failure counts every unprocessed chat once', async () => {
+  let release, entered;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const reading = new Promise(resolve => { entered = resolve; });
+  const w = cleanupWorker({ setting: 'archive', page: async name => {
+    if (name === 'chatPageState') {
+      entered(); await blocked;
+      return { onChat: true, trigger: true, lang: 'tr' };
+    }
+  } });
+  await w.welcome(); await w.done([cleanupChat(), cleanupChat(1)]); await reading;
+  await w.send({ type: 'cleanup:stop' });
+  await w.send({ type: 'cleanup:stop' });
+  release(); await w.finish();
+  assert.equal(w.state().progress.notProcessed, 2);
+  assert.equal(w.state().progress.done, 0);
+  assert.equal(w.calls('chat_cleanup_mark').length, 0);
+  assert.equal(w.calls('chat_cleanup_release').length, 1);
+});
+
+test('chat cleanup: restores session work only after welcome and continues prior progress', async () => {
+  const item = { ...cleanupChat(), action: 'archive', source: 'manual' };
+  const w = cleanupWorker({ session: { cleanupQueue: [item], cleanupProgress: {
+    running: true, action: 'archive', source: 'manual', total: 2, done: 1, archived: 1, deleted: 0,
+    alreadyArchived: 0, skipped: 0, failed: 0, consecutiveFailures: 0, error: null, startedAt: 123, finishedAt: null,
+  } } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(w.calls('chat_cleanup_check').length, 0);
+  assert.equal(w.created.length, 0);
+  await w.welcome(); await w.finish();
+  assert.equal(w.state().progress.archived, 2);
+  assert.equal(w.state().progress.total, 2);
+  assert.equal(w.state().progress.done, 2);
+  assert.equal(w.state().progress.startedAt, 123);
+  assert.deepEqual(w.session.cleanupQueue, []);
+  assert.deepEqual(w.session.cleanupProgress.kept, {});
+  assert.equal(w.session.cleanupProgress.keptTotal, 0);
+  assert.equal(w.session.cleanupProgress.notProcessed, 0);
+});
+
+test('chat cleanup: an enqueue during the final tab close continues without losing progress', async () => {
+  let release, entered;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const closing = new Promise(resolve => { entered = resolve; });
+  let closes = 0;
+  const w = cleanupWorker({ setting: 'archive', onRemove: async () => {
+    if (++closes === 1) { entered(); await blocked; }
+  } });
+  await w.welcome(); await w.done(); await closing;
+  await w.done([cleanupChat(1)]);
+  assert.equal(w.state().progress.total, 2);
+  release(); await w.finish();
+  assert.equal(w.state().progress.done, 2);
+  assert.equal(w.state().progress.archived, 2);
+  assert.equal(w.calls('chat_cleanup_mark').length, 2);
+  assert.equal(w.session.cleanupQueue.length, 0);
+});
+
+test('chat cleanup: loading and confirmation timeouts produce fixed errors and never guess menu labels', async () => {
+  const scenarios = [
+    { error: 'wrong_page', page: name => name === 'chatPageState' ? { onChat: false, trigger: false, lang: 'en-US' } : undefined },
+    { error: 'menu_trigger_not_found', page: name => name === 'chatPageState' ? { onChat: true, trigger: false, lang: 'en-US' } : undefined },
+    { error: 'menu_unexpected', page: name => name === 'chatMenuItems' ? ['Auto', 'Instant', 'Thinking'] : undefined, closed: true },
+    { error: 'item_ambiguous', page: name => name === 'clickChatMenuItem' ? { clicked: false, error: 'item_ambiguous' } : undefined, closed: true },
+    { error: 'not_confirmed', page: name => name === 'chatPageState' ? { onChat: true, trigger: true, lang: 'EN-us', title: 'Private cleanup title' } : undefined },
+    { error: 'dialog_not_found', action: 'delete', page: name => name === 'deleteDialogState' ? { found: false } : undefined },
+  ];
+  for (const scenario of scenarios) {
+    const w = cleanupWorker({ setting: scenario.action || 'archive', page: scenario.page });
+    await w.welcome(); await w.done(); await w.finish();
+    assert.equal(w.calls('chat_cleanup_mark')[0].params.error, scenario.error);
+    assert.equal(w.calls('chat_cleanup_mark')[0].params.state, 'failed');
+    assert.equal(w.state().progress.failed, 1);
+    if (scenario.closed) assert.ok(w.pages.some(p => p.name === 'closeChatMenu'));
+    if (['wrong_page', 'menu_trigger_not_found', 'menu_unexpected'].includes(scenario.error)) {
+      assert.equal(w.pages.filter(p => p.name === 'clickChatMenuItem').length, 0);
+    }
+    assert.equal(w.pages.filter(p => p.name === 'confirmDeleteChat').length, 0);
+  }
+});
+
+test('chat cleanup: retries loading injection errors and never sends raw page errors to the host', async () => {
+  let reads = 0;
+  const w = cleanupWorker({ setting: 'archive', page: name => {
+    if (name === 'chatPageState' && ++reads === 1) throw new Error('Frame is loading');
+    if (name === 'clickChatMenuItem') throw new Error(`Private cleanup title ${cleanupChat().url}`);
+  } });
+  await w.welcome(); await w.done(); await w.finish();
+  assert.ok(reads >= 3);
+  assert.equal(w.calls('chat_cleanup_mark')[0].params.error, 'not_confirmed');
+  assert.doesNotMatch(JSON.stringify([w.posted, w.logs]), /token|cookie|Authorization|Private cleanup title|https:\/\/chatgpt\.com/i);
+});
+
+test('chat cleanup: a successful chat resets consecutive failures and mark rejection does not stop the queue', async () => {
+  let opened = 0, marked = 0;
+  const w = cleanupWorker({ setting: 'archive', page: name => {
+    if (name === 'openChatMenu' && ++opened <= 2) return { ok: false, error: 'menu_trigger_not_found' };
+  }, host: msg => {
+    if (msg.method === 'chat_cleanup_mark' && ++marked === 3) return { __error: `Private cleanup title ${cleanupChat().url}` };
+  } });
+  await w.welcome(); await w.done([0, 1, 2, 3].map(cleanupChat)); await w.finish();
+  assert.equal(w.state().progress.error, null);
+  assert.equal(w.state().progress.done, 4);
+  assert.equal(w.state().progress.failed, 3);
+  assert.equal(w.state().progress.archived, 1); // The rejected mark is counted only as a failure.
+  assert.equal(w.state().progress.deleted, 0);
+  assert.equal(w.state().progress.consecutiveFailures, 0);
+  assert.equal(w.calls('chat_cleanup_mark').length, 4);
+  assert.doesNotMatch(JSON.stringify([w.posted, w.logs]), /Private cleanup title|https:\/\/chatgpt\.com/i);
+});
+
+test('chat cleanup: mark rejection counts once without a success for archive, delete, already archived or page failure', async () => {
+  for (const options of [{ setting: 'archive' }, { setting: 'delete' }, { setting: 'archive', unarchive: true },
+    { setting: 'archive', page: name => name === 'openChatMenu' ? { ok: false, error: 'menu_trigger_not_found' } : undefined }]) {
+    const w = cleanupWorker({ ...options, host: msg => msg.method === 'chat_cleanup_mark' ? { __error: 'mark rejected' } : undefined });
+    await w.welcome(); await w.done(); await w.finish();
+    const p = w.state().progress;
+    assert.equal(p.failed, 1);
+    assert.equal(p.archived + p.deleted + p.alreadyArchived, 0);
+    assert.equal(p.done, 1);
+    assert.equal(p.consecutiveFailures, options.page ? 1 : 0);
+    assert.equal(p.error, null);
+    assert.equal(w.calls('chat_cleanup_release').length, 1);
+  }
+});
+
+test('chat cleanup: disconnection preserves pending work for the next welcome', async () => {
+  let disconnected = false;
+  const w = cleanupWorker({ setting: 'archive', onSleep(ms, worker) {
+    if (!disconnected && ms === 3000) {
+      disconnected = true;
+      vm.runInContext('hostReady = false; current = null', worker.ctx);
+    }
+  } });
+  await w.welcome();
+  vm.runInContext('current = { job: { id: "active" } }', w.ctx);
+  await w.done(); await w.finish();
+  assert.equal(w.state().progress.error, 'not_connected');
+  assert.equal(w.session.cleanupQueue.length, 1);
+  assert.equal(w.calls('chat_cleanup_mark').length, 0);
+  await w.welcome(); await w.finish();
+  assert.equal(w.state().progress.archived, 1);
+  assert.equal(w.session.cleanupQueue.length, 0);
+});
+
+test('chat cleanup: recreates a helper closed between items', async () => {
+  const w = cleanupWorker({ setting: 'archive', onSleep(ms) { if (ms === 1000) w.tabs.clear(); } });
+  await w.welcome(); await w.done([cleanupChat(), cleanupChat(1)]); await w.finish();
+  assert.equal(w.created.length, 2);
+  assert.equal(w.state().progress.archived, 2);
+  assert.deepEqual([...new Set(w.pages.map(p => p.tabId))], [50, 51]);
+});
+
+// Page states for the chat cleanup worker: 'gone' is ChatGPT's access notice on the home page,
+// 'lost' is an unexpected home page without it. Anything else is a normal, working chat page.
+const GONE_PAGE = { onChat: false, trigger: false, lang: 'en-US', login: false, challenge: null, gone: true };
+const LOST_PAGE = { onChat: false, trigger: false, lang: 'en-US', login: false, challenge: null, gone: false };
+const pagesByChat = kinds => (name, params) => {
+  if (name !== 'chatPageState') return undefined;
+  const kind = kinds[kinds.map((_, n) => cleanupChat(n).id).indexOf(params[0])];
+  return kind === 'gone' ? GONE_PAGE : kind === 'lost' ? LOST_PAGE : undefined;
+};
+
+test('chat cleanup: chats ChatGPT already lost are marked gone without a failure and do not stop the run', async () => {
+  const w = cleanupWorker({ setting: 'archive', page: pagesByChat(['gone', 'gone', 'gone', 'ok']) });
+  await w.welcome(); await w.done([0, 1, 2, 3].map(cleanupChat)); await w.finish();
+  const p = w.state().progress;
+  assert.equal(p.error, null);
+  assert.equal(p.stop, null);
+  assert.equal(p.gone, 3);
+  assert.equal(p.failed, 0);
+  assert.equal(p.archived, 1);
+  assert.equal(p.done, 4);
+  assert.equal(p.notProcessed, 0);
+  assert.equal(p.consecutiveFailures, 0);
+  assert.deepEqual(w.calls('chat_cleanup_mark').map(msg => plain(msg.params)), [
+    { id: cleanupChat(0).id, state: 'gone', error: null }, { id: cleanupChat(1).id, state: 'gone', error: null },
+    { id: cleanupChat(2).id, state: 'gone', error: null }, { id: cleanupChat(3).id, state: 'archived', error: null },
+  ]);
+  // A gone chat never opens a menu: only the archived one does.
+  assert.deepEqual(w.pages.filter(page => page.name === 'openChatMenu').map(page => page.params), [[cleanupChat(3).id]]);
+  assert.equal(w.calls('chat_cleanup_release').length, 0);
+  assert.equal(w.session.cleanupProgress.gone, 3);
+  assert.equal(w.session.cleanupQueue.length, 0);
+});
+
+test('chat cleanup: five gone chats in a row never trip the failure brake', async () => {
+  const w = cleanupWorker({ setting: 'archive', page: pagesByChat(Array(5).fill('gone')) });
+  await w.welcome(); await w.done([0, 1, 2, 3, 4].map(cleanupChat)); await w.finish();
+  const p = w.state().progress;
+  assert.equal(p.error, null);
+  assert.equal(p.gone, 5);
+  assert.equal(p.failed, 0);
+  assert.equal(p.done, 5);
+  assert.equal(p.consecutiveFailures, 0);
+  assert.equal(w.calls('chat_cleanup_mark').length, 5);
+  assert.equal(w.pages.some(page => page.name === 'openChatMenu'), false);
+});
+
+test('chat cleanup: three real unexpected pages still stop the run and name the step and code', async () => {
+  const w = cleanupWorker({ setting: 'archive', page: pagesByChat(Array(10).fill('lost')) });
+  await w.welcome(); await w.done(Array.from({ length: 10 }, (_, n) => cleanupChat(n))); await w.finish();
+  const p = w.state().progress;
+  assert.equal(p.error, 'too_many_failures');
+  assert.deepEqual(p.stop, { step: 'load', code: 'wrong_page' });
+  assert.equal(p.failed, 3);
+  assert.equal(p.gone, 0);
+  assert.equal(p.notProcessed, 7);
+  assert.deepEqual(w.session.cleanupProgress.stop, { step: 'load', code: 'wrong_page' });
+  assert.deepEqual(w.calls('chat_cleanup_mark').map(msg => msg.params.error), ['wrong_page', 'wrong_page', 'wrong_page']);
+});
+
+test('chat cleanup: a toast that appears after the first reads on the home page still marks the chat gone', async () => {
+  let reads = 0;
+  const w = cleanupWorker({ setting: 'archive', page: name => name === 'chatPageState' ? (++reads >= 3 ? GONE_PAGE : LOST_PAGE) : undefined });
+  await w.welcome(); await w.done(); await w.finish();
+  const p = w.state().progress;
+  assert.equal(reads, 3);
+  assert.equal(p.error, null);
+  assert.equal(p.stop, null);
+  assert.equal(p.gone, 1);
+  assert.equal(p.failed, 0);
+  assert.equal(p.consecutiveFailures, 0);
+  assert.deepEqual(w.calls('chat_cleanup_mark').map(msg => plain(msg.params)), [{ id: cleanupChat().id, state: 'gone', error: null }]);
+  assert.equal(w.pages.some(page => page.name === 'openChatMenu'), false);
+});
+
+test('chat cleanup: a home page that never shows the toast is polled for at least four seconds, then wrong_page', async () => {
+  let reads = 0;
+  const w = cleanupWorker({ setting: 'archive', page: name => name === 'chatPageState' ? (++reads, LOST_PAGE) : undefined });
+  await w.welcome(); await w.done(); await w.finish();
+  const p = w.state().progress;
+  assert.ok(reads >= 8, `expected at least 8 reads, saw ${reads}`);
+  assert.equal(p.gone, 0);
+  assert.equal(p.failed, 1);
+  assert.equal(p.stop, null);
+  assert.deepEqual(w.calls('chat_cleanup_mark').map(msg => plain(msg.params)), [{ id: cleanupChat().id, state: 'failed', error: 'wrong_page' }]);
+});
+
+test('chat cleanup: the first page state is read right after navigating, before any wait', async () => {
+  const events = [];
+  const w = cleanupWorker({ setting: 'archive',
+    onSleep: ms => events.push(`sleep:${ms}`),
+    page: name => { if (name === 'chatPageState') events.push(`read:tabs=${w.created.length}`); return name === 'chatPageState' ? GONE_PAGE : undefined; } });
+  await w.welcome(); await w.done(); await w.finish();
+  assert.equal(events[0], 'read:tabs=1');
+  assert.equal(w.state().progress.gone, 1);
+  assert.equal(events.includes('sleep:500'), false);
+});
+
+test('chat cleanup: a gone chat neither adds to nor resets the failure count', async () => {
+  const w = cleanupWorker({ setting: 'archive', page: pagesByChat(['lost', 'gone', 'lost', 'lost', 'ok']) });
+  await w.welcome(); await w.done([0, 1, 2, 3, 4].map(cleanupChat)); await w.finish();
+  const p = w.state().progress;
+  assert.equal(p.error, 'too_many_failures');
+  assert.deepEqual(p.stop, { step: 'load', code: 'wrong_page' });
+  assert.equal(p.failed, 3);
+  assert.equal(p.gone, 1);
+  assert.equal(p.done, 4);
+  assert.equal(p.notProcessed, 1);
+  assert.equal(w.calls('chat_cleanup_check').length, 4);
+  assert.equal(w.state().queue.length, 0);
+  // The same three failures with the gone chat after them still stop at the third failure.
+  const after = cleanupWorker({ setting: 'archive', page: pagesByChat(['lost', 'lost', 'lost', 'gone']) });
+  await after.welcome(); await after.done([0, 1, 2, 3].map(cleanupChat)); await after.finish();
+  assert.equal(after.state().progress.error, 'too_many_failures');
+  assert.equal(after.state().progress.gone, 0);
+  assert.equal(after.state().progress.notProcessed, 1);
+});
+
+test('chat cleanup: a rejected gone mark counts as a failed chat, not a gone one, and leaves the brake alone', async () => {
+  const w = cleanupWorker({ setting: 'archive', page: pagesByChat(['gone', 'ok']),
+    host: msg => msg.method === 'chat_cleanup_mark' && msg.params.state === 'gone' ? { __error: 'Private cleanup title mark rejected' } : undefined });
+  await w.welcome(); await w.done([0, 1].map(cleanupChat)); await w.finish();
+  const p = w.state().progress;
+  assert.equal(p.gone, 0);
+  assert.equal(p.failed, 1);
+  assert.equal(p.archived, 1);
+  assert.equal(p.consecutiveFailures, 0);
+  assert.equal(p.error, null);
+  assert.equal(w.calls('chat_cleanup_release').length, 1);
+});
+
+test('chat cleanup: every stopping step is named, and the failure steps follow the page flow', async () => {
+  const scenarios = [
+    { step: 'load', code: 'wrong_page', page: name => name === 'chatPageState' ? LOST_PAGE : undefined },
+    { step: 'load', code: 'menu_trigger_not_found', page: name => name === 'chatPageState' ? { onChat: true, trigger: false, lang: 'en-US' } : undefined },
+    { step: 'open_menu', code: 'menu_trigger_not_found', page: name => name === 'openChatMenu' ? { ok: false, error: 'menu_trigger_not_found' } : undefined },
+    { step: 'menu_items', code: 'menu_unexpected', page: name => name === 'chatMenuItems' ? ['Auto', 'Instant'] : undefined },
+    { step: 'click_item', code: 'item_ambiguous', page: name => name === 'clickChatMenuItem' ? { clicked: false, error: 'item_ambiguous' } : undefined },
+    { step: 'click_item', code: 'item_not_found', page: name => name === 'clickChatMenuItem' ? { clicked: false } : undefined },
+    { step: 'delete_dialog', code: 'dialog_not_found', action: 'delete', page: name => name === 'deleteDialogState' ? { found: false } : undefined },
+    { step: 'confirm_delete', code: 'title_mismatch', action: 'delete', page: name => name === 'confirmDeleteChat' ? { ok: false, error: 'title_mismatch' } : undefined },
+    { step: 'verify', code: 'not_confirmed', page: name => name === 'chatPageState' ? { onChat: true, trigger: true, lang: 'en-US', title: 'Private cleanup title' } : undefined },
+  ];
+  for (const scenario of scenarios) {
+    const w = cleanupWorker({ setting: scenario.action || 'archive', page: scenario.page });
+    await w.welcome(); await w.done([0, 1, 2, 3].map(cleanupChat)); await w.finish();
+    assert.equal(w.state().progress.error, 'too_many_failures', JSON.stringify(scenario));
+    assert.deepEqual(w.state().progress.stop, { step: scenario.step, code: scenario.code }, JSON.stringify(scenario));
+    assert.equal(w.state().progress.notProcessed, 1);
+  }
+});
+
+test('chat cleanup: gates stop with their step, and the stop is cleared when the cleanup resumes', async () => {
+  for (const [extra, code, step] of [[{ lang: 'tr' }, 'unsupported_language', 'language'], [{ login: true }, 'login', 'load'],
+    [{ challenge: 'captcha' }, 'challenge', 'load']]) {
+    const w = cleanupWorker({ setting: 'archive', page: name => name === 'chatPageState'
+      ? { onChat: true, trigger: true, lang: 'en', ...extra } : undefined });
+    await w.welcome(); await w.done(); await w.finish();
+    assert.equal(w.state().progress.error, code);
+    assert.deepEqual(w.state().progress.stop, { step, code });
+    assert.deepEqual(w.session.cleanupProgress.stop, { step, code });
+    assert.equal(w.calls('chat_cleanup_mark').length, 0);
+  }
+  // A manual start after a stopped run begins with a fresh progress object.
+  let language = 'tr';
+  const w = cleanupWorker({ chats: [cleanupChat()], page: name => name === 'chatPageState' && language === 'tr'
+    ? { onChat: true, trigger: true, lang: language } : undefined });
+  await w.welcome();
+  await w.send({ type: 'cleanup:start', action: 'archive' });
+  await w.finish();
+  assert.deepEqual(w.state().progress.stop, { step: 'language', code: 'unsupported_language' });
+  language = 'en';
+  await w.send({ type: 'cleanup:start', action: 'archive' });
+  await w.finish();
+  assert.equal(w.state().progress.stop, null);
+  assert.equal(w.state().progress.error, null);
+  assert.equal(w.state().progress.archived, 1);
+});
+
+test('chat cleanup: a run without a stop keeps stop null and zero gone', async () => {
+  const w = cleanupWorker({ setting: 'archive' });
+  await w.welcome(); await w.done(); await w.finish();
+  assert.equal(w.state().progress.stop, null);
+  assert.equal(w.state().progress.gone, 0);
+  assert.equal(w.session.cleanupProgress.stop, null);
+});
+
+test('chat cleanup: progress stored by an older build gains the gone counter and an empty stop', async () => {
+  const item = { ...cleanupChat(), action: 'archive', source: 'manual' };
+  const w = cleanupWorker({ session: { cleanupQueue: [item], cleanupProgress: {
+    running: true, action: 'archive', source: 'manual', total: 2, done: 1, archived: 1, deleted: 0,
+    alreadyArchived: 0, skipped: 0, failed: 0, consecutiveFailures: 0, error: null, startedAt: 123, finishedAt: null,
+  } } });
+  await w.welcome(); await w.finish();
+  assert.equal(w.state().progress.gone, 0);
+  assert.equal(w.state().progress.stop, null);
+  assert.equal(w.state().progress.archived, 2);
+});
+
+test('chat cleanup: logs carry only the id, step and code, and never page text, titles or links', async () => {
+  const w = cleanupWorker({ setting: 'archive', page: pagesByChat(['lost', 'gone', 'lost', 'lost', 'ok']) });
+  await w.welcome(); await w.done([0, 1, 2, 3, 4].map(cleanupChat)); await w.finish();
+  const logs = w.posted.filter(msg => msg.type === 'log' && /^chat cleanup/.test(msg.msg));
+  const ids = n => cleanupChat(n).id;
+  assert.deepEqual(logs.filter(l => l.msg === 'chat cleanup step failed').map(l => [l.level, plain(l.data)]), [
+    ['warn', { id: ids(0), step: 'load', code: 'wrong_page' }], ['warn', { id: ids(2), step: 'load', code: 'wrong_page' }],
+  ]);
+  assert.deepEqual(logs.filter(l => l.msg === 'chat cleanup stopped at a step').map(l => [l.level, plain(l.data)]), [
+    ['warn', { id: ids(3), step: 'load', code: 'wrong_page' }],
+  ]);
+  assert.deepEqual(logs.filter(l => l.msg === 'chat cleanup: chat already gone').map(l => [l.level, plain(l.data)]), [
+    ['info', { id: ids(1) }],
+  ]);
+  for (const entry of logs.filter(l => l.msg !== 'chat cleanup finished')) {
+    assert.deepEqual(Object.keys(entry.data).sort(), entry.msg.endsWith('gone') ? ['id'] : ['code', 'id', 'step']);
+  }
+  assert.doesNotMatch(JSON.stringify([w.posted, w.logs]), /token|cookie|Authorization|Private cleanup title|https:\/\/chatgpt\.com|access to this conversation/i);
+  // A gate stop is logged the same way.
+  const gate = cleanupWorker({ setting: 'archive', page: name => name === 'chatPageState'
+    ? { onChat: true, trigger: true, lang: 'tr' } : undefined });
+  await gate.welcome(); await gate.done(); await gate.finish();
+  assert.deepEqual(gate.posted.filter(msg => msg.type === 'log' && msg.msg === 'chat cleanup stopped at a step').map(msg => [msg.level, plain(msg.data)]), [
+    ['warn', { id: cleanupChat().id, step: 'language', code: 'unsupported_language' }],
+  ]);
+});
 
 const decode = b64 => JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
 

@@ -300,7 +300,7 @@ test('the host', async t => {
     const list = await call('gallery_list', { offset: 0, limit: 100 });
     assert.equal(list.total, 6); // the banner's two images, the void mage, the landscape and these two
     assert.deepEqual(list.items[0], {
-      jobId: job.id, n: 1, createdAt: done.createdAt, prompt: 'A gallery cat', conversationUrl: CHAT_URL, path: saved,
+      jobId: job.id, n: 1, createdAt: done.createdAt, prompt: 'A gallery cat', conversationUrl: CHAT_URL, chatState: null, path: saved,
       width: 900, height: 600, format: 'PNG', frames: null, durationMs: null, aspect: null, preview: true, missing: false,
     });
     assert.deepEqual(list.items.slice(4).map(x => [x.n, x.aspect, x.prompt]), [[1, '4:1', 'A wide banner'], [2, '4:1', 'A wide banner']]);
@@ -962,6 +962,7 @@ test('the host', async t => {
     sheetReply(job.id, 'jump-4x4');
     const second = (await nextFromHost('run')).job;
     assert.equal(second.id, job.id); assert.equal(second.text, first.text); assert.equal(second.startUrl, PROJECT.url);
+    assert.equal(fromHost.filter(m => m.type === 'chat_done' && m.jobId === job.id).length, 0);
     const refChunks = fromHost.filter(m => m.type === 'ref_chunk' && m.jobId === job.id);
     assert.equal(refChunks.length, 2); assert.equal(refChunks[0].data, refChunks[1].data);
     assert.match((await call('job', { jobId: job.id })).message, /Regenerating.*count:/);
@@ -973,6 +974,12 @@ test('the host', async t => {
     assert.equal(done.sprite.attempts.length, 2); assert.equal(done.sprite.chosen, 1);
     assert.match(done.sprite.regenerateReason, /count:/); assert.equal(done.images.length, 3);
     assert.equal(done.conversationUrl, secondUrl); assert.equal(done.images[0].gif.transparent, false);
+    const chatDone = await until(() => fromHost.find(m => m.type === 'chat_done' && m.jobId === job.id), 'sprite chat_done');
+    assert.deepEqual(Object.keys(chatDone).sort(), ['chats', 'jobId', 'type']);
+    assert.deepEqual(chatDone.chats, [
+      { id: '6812a3b4-1c2d-8000-9e8f-0123456789ab', url: CHAT_URL },
+      { id: '7812a3b4-1c2d-8000-9e8f-0123456789ab', url: secondUrl },
+    ]);
     assert.ok(fs.existsSync(done.sprite.attempts[1].transparentGif));
     assert.deepEqual(fs.readFileSync(done.images[1].path), sheetBytes('walk-4x2'));
     assert.deepEqual(fs.readFileSync(done.images[2].path), sheetBytes('jump-4x4'));
@@ -1106,6 +1113,71 @@ test('the host', async t => {
   });
 });
 
+test('cleanup reservations block referenced jobs, allow other chats and resume on mark, release or expiry', () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(ROOT, 'host.js'), 'utf8').split('// ---------------------------------------------------------------- start')[0];
+  const a = '6812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const b = '7812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const url = id => `https://chatgpt.com/c/${id}`;
+  for (const end of ['archived', 'deleted', 'gone', 'release', 'expiry']) {
+    let time = 100000;
+    const timers = [], immediates = [], messages = [];
+    class Clock extends Date { static now() { return time; } }
+    const context = { module: { exports: {} }, Buffer, Date: Clock,
+      process: { stdout: { write: frame => messages.push(JSON.parse(frame.subarray(4).toString('utf8'))) } },
+      require: name => {
+        if (name === './shared') return { LOG_DIR: DIR, readJson: (_file, fallback) => fallback, writeJson() {} };
+        if (name === 'fs') return { mkdirSync() {}, statSync: () => ({ size: 0 }), appendFileSync() {} };
+        if (name === 'net') return { createServer: () => ({}) };
+        return require(name.startsWith('.') ? path.join(ROOT, name) : name);
+      },
+      setTimeout: (callback, ms) => { const timer = { callback, ms, cleared: false }; timers.push(timer); return timer; },
+      clearTimeout: timer => { if (timer) timer.cleared = true; },
+      setImmediate: callback => immediates.push(callback),
+    };
+    vm.runInNewContext(source + '\nmodule.exports = { jobs, handlers, pump, finishJob, createJob, ' +
+      'connect: () => { extension = { version: "test" }; } };', context);
+    const api = context.module.exports;
+    api.connect();
+    api.jobs.push({ id: 'owner', mode: 'generate', startUrl: null, status: 'succeeded', conversationUrl: url(a), images: [{}] });
+    const check = reserve => api.handlers.chat_cleanup_check({ ids: [a], reserve });
+    check(false);
+    assert.equal(timers.length, 0);
+    api.handlers.chat_cleanup_check({ ids: [a, b], reserve: true });
+    assert.equal(timers.length, 0);
+    assert.deepEqual(Array.from(check(true).eligible), [a]);
+    const waiting = api.createJob({ prompt: 'Reserved chat', startUrl: url(a) });
+    assert.equal(waiting.status, 'queued');
+    assert.equal(messages.some(m => m.type === 'run'), false);
+    const other = api.createJob({ prompt: 'Another chat', startUrl: url(b) });
+    assert.equal(other.status, 'running');
+    assert.deepEqual(messages.filter(m => m.type === 'run').map(m => m.job.id), [other.id]);
+    api.finishJob(other, { status: 'failed' });
+    while (immediates.length) immediates.shift()();
+    assert.equal(waiting.status, 'queued');
+    if (end === 'release') api.handlers.chat_cleanup_release({ id: a.toUpperCase() });
+    else if (end === 'expiry') {
+      const timer = timers.find(timer => timer.ms === 180000 && !timer.cleared);
+      assert.ok(timer);
+      time += 180000;
+      timer.callback();
+    } else api.handlers.chat_cleanup_mark({ id: a, state: end });
+    while (immediates.length) immediates.shift()();
+    assert.equal(timers.filter(timer => timer.ms === 180000 && !timer.cleared).length, 0);
+    if (end === 'deleted' || end === 'gone') {
+      assert.equal(waiting.status, 'failed');
+      assert.equal(waiting.reason, end === 'gone' ? 'chat_gone' : 'chat_deleted');
+      assert.equal(waiting.error, end === 'gone'
+        ? 'This ChatGPT conversation no longer exists in ChatGPT. Start a new chat and pass the saved image in reference_images instead.'
+        : 'This ChatGPT conversation was deleted by Backdraw chat cleanup. Start a new chat and pass the saved image in reference_images instead.');
+      assert.equal(messages.some(m => m.type === 'run' && m.job.id === waiting.id), false);
+    } else {
+      assert.equal(waiting.status, 'running', end);
+      assert.equal(messages.filter(m => m.type === 'run' && m.job.id === waiting.id).length, 1);
+    }
+  }
+});
+
 test('sprite cancellation clears its fallback and previews, and stale callbacks cannot disturb another run', () => {
   const vm = require('node:vm');
   // Load the real handlers without starting a pipe or touching persistent files.
@@ -1196,4 +1268,356 @@ test('sprite cancellation clears its fallback and previews, and stale callbacks 
   watchdogTimer.callback();
   assert.equal(timeout.status, 'cancelled'); assert.equal(timeout.error, 'Cancelled.');
   assert.equal(api.running(), null); assert.equal(cancellationTimer.cleared, true);
+});
+
+test('chat cleanup host API and completion messages survive a restart', async t => {
+  const tag = `${TAG}-cleanup`;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${tag}-`));
+  const pipe = process.platform === 'win32' ? `\\\\.\\pipe\\${tag}` : path.join(os.tmpdir(), `${tag}.sock`);
+  const a = '9812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const b = 'a812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const c = 'c812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const unknown = 'b812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const url = id => `https://chatgpt.com/c/${id}`;
+  const messages = [], traffic = [];
+  let host, exit;
+  for (const f of ['host.js', 'shared.js', 'identity.js', 'package.json', 'lib', 'platform', 'extension/gifframes.js']) {
+    fs.cpSync(path.join(ROOT, f), path.join(dir, f), { recursive: true });
+  }
+  fs.mkdirSync(path.join(dir, 'data'));
+  fs.writeFileSync(path.join(dir, 'data', 'config.json'), JSON.stringify({
+    project: PROJECT, outputDir: path.join(dir, 'images'), collectionsDir: path.join(dir, 'refs'),
+  }));
+  const request = (method, params = {}) => new Promise((resolve, reject) => {
+    const sock = net.connect(pipe);
+    let buf = '';
+    sock.setEncoding('utf8');
+    sock.on('error', reject);
+    sock.on('connect', () => sock.write(JSON.stringify({ id: 1, method, params }) + '\n'));
+    sock.on('data', chunk => {
+      buf += chunk;
+      if (!buf.includes('\n')) return;
+      sock.destroy();
+      const reply = JSON.parse(buf.slice(0, buf.indexOf('\n')));
+      if (reply.error) reject(Object.assign(new Error(reply.error.message), { code: reply.error.code }));
+      else resolve(reply.result);
+    });
+  });
+  const send = msg => {
+    traffic.push(msg);
+    const body = Buffer.from(JSON.stringify(msg)), head = Buffer.alloc(4);
+    head.writeUInt32LE(body.length, 0);
+    host.stdin.write(Buffer.concat([head, body]));
+  };
+  const receive = predicate => until(() => {
+    const i = messages.findIndex(predicate);
+    return i >= 0 && messages.splice(i, 1)[0];
+  }, 'cleanup host message');
+  let seq = 0;
+  const extensionCall = async (method, params = {}) => {
+    const reqId = `cleanup-${++seq}`;
+    send({ type: 'call', reqId, method, params });
+    const reply = await receive(msg => msg.type === 'reply' && msg.reqId === reqId);
+    if (!reply.ok) throw Object.assign(new Error(reply.error), { code: reply.code });
+    return reply.result;
+  };
+  const start = async () => {
+    let buffer = Buffer.alloc(0);
+    host = spawn(process.execPath, [path.join(dir, 'host.js')], { cwd: dir,
+      env: { ...process.env, [identity.PIPE_ENV]: pipe }, stdio: ['pipe', 'pipe', 'ignore'] });
+    exit = new Promise(resolve => host.once('exit', resolve));
+    host.stdout.on('data', chunk => {
+      buffer = Buffer.concat([buffer, chunk]);
+      while (buffer.length >= 4 && buffer.length >= 4 + buffer.readUInt32LE(0)) {
+        const size = buffer.readUInt32LE(0);
+        const msg = JSON.parse(buffer.subarray(4, size + 4).toString('utf8'));
+        messages.push(msg); traffic.push(msg);
+        buffer = buffer.subarray(size + 4);
+      }
+    });
+    await until(asyncReady, 'cleanup host startup');
+    send({ type: 'hello', version: 'test' });
+    await receive(msg => msg.type === 'welcome');
+  };
+  let ready = false, checking = false;
+  const asyncReady = () => {
+    if (!checking && !ready) {
+      checking = true;
+      request('status').then(() => { ready = true; }, () => {}).finally(() => { checking = false; });
+    }
+    return ready;
+  };
+  const stop = async () => { host.stdin.end(); await exit; ready = false; };
+  const finish = async (job, conversationUrl, ok = true) => {
+    await receive(msg => msg.type === 'run' && msg.job.id === job.id);
+    send({ type: 'result', jobId: job.id, conversationUrl, ok, status: ok ? 'succeeded' : 'failed',
+      ...(ok ? { images: [{ data: b64(JPEG), mime: 'image/jpeg' }] } : { error: 'Test failure' }) });
+    let done;
+    await until(() => {
+      if (!checking) {
+        checking = true;
+        request('job', { jobId: job.id }).then(value => { done = value; }).finally(() => { checking = false; });
+      }
+      return done && !['queued', 'running'].includes(done.status) && done;
+    }, 'cleanup job completion');
+    return done;
+  };
+  try {
+    await start();
+    let owner, returning;
+    await t.test('success sends only the documented completion fields; failure and existing chats do not', async () => {
+      owner = await request('generate', { prompt: 'Cleanup image' });
+      assert.equal(owner.chatStates, null);
+      await finish(owner, url(a));
+      const msg = await receive(m => m.type === 'chat_done' && m.jobId === owner.id);
+      assert.deepEqual(Object.keys(msg).sort(), ['chats', 'jobId', 'type']);
+      assert.deepEqual(msg, { type: 'chat_done', jobId: owner.id, chats: [{ id: a, url: url(a) }] });
+      assert.deepEqual(Object.keys(msg.chats[0]).sort(), ['id', 'url']);
+      const failed = await request('generate', { prompt: 'Failed cleanup image' });
+      await finish(failed, url(b), false);
+      returning = await request('generate', { prompt: 'Existing cleanup chat', startUrl: url(a) });
+      await finish(returning, url(a));
+      await extensionCall('chat_cleanup_list');
+      assert.equal(traffic.filter(m => m.type === 'chat_done').length, 1);
+    });
+    await t.test('check validates ids and rechecks a queued start URL before marking', async () => {
+      for (const ids of [null, {}, Array(201).fill(a)]) {
+        await assert.rejects(extensionCall('chat_cleanup_check', { ids }), { code: 'BAD_REQUEST' });
+      }
+      assert.deepEqual(await extensionCall('chat_cleanup_check', { ids: [a.toUpperCase(), unknown, null, 1, 'short'] }), { eligible: [a] });
+      const blocker = await request('generate', { prompt: 'Queue blocker' });
+      await receive(m => m.type === 'run' && m.job.id === blocker.id);
+      const queued = await request('generate', { prompt: 'Queued cleanup reference', startUrl: url(a) });
+      assert.equal(queued.status, 'queued');
+      assert.deepEqual(await extensionCall('chat_cleanup_check', { ids: [a] }), { eligible: [] });
+      await request('cancel', { jobId: queued.id });
+      send({ type: 'result', jobId: blocker.id, ok: false, status: 'failed', error: 'Blocker complete' });
+      // A reply on the same stdio stream confirms the preceding result was handled.
+      await extensionCall('chat_cleanup_list');
+      assert.equal((await request('job', { jobId: blocker.id })).status, 'failed');
+      const recovered = await request('generate', { prompt: 'Cleanup reference recovery', startUrl: url(a) });
+      await finish(recovered, url(a));
+      assert.deepEqual(await extensionCall('chat_cleanup_check', { ids: [a] }), { eligible: [a] });
+    });
+    await t.test('mark validates ownership and state, copies state to every reference and persists it', async t => {
+      for (const id of [null, 'short', 12]) {
+        await assert.rejects(extensionCall('chat_cleanup_mark', { id, state: 'deleted' }), { code: 'BAD_REQUEST' });
+      }
+      await assert.rejects(extensionCall('chat_cleanup_mark', { id: unknown, state: 'deleted' }), {
+        code: 'BAD_REQUEST', message: 'Not a chat this bridge opened.',
+      });
+      await assert.rejects(extensionCall('chat_cleanup_mark', { id: a, state: 'invalid' }), { code: 'BAD_REQUEST' });
+      await extensionCall('chat_cleanup_mark', { id: a, state: 'failed', error: 'x'.repeat(250) });
+      await receive(m => m.type === 'gallery_changed');
+      const failed = (await request('job', { jobId: owner.id })).chatStates[a];
+      assert.equal(failed.error, 'not_confirmed');
+      await extensionCall('chat_cleanup_mark', { id: a, state: 'failed', error: 'Private title: free text' });
+      await receive(m => m.type === 'gallery_changed');
+      assert.equal((await request('job', { jobId: owner.id })).chatStates[a].error, 'not_confirmed');
+      assert.equal(failed.state, 'failed'); assert.ok(Number.isFinite(Date.parse(failed.at)));
+      assert.deepEqual(await extensionCall('chat_cleanup_check', { ids: [a] }), { eligible: [a] });
+      assert.deepEqual(await extensionCall('chat_cleanup_mark', { id: a.toUpperCase(), state: 'archived', error: 'Ignored' }), { id: a, state: 'archived' });
+      await receive(m => m.type === 'gallery_changed');
+      assert.equal((await request('job', { jobId: owner.id })).chatStates[a].error, null);
+      const archivedReturn = await request('generate', { prompt: 'Archived chat remains usable', startUrl: url(a) });
+      await finish(archivedReturn, url(a));
+      await assert.rejects(extensionCall('chat_cleanup_mark', { id: a, state: 'deleted' }), {
+        code: 'BAD_REQUEST', message: 'This chat is archived; the bridge does not delete archived chats.',
+      });
+      await t.test('archived chats reject failed marks without changing state or becoming eligible', async () => {
+        const archived = (await request('job', { jobId: owner.id })).chatStates[a];
+        const stored = fs.readFileSync(path.join(dir, 'data', 'jobs.json'), 'utf8');
+        await assert.rejects(extensionCall('chat_cleanup_mark', { id: a, state: 'failed', error: 'title_mismatch' }), {
+          code: 'BAD_REQUEST', message: 'This chat is archived; the bridge leaves archived chats as they are.',
+        });
+        assert.deepEqual((await request('job', { jobId: owner.id })).chatStates[a], archived);
+        assert.deepEqual(await extensionCall('chat_cleanup_check', { ids: [a], reserve: true }), { eligible: [] });
+        assert.equal(fs.readFileSync(path.join(dir, 'data', 'jobs.json'), 'utf8'), stored);
+        assert.equal((await extensionCall('chat_cleanup_list')).eligible.some(chat => chat.id === a), false);
+      });
+      const deleteOwner = await request('generate', { prompt: 'Separate cleanup chat' });
+      await finish(deleteOwner, url(c));
+      returning = await request('generate', { prompt: 'Separate cleanup reference', startUrl: url(c) });
+      await finish(returning, url(c));
+      await extensionCall('chat_cleanup_mark', { id: c, state: 'failed', error: 'title_mismatch' });
+      await receive(m => m.type === 'gallery_changed');
+      assert.equal((await request('job', { jobId: deleteOwner.id })).chatStates[c].error, 'title_mismatch');
+      assert.deepEqual(await extensionCall('chat_cleanup_mark', { id: c, state: 'deleted' }), { id: c, state: 'deleted' });
+      await receive(m => m.type === 'gallery_changed');
+      const stored = JSON.parse(fs.readFileSync(path.join(dir, 'data', 'jobs.json'), 'utf8'));
+      for (const job of stored.filter(j => j.startUrl === url(c) || j.conversationUrl === url(c))) {
+        assert.deepEqual(job.chatStates[c], stored.find(j => j.id === deleteOwner.id).chatStates[c]);
+      }
+      await stop(); await start();
+      const plan = await extensionCall('chat_cleanup_list');
+      assert.equal(plan.maxJobs, 100);
+      assert.deepEqual(plan.cleaned, { archived: 1, deleted: 1, gone: 0 });
+      assert.deepEqual(plan.eligible, []);
+      assert.equal((await request('job', { jobId: returning.id })).chatStates[c].state, 'deleted');
+    });
+    await t.test('deleted conversations reject new jobs without adding history', async () => {
+      const before = (await extensionCall('chat_cleanup_list')).jobsScanned;
+      await assert.rejects(request('generate', { prompt: 'Deleted chat', startUrl: url(c) }), {
+        code: 'CHAT_DELETED',
+        message: 'This ChatGPT conversation was deleted by Backdraw chat cleanup. Start a new chat and pass the saved image in reference_images instead.',
+      });
+      assert.equal((await extensionCall('chat_cleanup_list')).jobsScanned, before);
+    });
+    await t.test('gone conversations are final: marks are refused, new jobs are rejected and queued jobs fail', async () => {
+      const goneMessage = 'This ChatGPT conversation no longer exists in ChatGPT. Start a new chat and pass the saved image in reference_images instead.';
+      // A queued job that references the chat before ChatGPT is found to have lost it.
+      const blocker = await request('generate', { prompt: 'Gone blocker' });
+      await receive(m => m.type === 'run' && m.job.id === blocker.id);
+      const queued = await request('generate', { prompt: 'Queued before gone', startUrl: url(b) });
+      assert.equal(queued.status, 'queued');
+      assert.deepEqual(await extensionCall('chat_cleanup_mark', { id: b, state: 'gone', error: 'Private title: free text' }), { id: b, state: 'gone' });
+      await receive(m => m.type === 'gallery_changed');
+      const lost = await request('job', { jobId: queued.id });
+      assert.equal(lost.chatStates[b].state, 'gone');
+      assert.equal(lost.chatStates[b].error, null);
+      send({ type: 'result', jobId: blocker.id, ok: false, status: 'failed', error: 'Blocker complete' });
+      let failedQueued;
+      for (let i = 0; i < 100 && failedQueued?.status !== 'failed'; i++) {
+        if (i) await sleep(20);
+        failedQueued = await request('job', { jobId: queued.id });
+      }
+      assert.equal(failedQueued.reason, 'chat_gone');
+      assert.equal(failedQueued.error, goneMessage);
+      assert.equal(traffic.some(m => m.type === 'run' && m.job.id === queued.id), false);
+      // Final: no later mark, no new job, no cleanup list entry.
+      for (const state of ['archived', 'deleted', 'failed', 'gone']) {
+        await assert.rejects(extensionCall('chat_cleanup_mark', { id: b, state }), { code: 'BAD_REQUEST', message: 'This chat is already gone from ChatGPT.' });
+      }
+      const before = (await extensionCall('chat_cleanup_list')).jobsScanned;
+      await assert.rejects(request('generate', { prompt: 'Gone chat', startUrl: url(b) }), { code: 'CHAT_GONE', message: goneMessage });
+      const plan = await extensionCall('chat_cleanup_list');
+      assert.equal(plan.jobsScanned, before);
+      assert.deepEqual(plan.cleaned, { archived: 1, deleted: 1, gone: 1 });
+      assert.deepEqual(await extensionCall('chat_cleanup_check', { ids: [b], action: 'delete' }), { eligible: [] });
+    });
+    await t.test('cleanup traffic and scratch host logs contain no session secrets', () => {
+      const forbidden = /\x74oken|\x63ookie|\x41uthorization/i;
+      assert.doesNotMatch(JSON.stringify(traffic), forbidden);
+      const log = fs.readFileSync(path.join(dir, 'logs', 'host.log'), 'utf8');
+      assert.doesNotMatch(log, forbidden);
+      const marks = log.split('\n').filter(line => line.includes(`chat ${a} `) || line.includes(`chat ${c} `));
+      assert.equal(marks.length, 5); // Three marks on the archived chat and two on the separate deleted chat.
+      for (const line of marks) assert.match(line, new RegExp(`\\[info\\] chat (${a}|${c}) (failed|archived|deleted)$`));
+    });
+  } finally {
+    if (host && host.exitCode === null) await stop();
+    assert.equal(path.dirname(path.resolve(dir)), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(dir).startsWith(`${tag}-`));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cleanup check ignores the action, never reserves archived chats and deleted chats are final', () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(ROOT, 'host.js'), 'utf8').split('// ---------------------------------------------------------------- start')[0];
+  const a = '6812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const b = '7812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const url = id => `https://chatgpt.com/c/${id}`;
+  const timers = [];
+  const context = { module: { exports: {} }, Buffer, Date,
+    process: { stdout: { write() {} } },
+    require: name => {
+      if (name === './shared') {
+        class BridgeError extends Error { constructor(message, code) { super(message); this.code = code; } }
+        return { LOG_DIR: DIR, readJson: (_file, fallback) => fallback, writeJson() {}, BridgeError };
+      }
+      if (name === 'fs') return { mkdirSync() {}, statSync: () => ({ size: 0 }), appendFileSync() {} };
+      if (name === 'net') return { createServer: () => ({}) };
+      return require(name.startsWith('.') ? path.join(ROOT, name) : name);
+    },
+    setTimeout: (callback, ms) => { const timer = { callback, ms }; timers.push(timer); return timer; },
+    clearTimeout() {}, setImmediate() {},
+  };
+  vm.runInNewContext(source + '\nmodule.exports = { jobs, handlers, cleanupReservations, connect: () => { extension = { version: "test" }; } };', context);
+  const api = context.module.exports;
+  api.connect();
+  api.jobs.push({ id: 'one', mode: 'generate', startUrl: null, status: 'succeeded', conversationUrl: url(a), images: [{}] });
+  api.jobs.push({ id: 'two', mode: 'generate', startUrl: null, status: 'succeeded', conversationUrl: url(b), images: [{}] });
+  const check = (action, extra = {}) => api.handlers.chat_cleanup_check({ ids: [a, b], ...(action ? { action } : {}), ...extra }).eligible;
+  assert.deepEqual(check(), [a, b]);
+  assert.deepEqual(check('delete'), [a, b]);
+  api.handlers.chat_cleanup_mark({ id: a, state: 'archived' });
+  assert.deepEqual(check(), [b]);
+  assert.deepEqual(check('archive'), [b]);
+  assert.deepEqual(check('delete'), [b]);
+  const list = api.handlers.chat_cleanup_list();
+  assert.deepEqual(list.eligible.map(chat => chat.id), [b]);
+  assert.equal(Object.hasOwn(list, 'deletable'), false);
+  assert.equal(check('delete', { ids: [a], reserve: true }).length, 0);
+  assert.equal(api.cleanupReservations.has(a), false);
+  assert.throws(() => api.handlers.chat_cleanup_mark({ id: a, state: 'deleted' }), {
+    code: 'BAD_REQUEST', message: 'This chat is archived; the bridge does not delete archived chats.',
+  });
+  assert.equal(api.jobs[0].chatStates[a].state, 'archived');
+  assert.equal(api.handlers.chat_cleanup_mark({ id: a, state: 'archived' }).state, 'archived');
+  const archived = { ...api.jobs[0].chatStates[a] };
+  assert.throws(() => api.handlers.chat_cleanup_mark({ id: a, state: 'failed' }), {
+    code: 'BAD_REQUEST', message: 'This chat is archived; the bridge leaves archived chats as they are.',
+  });
+  assert.deepEqual({ ...api.jobs[0].chatStates[a] }, archived);
+  assert.deepEqual(check('delete'), [b]);
+  assert.equal(check('delete', { ids: [a], reserve: true }).length, 0);
+  assert.equal(api.cleanupReservations.has(a), false);
+  const c = '8812a3b4-1c2d-8000-9e8f-0123456789ab';
+  api.jobs.push({ id: 'three', mode: 'generate', startUrl: null, status: 'succeeded', conversationUrl: url(c), images: [{}] });
+  api.handlers.chat_cleanup_mark({ id: c, state: 'failed' });
+  const marked = api.handlers.chat_cleanup_mark({ id: c, state: 'deleted' });
+  assert.deepEqual({ id: marked.id, state: marked.state }, { id: c, state: 'deleted' });
+  assert.throws(() => api.handlers.chat_cleanup_mark({ id: c, state: 'archived' }), { code: 'BAD_REQUEST', message: 'This chat was already deleted.' });
+  assert.throws(() => api.handlers.chat_cleanup_mark({ id: c, state: 'failed' }), { code: 'BAD_REQUEST' });
+  assert.deepEqual(check('delete'), [b]);
+  assert.deepEqual(check('archive'), [b]);
+  const after = api.handlers.chat_cleanup_list();
+  assert.equal(Object.hasOwn(after, 'deletable'), false);
+  assert.deepEqual(after.eligible.map(chat => chat.id), [b]);
+  assert.deepEqual(after.cleaned, { archived: 1, deleted: 1, gone: 0 });
+});
+
+test('a chat found gone leaves every cleanup list, takes archived to gone and is final', () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(ROOT, 'host.js'), 'utf8').split('// ---------------------------------------------------------------- start')[0];
+  const a = '6812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const b = '7812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const url = id => `https://chatgpt.com/c/${id}`;
+  const context = { module: { exports: {} }, Buffer, Date,
+    process: { stdout: { write() {} } },
+    require: name => {
+      if (name === './shared') {
+        class BridgeError extends Error { constructor(message, code) { super(message); this.code = code; } }
+        return { LOG_DIR: DIR, readJson: (_file, fallback) => fallback, writeJson() {}, BridgeError };
+      }
+      if (name === 'fs') return { mkdirSync() {}, statSync: () => ({ size: 0 }), appendFileSync() {} };
+      if (name === 'net') return { createServer: () => ({}) };
+      return require(name.startsWith('.') ? path.join(ROOT, name) : name);
+    },
+    setTimeout: (callback, ms) => ({ callback, ms }), clearTimeout() {}, setImmediate() {},
+  };
+  vm.runInNewContext(source + '\nmodule.exports = { jobs, handlers, createJob, connect: () => { extension = { version: "test" }; } };', context);
+  const api = context.module.exports;
+  api.connect();
+  api.jobs.push({ id: 'one', mode: 'generate', startUrl: null, status: 'succeeded', conversationUrl: url(a), images: [{}] });
+  api.jobs.push({ id: 'two', mode: 'generate', startUrl: null, status: 'succeeded', conversationUrl: url(b), images: [{}] });
+  api.handlers.chat_cleanup_mark({ id: a, state: 'archived' });
+  const marked = api.handlers.chat_cleanup_mark({ id: a, state: 'gone', error: 'not_confirmed' });
+  assert.deepEqual({ id: marked.id, state: marked.state }, { id: a, state: 'gone' });
+  assert.equal(api.jobs[0].chatStates[a].state, 'gone');
+  assert.equal(api.jobs[0].chatStates[a].error, null);
+  for (const state of ['archived', 'deleted', 'failed', 'gone']) {
+    assert.throws(() => api.handlers.chat_cleanup_mark({ id: a, state }), { code: 'BAD_REQUEST', message: 'This chat is already gone from ChatGPT.' });
+  }
+  assert.deepEqual(Array.from(api.handlers.chat_cleanup_check({ ids: [a, b], action: 'delete' }).eligible), [b]);
+  assert.deepEqual(Array.from(api.handlers.chat_cleanup_check({ ids: [a, b], action: 'archive' }).eligible), [b]);
+  const list = api.handlers.chat_cleanup_list();
+  assert.deepEqual(list.eligible.map(chat => chat.id), [b]);
+  assert.equal(Object.hasOwn(list, 'deletable'), false);
+  assert.deepEqual(list.cleaned, { archived: 0, deleted: 0, gone: 1 });
+  assert.throws(() => api.createJob({ prompt: 'Gone chat', startUrl: url(a) }), {
+    code: 'CHAT_GONE',
+    message: 'This ChatGPT conversation no longer exists in ChatGPT. Start a new chat and pass the saved image in reference_images instead.',
+  });
 });

@@ -204,8 +204,9 @@ test('popup: the gallery button only with a side panel, opened straight from the
 test('nothing reads cookies, tokens or the session endpoint', () => {
   const manifest = JSON.parse(read('manifest.json'));
   assert.ok(!manifest.permissions.includes('cookies'));
-  for (const f of ['background.js', 'collections.js', 'popup.js', 'setup.js', 'settings.js', 'inpage.js']) {
+  for (const f of ['background.js', 'collections.js', 'popup.js', 'setup.js', 'settings.js', 'chat-cleanup-ui.js', 'inpage.js']) {
     assert.doesNotMatch(read(f), /chrome\.cookies|document\.cookie|\/api\/auth\/session|accessToken/, f);
+    assert.doesNotMatch(read(f), /Authorization|\/backend-api\/conversation/, f);
   }
 });
 
