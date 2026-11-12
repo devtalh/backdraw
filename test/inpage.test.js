@@ -169,6 +169,132 @@ function element(text, options = {}) {
   return { className: '', childElementCount: 0, closest() { return null; }, matches() { return false; }, textContent: text, innerText: text, ...options };
 }
 
+const CHAT_ID = '12345678-abcd-1234-abcd-123456789abc';
+
+// A small tree for cleanup selectors. Unknown selectors match nothing, like an absent composer.
+function cleanupElement(tag, text = '', attrs = {}, children = []) {
+  const node = element(text, {
+    tagName: tag.toUpperCase(), attrs, children, clicks: 0, events: [],
+    getAttribute(name) { return this.attrs[name] ?? null; },
+    getBoundingClientRect() { return { width: this.hidden ? 0 : 100, height: 30 }; },
+    dispatchEvent(event) { this.events.push(event); },
+    click() { this.clicks++; },
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
+    querySelectorAll(selector) {
+      const all = this.children.flatMap(child => [child, ...child.querySelectorAll('*')]);
+      if (selector === '*') return all;
+      return all.filter(child => selector.split(',').some(part => {
+        const sel = part.trim();
+        if (sel === 'header button[aria-haspopup="menu"]') {
+          return child.tagName === 'BUTTON' && child.attrs['aria-haspopup'] === 'menu' && child.inHeader;
+        }
+        const match = sel.match(/^([a-z][a-z0-9]*)?(?:\[([\w-]+)="([^"]*)"\])?$/i);
+        return !!match && (!match[1] || child.tagName === match[1].toUpperCase()) &&
+          (!match[2] || child.attrs[match[2]] === match[3]);
+      }));
+    },
+  });
+  if (tag === 'header') {
+    const mark = el => { el.inHeader = true; el.children.forEach(mark); };
+    children.forEach(mark);
+  }
+  return node;
+}
+
+function loadCleanupPage({ path = `/c/${CHAT_ID}`, hostname = 'chatgpt.com', lang = 'en-US', title = 'Example chat', children = [] } = {}) {
+  const document = cleanupElement('document', '', {}, children);
+  Object.assign(document, { title, documentElement: { lang }, body: cleanupElement('body'),
+    getElementById(id) { return this.querySelectorAll('*').find(el => el.attrs.id === id) || null; } });
+  const sandbox = { document, location: { hostname, pathname: path },
+    PointerEvent: class { constructor(type, init) { Object.assign(this, { type }, init); } },
+    KeyboardEvent: class { constructor(type, init) { Object.assign(this, { type }, init); } } };
+  vm.runInNewContext(source, sandbox, { filename: 'inpage.js' });
+  return { page: sandbox.__cgb, document };
+}
+
+test('chatPageState accepts only exact conversation UUID paths and reports language', () => {
+  for (const path of [`/c/${CHAT_ID}`, `/g/g-p-abc123/c/${CHAT_ID}/`, `/g/g-p-abc123-my-project/c/${CHAT_ID.toUpperCase()}`]) {
+    const { page } = loadCleanupPage({ path, lang: 'en-GB' });
+    assert.equal(page.chatPageState(CHAT_ID).onChat, true, path);
+    assert.equal(page.chatPageState(CHAT_ID).lang, 'en-GB');
+  }
+  for (const path of [`/c/${CHAT_ID.replace(/^1/, '2')}`, `/c/0${CHAT_ID}`, `/c/${CHAT_ID}0`, `/share/${CHAT_ID}`]) {
+    assert.equal(loadCleanupPage({ path }).page.chatPageState(CHAT_ID).onChat, false, path);
+  }
+  assert.equal(loadCleanupPage({ hostname: 'example.com' }).page.chatPageState(CHAT_ID).onChat, false);
+});
+
+test('openChatMenu selects the header title, excludes the model switcher and rejects ambiguity', () => {
+  const model = cleanupElement('button', 'Example chat', { 'aria-haspopup': 'menu', 'data-testid': 'model-switcher-dropdown-button' });
+  const title = cleanupElement('button', ' Example  chat ', { 'aria-haspopup': 'menu' });
+  const other = cleanupElement('button', 'Other menu', { 'aria-haspopup': 'menu' });
+  const header = cleanupElement('header', '', {}, [model, title, other]);
+  const { page } = loadCleanupPage({ children: [header] });
+  assert.equal(page.openChatMenu(CHAT_ID).ok, true);
+  assert.equal(title.clicks, 1);
+  assert.equal(model.clicks + other.clicks, 0);
+  assert.equal(page.chatPageState(CHAT_ID).title, 'Example chat');
+  assert.equal(page.openChatMenu('other').error, 'wrong_page');
+  const ambiguous = loadCleanupPage({ title: 'Unknown', children: [header] });
+  assert.equal(ambiguous.page.openChatMenu(CHAT_ID).error, 'menu_trigger_not_found');
+  assert.equal(title.clicks, 1);
+  assert.equal(other.clicks, 0);
+});
+
+test('chat menu clicks use exact labels inside visible menus only', () => {
+  const outside = cleanupElement('div', 'Archive', { role: 'menuitem' });
+  const unarchive = cleanupElement('div', 'Unarchive', { role: 'menuitem' });
+  const menu = cleanupElement('div', '', { role: 'menu' }, [unarchive]);
+  const { page, document } = loadCleanupPage({ children: [outside, menu] });
+  assert.equal(page.clickChatMenuItem('Archive').error, 'item_not_found');
+  assert.equal(outside.clicks + unarchive.clicks, 0);
+  const archive = cleanupElement('div', '  ARCHIVE  ', { role: 'menuitem' });
+  menu.children.push(archive);
+  assert.equal(page.clickChatMenuItem('Archive').clicked, true);
+  assert.equal(archive.clicks, 1);
+  menu.children.push(cleanupElement('div', 'Archive', { role: 'menuitem' }));
+  assert.equal(page.clickChatMenuItem('Archive').error, 'item_ambiguous');
+  menu.hidden = true;
+  assert.equal(page.chatMenuItems().length, 0);
+  page.closeChatMenu();
+  assert.equal(document.body.events[0].key, 'Escape');
+});
+
+test('delete confirmation validates the exact title and cancels missing or ambiguous confirmations', () => {
+  for (const apostrophe of ["'", '’']) {
+    const cancel = cleanupElement('button', 'Cancel');
+    const confirm = cleanupElement('button', 'Delete chat');
+    const heading = cleanupElement('h2', 'Delete chat?');
+    const dialog = cleanupElement('div', `Delete chat?\nThis will permanently delete Example chat. This can${apostrophe}t be undone.`,
+      { role: 'dialog' }, [heading, cancel, confirm]);
+    const { page } = loadCleanupPage({ children: [dialog] });
+    assert.equal(page.deleteDialogState().title, 'Example chat');
+    assert.equal(page.confirmDeleteChat('Other chat').error, 'title_mismatch');
+    assert.equal(cancel.clicks, 1);
+    assert.equal(confirm.clicks, 0);
+    assert.equal(page.confirmDeleteChat(' example   CHAT ').ok, true);
+    assert.equal(confirm.clicks, 1);
+    dialog.children.push(cleanupElement('button', 'Delete chat'));
+    assert.equal(page.confirmDeleteChat('Example chat').error, 'confirm_button_not_found');
+    assert.equal(cancel.clicks, 2);
+    dialog.innerText = 'Delete chat?';
+    assert.equal(page.confirmDeleteChat('Example chat').error, 'title_mismatch');
+    assert.equal(confirm.clicks, 1);
+  }
+});
+
+test('delete dialog requires one exact heading, including aria-labelledby or the first line', () => {
+  for (const kind of ['labelled', 'first-line']) {
+    const label = cleanupElement('span', 'Delete chat?', { id: 'dialog-title' });
+    const dialog = cleanupElement('div', kind === 'first-line' ? 'Delete chat?\nBody' : 'Body',
+      { role: 'dialog', ...(kind === 'labelled' ? { 'aria-labelledby': 'dialog-title' } : {}) });
+    const { page, document } = loadCleanupPage({ children: [label, dialog] });
+    assert.equal(page.deleteDialogState().found, true);
+    document.children.push(cleanupElement('div', 'Delete chat?\nBody', { role: 'dialog' }));
+    assert.equal(page.confirmDeleteChat('Example chat').error, 'dialog_not_found');
+  }
+});
+
 test('inpage loads without accessing the DOM or location', () => {
   const page = loadPage();
   assert.equal(page.version, '2.0.0');

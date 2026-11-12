@@ -591,6 +591,92 @@
     return { clicked: true };
   }
 
+  // ------------------------------------------------------------ chat cleanup
+
+  const CHAT_PATH = /^\/(?:g\/g-p-[0-9a-f]+(?:-[a-z0-9-]+)?\/)?c\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i;
+  const sameLabel = (a, b) => squash(a).toLowerCase() === squash(b).toLowerCase();
+
+  function chatTrigger() {
+    const buttons = $$('header button[aria-haspopup="menu"]').filter(shown)
+      .filter(b => !(b.getAttribute('data-testid') || '').includes('model-switcher') && squash(b.innerText));
+    const matching = buttons.filter(b => sameLabel(b.innerText, document.title));
+    const candidates = matching.length ? matching : buttons;
+    return candidates.length === 1 ? candidates[0] : null;
+  }
+
+  function chatPageState(id) {
+    const trigger = chatTrigger();
+    return {
+      onChat: location.hostname === 'chatgpt.com' && location.pathname.match(CHAT_PATH)?.[1].toLowerCase() === String(id).toLowerCase(),
+      lang: document.documentElement.lang || '', title: trigger ? squash(trigger.innerText) : null,
+      trigger: !!trigger, login: loginWall(), challenge: challenge(!!editor()),
+      menuOpen: $$('[role="menu"]').some(shown),
+    };
+  }
+
+  function openChatMenu(id) {
+    if (!chatPageState(id).onChat) return { ok: false, error: 'wrong_page' };
+    const trigger = chatTrigger();
+    if (!trigger) return { ok: false, error: 'menu_trigger_not_found' };
+    const title = squash(trigger.innerText);
+    press(trigger);
+    return { ok: true, title };
+  }
+
+  function chatMenuElements() {
+    return [...new Set($$('[role="menu"]').filter(shown).flatMap(menu => $$('[role="menuitem"]', menu).filter(shown)))];
+  }
+
+  function chatMenuItems() { return chatMenuElements().map(el => squash(el.innerText)); }
+
+  function clickChatMenuItem(label) {
+    const items = chatMenuElements().filter(el => sameLabel(el.innerText, label));
+    if (items.length !== 1) return { clicked: false, error: items.length ? 'item_ambiguous' : 'item_not_found' };
+    press(items[0]);
+    return { clicked: true };
+  }
+
+  function closeChatMenu() {
+    (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+    return { ok: true };
+  }
+
+  function deleteDialog() {
+    const dialogs = $$('[role="dialog"]').filter(shown).filter(dialog => {
+      const headings = $$('h1, h2, h3, h4, h5, h6, [role="heading"]', dialog);
+      const labelled = (dialog.getAttribute('aria-labelledby') || '').split(/\s+/)
+        .map(id => document.getElementById(id)).filter(Boolean);
+      return [...headings, ...labelled].some(el => sameLabel(el.innerText, 'Delete chat?')) ||
+        sameLabel((dialog.innerText || '').split('\n')[0], 'Delete chat?');
+    });
+    return dialogs.length === 1 ? dialogs[0] : null;
+  }
+
+  function deleteDialogState() {
+    const dialog = deleteDialog();
+    const match = dialog && squash(dialog.innerText).match(/This will permanently delete (.+?)\.\s*This can['’]t be undone/i);
+    return { found: !!dialog, title: match ? match[1] : null };
+  }
+
+  function confirmDeleteChat(expectedTitle) {
+    const state = deleteDialogState();
+    const dialog = deleteDialog();
+    if (!state.found || !dialog) return { ok: false, error: 'dialog_not_found' };
+    const buttons = $$('button', dialog).filter(shown);
+    const cancel = () => {
+      const matches = buttons.filter(b => sameLabel(b.innerText, 'Cancel'));
+      if (matches.length === 1) press(matches[0]);
+    };
+    if (state.title === null || !sameLabel(state.title, expectedTitle)) {
+      cancel();
+      return { ok: false, error: 'title_mismatch' };
+    }
+    const matches = buttons.filter(b => sameLabel(b.innerText, 'Delete chat'));
+    if (matches.length !== 1) { cancel(); return { ok: false, error: 'confirm_button_not_found' }; }
+    press(matches[0]);
+    return { ok: true };
+  }
+
   // ------------------------------------------------------------ image bytes
 
   async function blobToResult(blob, via) {
@@ -664,5 +750,6 @@
     version: VERSION, probe, composerState, clearComposer, setPrompt, clickSend, pressEnter, clickStop,
     dismissDialogs, listProjects, openProject, sidebar, clickLabel, fetchImage, snapshot, counts,
     attachFiles, attachmentState, removeAttachments, latestEarlierImage, signature, similarity, compareSignatures, editCheck, replyText, busyIn,
+    chatPageState, openChatMenu, chatMenuItems, clickChatMenuItem, closeChatMenu, deleteDialogState, confirmDeleteChat,
   };
 })();

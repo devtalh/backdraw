@@ -206,6 +206,7 @@ test('nothing reads cookies, tokens or the session endpoint', () => {
   assert.ok(!manifest.permissions.includes('cookies'));
   for (const f of ['background.js', 'collections.js', 'popup.js', 'setup.js', 'settings.js', 'inpage.js']) {
     assert.doesNotMatch(read(f), /chrome\.cookies|document\.cookie|\/api\/auth\/session|accessToken/, f);
+    assert.doesNotMatch(read(f), /Authorization|\/backend-api\/conversation/, f);
   }
 });
 
