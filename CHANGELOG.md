@@ -5,20 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.4.0] - 2026-11-12
 
 ### Added
 
-- Popup chat cleanup setting (Keep/Archive/Delete, default Keep) and **Clean up now**. Only chats
-  of successful jobs in Backdraw's own records are eligible, using the chat menu in ChatGPT's
-  English interface without reading session credentials. Chats that are already archived are skipped, and a chat whose menu does not appear is retried once after a reload.
+- **Chat cleanup in the popup.** The **After a job: ChatGPT chat** setting offers **Keep** (the
+  default), **Archive** and **Delete**, and **Clean up now** archives or deletes the eligible
+  chats together, with a separate confirmation before deleting. Only chats Backdraw opened for
+  jobs that succeeded with saved images are cleaned. Archived chats are never deleted: both
+  Archive and Delete skip them, including chats Backdraw archived earlier (delete them in ChatGPT
+  under Settings > Archived chats). Backdraw only knows the chats of its last 100 jobs. Cleanup
+  uses the chat menu of ChatGPT's English interface (in another language it stops before changing
+  a chat) and reads no session credentials. Images stay in the ChatGPT Library and on the
+  computer, and the gallery marks archived chats and disables links to deleted ones. (#21)
 
 ### Fixed
 
-- `generate_sprite` with `output_dir` now copies the complete sprite export, including frames,
-  atlas, manifest and contact preview. Result and gallery paths point to the copied export.
+- `generate_sprite` with `output_dir` now copies the complete export of each successful attempt into
+  its own subfolder (GIFs, sheet, atlas, frames, manifest and contact preview). Result and gallery
+  paths point to the copies. (#20)
 - Edit checks now detect color changes and small visible regions separately from structural
-  similarity, and distinguish unchanged re-encoded images from visible edits.
+  similarity, and tell an unchanged re-encoded image apart from a visible edit. (#20)
 
 ## [2.3.0] - 2026-11-10
 
