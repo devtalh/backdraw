@@ -1458,3 +1458,53 @@ test('chat cleanup host API and completion messages survive a restart', async t 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('cleanup check honors the action, archived chats are deletable and deleted chats are final', () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(ROOT, 'host.js'), 'utf8').split('// ---------------------------------------------------------------- start')[0];
+  const a = '6812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const b = '7812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const url = id => `https://chatgpt.com/c/${id}`;
+  const timers = [];
+  const context = { module: { exports: {} }, Buffer, Date,
+    process: { stdout: { write() {} } },
+    require: name => {
+      if (name === './shared') {
+        class BridgeError extends Error { constructor(message, code) { super(message); this.code = code; } }
+        return { LOG_DIR: DIR, readJson: (_file, fallback) => fallback, writeJson() {}, BridgeError };
+      }
+      if (name === 'fs') return { mkdirSync() {}, statSync: () => ({ size: 0 }), appendFileSync() {} };
+      if (name === 'net') return { createServer: () => ({}) };
+      return require(name.startsWith('.') ? path.join(ROOT, name) : name);
+    },
+    setTimeout: (callback, ms) => { const timer = { callback, ms }; timers.push(timer); return timer; },
+    clearTimeout() {}, setImmediate() {},
+  };
+  vm.runInNewContext(source + '\nmodule.exports = { jobs, handlers, connect: () => { extension = { version: "test" }; } };', context);
+  const api = context.module.exports;
+  api.connect();
+  api.jobs.push({ id: 'one', mode: 'generate', startUrl: null, status: 'succeeded', conversationUrl: url(a), images: [{}] });
+  api.jobs.push({ id: 'two', mode: 'generate', startUrl: null, status: 'succeeded', conversationUrl: url(b), images: [{}] });
+  const check = (action, extra = {}) => api.handlers.chat_cleanup_check({ ids: [a, b], ...(action ? { action } : {}), ...extra }).eligible;
+  assert.deepEqual(check(), [a, b]);
+  assert.deepEqual(check('delete'), [a, b]);
+  api.handlers.chat_cleanup_mark({ id: a, state: 'archived' });
+  assert.deepEqual(check(), [b]);
+  assert.deepEqual(check('archive'), [b]);
+  assert.deepEqual(check('delete'), [a, b]);
+  const list = api.handlers.chat_cleanup_list();
+  assert.deepEqual(list.eligible.map(chat => chat.id), [b]);
+  assert.deepEqual(list.deletable.map(chat => [chat.id, !!chat.archived]), [[a, true], [b, false]]);
+  // A delete check reserves the archived chat like any other.
+  assert.equal(check('delete', { ids: [a], reserve: true }).length, 1);
+  const marked = api.handlers.chat_cleanup_mark({ id: a, state: 'deleted' });
+  assert.deepEqual({ id: marked.id, state: marked.state }, { id: a, state: 'deleted' });
+  assert.throws(() => api.handlers.chat_cleanup_mark({ id: a, state: 'archived' }), { code: 'BAD_REQUEST', message: 'This chat was already deleted.' });
+  assert.throws(() => api.handlers.chat_cleanup_mark({ id: a, state: 'failed' }), { code: 'BAD_REQUEST' });
+  assert.deepEqual(check('delete'), [b]);
+  assert.deepEqual(check('archive'), [b]);
+  const after = api.handlers.chat_cleanup_list();
+  assert.deepEqual(after.deletable.map(chat => chat.id), [b]);
+  assert.deepEqual(after.eligible.map(chat => chat.id), [b]);
+  assert.deepEqual(after.cleaned, { archived: 0, deleted: 1 });
+});

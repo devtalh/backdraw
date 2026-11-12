@@ -35,7 +35,7 @@ test('only recorded generate chats opened by the bridge are owned', () => {
   const local = make('local', { mode: 'animate', startUrl: null, conversationUrl: null });
   for (const job of [userChat, collect, local]) assert.deepEqual([...ownedChatIds(job)], []);
   const plan = cleanupPlan([userChat, collect, local]);
-  assert.deepEqual(plan, { eligible: [], kept: { not_created: 2 }, keptTotal: 2,
+  assert.deepEqual(plan, { eligible: [], deletable: [], kept: { not_created: 2 }, keptTotal: 2,
     cleaned: { archived: 0, deleted: 0 }, jobsScanned: 3 });
   assert.ok(!JSON.stringify(plan).includes(C));
   assert.deepEqual([...referencedChatIds(userChat)], [A]);
@@ -153,6 +153,38 @@ test('eligibleForJob returns only the chats owned by that job', () => {
 test('old history and invalid origins add no chats or errors', () => {
   const jobs = [{ id: 'old' }, make('foreign', { conversationUrl: url(A).replace('chatgpt.com', 'evil.com') }),
     make('bad', { conversationUrl: 'invalid', sprite: { attempts: [null, {}, { conversationUrl: url(B).replace('https:', 'http:') }] } })];
-  assert.deepEqual(cleanupPlan(jobs), { eligible: [], kept: {}, keptTotal: 0, cleaned: { archived: 0, deleted: 0 }, jobsScanned: 3 });
-  assert.deepEqual(cleanupPlan([]), { eligible: [], kept: {}, keptTotal: 0, cleaned: { archived: 0, deleted: 0 }, jobsScanned: 0 });
+  assert.deepEqual(cleanupPlan(jobs), { eligible: [], deletable: [], kept: {}, keptTotal: 0, cleaned: { archived: 0, deleted: 0 }, jobsScanned: 3 });
+  assert.deepEqual(cleanupPlan([]), { eligible: [], deletable: [], kept: {}, keptTotal: 0, cleaned: { archived: 0, deleted: 0 }, jobsScanned: 0 });
+});
+
+test('archived chats that pass the rules are deletable but not archivable; deleted chats are in no list', () => {
+  const archived = { state: 'archived', at: '2026-11-12T10:00:00.000Z' };
+  const jobs = [make('open'), make('closed', { conversationUrl: url(B), chatStates: { [B]: archived } }),
+    make('gone', { conversationUrl: url(C), chatStates: { [C]: { state: 'deleted', at: '2026-11-12T10:00:00.000Z' } } })];
+  const plan = cleanupPlan(jobs);
+  assert.deepEqual(plan.eligible, [{ id: A, url: url(A), jobIds: ['open'] }]);
+  assert.deepEqual(plan.deletable, [{ id: A, url: url(A), jobIds: ['open'] }, { id: B, url: url(B), jobIds: ['closed'], archived: true }]);
+  assert.deepEqual(plan.kept, {});
+  assert.deepEqual(plan.cleaned, { archived: 1, deleted: 1 });
+  assert.deepEqual(eligibleForJob(jobs, jobs[1]), [{ id: B, url: url(B) }]);
+});
+
+test('an archived chat that later fails a rule is kept for its own reason and not deletable', () => {
+  const archived = { state: 'archived', at: '2026-11-12T10:00:00.000Z' };
+  const jobs = [make('first', { chatStates: { [A]: archived } }), make('return', { startUrl: url(A), status: 'failed' })];
+  const plan = cleanupPlan(jobs);
+  assert.deepEqual(plan.kept, { failed: 1 });
+  assert.deepEqual(plan.eligible, []);
+  assert.deepEqual(plan.deletable, []);
+});
+
+test('an archived chat whose owner left the history is counted as archived, not kept or deletable', () => {
+  const returning = make('return', { startUrl: url(A), conversationUrl: url(A),
+    chatStates: { [A]: { state: 'archived', at: '2026-11-12T10:00:00.000Z' } } });
+  const plan = cleanupPlan([returning]);
+  assert.deepEqual(plan.cleaned, { archived: 1, deleted: 0 });
+  assert.deepEqual(plan.kept, {});
+  assert.equal(plan.keptTotal, 0);
+  assert.deepEqual(plan.eligible, []);
+  assert.deepEqual(plan.deletable, []);
 });

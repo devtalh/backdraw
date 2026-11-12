@@ -392,7 +392,8 @@ async function cleanChat(tabId, item) {
       await pageCall(tabId, 'closeChatMenu');
       return 'menu_unexpected';
     }
-    if (exact(items, 'Unarchive')) {
+    // An archived chat only needs to be skipped when archiving; deleting works from the same menu.
+    if (exact(items, 'Unarchive') && item.action === 'archive') {
       await pageCall(tabId, 'closeChatMenu');
       return 'already_archived';
     }
@@ -473,7 +474,7 @@ async function drainCleanup(plan = null) {
         }
         let eligible;
         reserved = true;
-        try { ({ eligible } = await callHost('chat_cleanup_check', { ids: [item.id], reserve: true })); }
+        try { ({ eligible } = await callHost('chat_cleanup_check', { ids: [item.id], reserve: true, action: item.action })); }
         catch { cleanupProgress.error = 'not_connected'; break; }
         // A stop while checking eligibility has not started driving this chat yet.
         if (cleanupStop) break;
@@ -572,7 +573,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     if (!hostReady) return { ok: false, error: 'not_connected' };
     const result = await callHost('chat_cleanup_list');
     if (msg.type === 'cleanup:preview') return { ok: true, result };
-    const queued = await enqueueCleanup(result.eligible, msg.action, 'manual', result);
+    const queued = await enqueueCleanup(msg.action === 'delete' ? result.deletable : result.eligible, msg.action, 'manual', result);
     return { ok: true, queued, kept: result.kept, keptTotal: result.keptTotal, cleaned: result.cleaned };
   })().then(reply, () => reply({ ok: false, error: 'not_connected' }));
   return true;

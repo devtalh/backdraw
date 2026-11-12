@@ -150,7 +150,7 @@ test('popup setting: defaults to keep, validates stored modes, saves archive/kee
 });
 
 test('popup delete all: first click sends nothing, cancel keeps preview, second confirmation sends confirmed true', async () => {
-  const p = await popup({ reply: m => m.type === 'cleanup:preview' ? { ok: true, result: { eligible: [{ id: 'a' }, { id: 'b' }], kept: {}, keptTotal: 0, maxJobs: 87 } }
+  const p = await popup({ reply: m => m.type === 'cleanup:preview' ? { ok: true, result: { eligible: [{ id: 'a' }, { id: 'b' }], deletable: [{ id: 'a' }, { id: 'b' }], kept: {}, keptTotal: 0, maxJobs: 87 } }
     : m.type === 'cleanup:start' ? { ok: true, queued: 0 } : undefined });
   await p.click('cleanupNow');
   assert.match(p.nodes.get('cleanupHint').textContent, /last 87 jobs/);
@@ -169,7 +169,7 @@ test('popup delete all: first click sends nothing, cancel keeps preview, second 
 test('popup archive: progress, stop, finished totals and kept reasons use persisted progress', async () => {
   let progress = null;
   const p = await popup({ reply: m => {
-    if (m.type === 'cleanup:preview') return { ok: true, result: { eligible: [{}], kept: {}, keptTotal: 0 } };
+    if (m.type === 'cleanup:preview') return { ok: true, result: { eligible: [{}], deletable: [{}], kept: {}, keptTotal: 0 } };
     if (m.type === 'cleanup:start') {
       progress = { running: true, action: 'archive', done: 0, total: 2, failed: 0, kept: { failed: 2, text_reply: 1 }, keptTotal: 3 };
       return { ok: true, queued: 2, kept: { failed: 2, text_reply: 1 }, keptTotal: 3 };
@@ -228,7 +228,7 @@ test('popup reopen resumes running progress, clears timers on close and does not
 });
 
 test('popup preview: disconnected errors and no eligible chats show no archive/delete actions', async () => {
-  for (const response of [{ ok: false, error: 'not_connected' }, { ok: true, result: { eligible: [], kept: { failed: 1 }, keptTotal: 1 } }]) {
+  for (const response of [{ ok: false, error: 'not_connected' }, { ok: true, result: { eligible: [], deletable: [], kept: { failed: 1 }, keptTotal: 1 } }]) {
     const p = await popup({ reply: m => m.type === 'cleanup:preview' ? response : undefined });
     await p.click('cleanupNow');
     const text = p.nodes.get('cleanupView').textContent;
@@ -236,4 +236,44 @@ test('popup preview: disconnected errors and no eligible chats show no archive/d
     if (response.ok) assert.equal(text, 'No Backdraw chats to clean up.1 chat will stay open: 1 failed job.');
     else assert.equal(text, translate('en')('errNotConnected'));
   }
+});
+
+test('preview text: archivable and deletable counts are separate, with already archived chats called out', () => {
+  const chats = (count, archived = 0) => Array.from({ length: count }, (_, i) => (i < archived ? { id: String(i), archived: true } : { id: String(i) }));
+  for (const [lang, cases] of [
+    ['en', [
+      [{ eligible: chats(3), deletable: chats(5, 2) }, '3 chats can be archived. 5 chats can be deleted (2 of them already archived).'],
+      [{ eligible: chats(1), deletable: chats(1) }, '1 chat can be archived. 1 chat can be deleted.'],
+      [{ eligible: [], deletable: chats(1, 1) }, '1 chat can be deleted (already archived).'],
+      [{ eligible: [], deletable: chats(4) }, '4 chats can be deleted.'],
+      [{ eligible: [], deletable: [] }, 'No Backdraw chats to clean up.'],
+    ]],
+    ['tr', [
+      [{ eligible: chats(3), deletable: chats(5, 2) }, '3 sohbet arşivlenebilir. 5 sohbet silinebilir (2 tanesi zaten arşivli).'],
+      [{ eligible: [], deletable: chats(1, 1) }, '1 sohbet silinebilir (zaten arşivli).'],
+      [{ eligible: [], deletable: [] }, 'Temizlenecek Backdraw sohbeti yok.'],
+    ]],
+  ]) for (const [preview, text] of cases) assert.equal(ctx.backdrawCleanupText.previewText(preview, translate(lang)), text);
+});
+
+test('popup preview: only delete is offered when every eligible chat is archived, and confirmation uses the deletable count', async () => {
+  const p = await popup({ reply: m => m.type === 'cleanup:preview'
+    ? { ok: true, result: { eligible: [], deletable: [{ id: 'a', archived: true }, { id: 'b', archived: true }], kept: {}, keptTotal: 0 } }
+    : m.type === 'cleanup:start' ? { ok: true, queued: 0 } : undefined });
+  await p.click('cleanupNow');
+  assert.equal(p.nodes.get('cleanupView').textContent, '2 chats can be deleted (2 of them already archived).Delete all');
+  await assert.rejects(() => p.click('cleanupView', 'Archive all'));
+  await p.click('cleanupView', 'Delete all');
+  assert.match(p.nodes.get('cleanupView').textContent, /Delete 2 chats\? This can't be undone/);
+  await p.click('cleanupView', 'Delete 2 chats');
+  assert.deepEqual(p.sent.filter(m => m.type === 'cleanup:start'), [{ type: 'cleanup:start', action: 'delete', confirmed: true }]);
+});
+
+test('popup preview: only archive is offered when nothing is deletable', async () => {
+  const p = await popup({ reply: m => m.type === 'cleanup:preview'
+    ? { ok: true, result: { eligible: [{ id: 'a' }], deletable: [], kept: {}, keptTotal: 0 } } : undefined });
+  await p.click('cleanupNow');
+  assert.equal(p.nodes.get('cleanupView').textContent, '1 chat can be archived.Archive all');
+  assert.doesNotMatch(p.nodes.get('cleanupView').textContent, /Delete all/);
+  await p.click('cleanupView', 'Archive all');
 });

@@ -217,7 +217,8 @@ and **Delete**. **Clean up now** previews eligible chats and lets you archive or
 together, with a separate confirmation before deletion and a Stop button while cleanup runs.
 Only chats Backdraw opened for successfully completed jobs with saved images are eligible.
 Failed, timed-out jobs and jobs where ChatGPT asked a question stay open. Backdraw only knows
-the chats in its last 100 job records; older chats are not known.
+the chats in its last 100 job records; older chats are not known. Chats Backdraw already
+archived can still be deleted later, but are never archived again.
 
 Cleanup uses the chat menu in ChatGPT's **English interface** and reads no session credentials.
 Deletion cannot be undone, but images stay in the ChatGPT Library and on your computer.

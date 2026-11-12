@@ -268,7 +268,7 @@ function cleanupWorker(options = {}) {
           if (msg.method === 'chat_cleanup_check') result = { eligible: options.ineligible ? [] : msg.params.ids };
           else if (msg.method === 'chat_cleanup_mark') result = { id: msg.params.id, state: msg.params.state };
           else if (msg.method === 'chat_cleanup_release') result = {};
-          else if (msg.method === 'chat_cleanup_list') result = { eligible: options.chats || [cleanupChat()], kept: { active: 2 }, keptTotal: 2, cleaned: { archived: 1, deleted: 0 } };
+          else if (msg.method === 'chat_cleanup_list') result = { eligible: options.chats || [cleanupChat()], deletable: options.deletable || options.chats || [cleanupChat()], kept: { active: 2 }, keptTotal: 2, cleaned: { archived: 1, deleted: 0 } };
           else throw new Error(`Unexpected host call: ${msg.method}`);
         }
         await worker.ctx.onHostMessage({ type: 'reply', reqId: msg.reqId, ok: !result.__error, result, error: result.__error });
@@ -312,7 +312,7 @@ test('chat cleanup: archive checks eligibility and marks only the UUID and resul
   await w.welcome();
   await w.done();
   await w.finish();
-  assert.deepEqual(plain(w.calls('chat_cleanup_check')[0].params), { ids: [cleanupChat().id], reserve: true });
+  assert.deepEqual(plain(w.calls('chat_cleanup_check')[0].params), { ids: [cleanupChat().id], reserve: true, action: 'archive' });
   assert.deepEqual(plain(w.calls('chat_cleanup_mark')[0].params), { id: cleanupChat().id, state: 'archived', error: null });
   assert.deepEqual(w.pages.filter(p => p.name === 'clickChatMenuItem').map(p => p.params), [['Archive', 'Private cleanup title']]);
   assert.equal(w.state().progress.archived, 1);
@@ -325,16 +325,36 @@ test('chat cleanup: archive checks eligibility and marks only the UUID and resul
   assert.doesNotMatch(outgoing, /token|cookie|Authorization|Private cleanup title|https:\/\/chatgpt\.com/i);
 });
 
-test('chat cleanup: an archived chat is skipped for both archive and delete', async () => {
-  for (const action of ['archive', 'delete']) {
-    const w = cleanupWorker({ setting: action, unarchive: true });
-    await w.welcome(); await w.done(); await w.finish();
-    const clicked = w.pages.filter(p => p.name === 'clickChatMenuItem');
-    assert.equal(clicked.length, 0);
-    assert.equal(w.state().progress.alreadyArchived, 1);
-    assert.equal(w.calls('chat_cleanup_mark')[0].params.state, 'archived');
-    assert.equal(w.pages.some(p => ['deleteDialogState', 'confirmDeleteChat'].includes(p.name)), false);
-    assert.ok(w.pages.some(p => p.name === 'closeChatMenu'));
+test('chat cleanup: an archived chat is skipped when archiving but deleted when deleting', async () => {
+  const archive = cleanupWorker({ setting: 'archive', unarchive: true });
+  await archive.welcome(); await archive.done(); await archive.finish();
+  assert.equal(archive.pages.filter(p => p.name === 'clickChatMenuItem').length, 0);
+  assert.equal(archive.state().progress.alreadyArchived, 1);
+  assert.equal(archive.calls('chat_cleanup_mark')[0].params.state, 'archived');
+  assert.equal(archive.pages.some(p => ['deleteDialogState', 'confirmDeleteChat'].includes(p.name)), false);
+  assert.ok(archive.pages.some(p => p.name === 'closeChatMenu'));
+
+  const del = cleanupWorker({ setting: 'delete', unarchive: true });
+  await del.welcome(); await del.done(); await del.finish();
+  assert.deepEqual(plain(del.calls('chat_cleanup_check')[0].params), { ids: [cleanupChat().id], reserve: true, action: 'delete' });
+  assert.deepEqual(del.pages.filter(p => p.name === 'clickChatMenuItem').map(p => p.params), [['Delete', 'Private cleanup title']]);
+  assert.ok(del.pages.some(p => p.name === 'deleteDialogState'));
+  assert.deepEqual(del.pages.filter(p => p.name === 'confirmDeleteChat').map(p => p.params), [['Private cleanup title']]);
+  assert.equal(del.calls('chat_cleanup_mark')[0].params.state, 'deleted');
+  assert.equal(del.state().progress.deleted, 1);
+  assert.equal(del.state().progress.alreadyArchived || 0, 0);
+});
+
+test('chat cleanup: manual start queues the deletable list for delete and the eligible list for archive', async () => {
+  const open = cleanupChat(1), archived = { ...cleanupChat(2), archived: true };
+  for (const [action, expected] of [['delete', [open.id, archived.id]], ['archive', [open.id]]]) {
+    const w = cleanupWorker({ chats: [open], deletable: [open, archived] });
+    await w.welcome();
+    const started = await w.send({ type: 'cleanup:start', action, ...(action === 'delete' ? { confirmed: true } : {}) });
+    assert.equal(started.queued, expected.length);
+    await w.finish();
+    assert.deepEqual(w.calls('chat_cleanup_check').map(msg => msg.params.ids[0]), expected);
+    assert.ok(w.calls('chat_cleanup_check').every(msg => msg.params.action === action));
   }
 });
 

@@ -11,6 +11,17 @@
     return t(`cleanupKept${done ? 'Done' : 'Preview'}${keptTotal === 1 ? '_one' : ''}`, { n: keptTotal, list });
   }
 
+  // N chats can be archived; M can be deleted, K of those already archived.
+  function previewText(preview, t) {
+    const n = preview?.eligible?.length || 0, m = preview?.deletable?.length || 0;
+    const k = (preview?.deletable || []).filter(chat => chat.archived).length;
+    const one = count => (count === 1 ? '_one' : '');
+    const parts = [];
+    if (n) parts.push(t('cleanupArchivable' + one(n), { n }));
+    if (m) parts.push(k ? t('cleanupDeletableArchived' + one(m), { n: m, k }) : t('cleanupDeletable' + one(m), { n: m }));
+    return parts.length ? parts.join(' ') : t('cleanupEmpty');
+  }
+
   function progressText(progress, t) {
     const p = progress || {};
     const text = t(p.action === 'delete' ? 'cleanupDeleting' : 'cleanupArchiving', { done: p.done || 0, total: p.total || 0 });
@@ -31,5 +42,5 @@
     return t(Object.hasOwn(keys, code) ? keys[code] : 'cleanupErrUnknown');
   }
 
-  globalThis.backdrawCleanupText = { keptSummary, progressText, finishText, errorText };
+  globalThis.backdrawCleanupText = { keptSummary, previewText, progressText, finishText, errorText };
 })();

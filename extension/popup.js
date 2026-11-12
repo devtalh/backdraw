@@ -251,7 +251,7 @@ async function start() {
 
 // ---------------------------------------------------------------- chat cleanup
 
-const { keptSummary, progressText, finishText, errorText } = backdrawCleanupText;
+const { keptSummary, previewText, progressText, finishText, errorText } = backdrawCleanupText;
 let savedCleanupMode = 'keep';
 let cleanupDeletePending = false;
 let cleanupSettingSaving = false;
@@ -327,16 +327,16 @@ function renderCleanup() {
   box.replaceChildren();
   if (cleanupView === 'loading' || cleanupView === 'starting') box.append(busyNote(t('loading')));
   if (cleanupView === 'preview' || cleanupView === 'confirm') {
-    const n = cleanupPreview.eligible.length;
-    box.append(note(t(n ? (n === 1 ? 'cleanupEligible_one' : 'cleanupEligible') : 'cleanupEmpty', { n })));
+    const n = cleanupPreview.eligible.length, m = cleanupPreview.deletable?.length || 0;
+    box.append(note(previewText(cleanupPreview, t)));
     const kept = keptSummary(cleanupPreview.kept, cleanupPreview.keptTotal, t);
     if (kept) box.append(note(kept));
-    if (n && cleanupView === 'preview') box.append(actions(
-      button(t('cleanupArchiveAll'), () => startCleanup('archive')),
-      button(t('cleanupDeleteAll'), () => { cleanupView = 'confirm'; renderCleanup(); }, 'btn danger')));
-    if (n && cleanupView === 'confirm') box.append(el('div', { className: 'cleanup-confirm' },
-      note(t(n === 1 ? 'cleanupConfirmDelete_one' : 'cleanupConfirmDelete', { n })),
-      actions(button(t(n === 1 ? 'cleanupDeleteCount_one' : 'cleanupDeleteCount', { n }), () => startCleanup('delete', true), 'btn danger'),
+    if ((n || m) && cleanupView === 'preview') box.append(actions(
+      ...(n ? [button(t('cleanupArchiveAll'), () => startCleanup('archive'))] : []),
+      ...(m ? [button(t('cleanupDeleteAll'), () => { cleanupView = 'confirm'; renderCleanup(); }, 'btn danger')] : [])));
+    if (m && cleanupView === 'confirm') box.append(el('div', { className: 'cleanup-confirm' },
+      note(t(m === 1 ? 'cleanupConfirmDelete_one' : 'cleanupConfirmDelete', { n: m })),
+      actions(button(t(m === 1 ? 'cleanupDeleteCount_one' : 'cleanupDeleteCount', { n: m }), () => startCleanup('delete', true), 'btn danger'),
         button(t('cancel'), () => { cleanupView = 'preview'; renderCleanup(); }))));
   }
   if (cleanupView === 'empty') box.append(note(t('cleanupEmpty')));
