@@ -19,7 +19,7 @@
 
   function finishText(progress, t) {
     const p = progress || {};
-    const keys = { archived: 'cleanupArchived', alreadyArchived: 'cleanupAlreadyArchived', deleted: 'cleanupDeleted', skipped: 'cleanupSkipped', failed: 'cleanupFailed' };
+    const keys = { archived: 'cleanupArchived', alreadyArchived: 'cleanupAlreadyArchived', deleted: 'cleanupDeleted', skipped: 'cleanupSkipped', failed: 'cleanupFailed', notProcessed: 'cleanupNotProcessed' };
     const list = Object.entries(keys).filter(([field]) => p[field] > 0).map(([field, key]) =>
       t(key + (p[field] === 1 ? '_one' : ''), { n: p[field] })).join(', ');
     return list ? t('cleanupFinished', { list }) : t('cleanupUnchanged');

@@ -267,6 +267,7 @@ function cleanupWorker(options = {}) {
         if (result === undefined) {
           if (msg.method === 'chat_cleanup_check') result = { eligible: options.ineligible ? [] : msg.params.ids };
           else if (msg.method === 'chat_cleanup_mark') result = { id: msg.params.id, state: msg.params.state };
+          else if (msg.method === 'chat_cleanup_release') result = {};
           else if (msg.method === 'chat_cleanup_list') result = { eligible: options.chats || [cleanupChat()], kept: { active: 2 }, keptTotal: 2, cleaned: { archived: 1, deleted: 0 } };
           else throw new Error(`Unexpected host call: ${msg.method}`);
         }
@@ -291,7 +292,7 @@ function cleanupWorker(options = {}) {
   };
   const finish = () => wait(() => !!state().progress?.finishedAt && !state().running);
   const calls = method => worker.posted.filter(msg => msg.type === 'call' && msg.method === method);
-  return { ...worker, pages, scripts, created, updated, removed, logs, session, writes, tabs, send, welcome, done, state, wait, finish, calls };
+  return { ...worker, pages, scripts, created, updated, removed, logs, session, writes, local, tabs, send, welcome, done, state, wait, finish, calls };
 }
 
 test('chat cleanup: keep is the silent default, including unknown settings', async () => {
@@ -311,9 +312,9 @@ test('chat cleanup: archive checks eligibility and marks only the UUID and resul
   await w.welcome();
   await w.done();
   await w.finish();
-  assert.deepEqual(plain(w.calls('chat_cleanup_check')[0].params), { ids: [cleanupChat().id] });
+  assert.deepEqual(plain(w.calls('chat_cleanup_check')[0].params), { ids: [cleanupChat().id], reserve: true });
   assert.deepEqual(plain(w.calls('chat_cleanup_mark')[0].params), { id: cleanupChat().id, state: 'archived', error: null });
-  assert.deepEqual(w.pages.filter(p => p.name === 'clickChatMenuItem').map(p => p.params), [['Archive']]);
+  assert.deepEqual(w.pages.filter(p => p.name === 'clickChatMenuItem').map(p => p.params), [['Archive', 'Private cleanup title']]);
   assert.equal(w.state().progress.archived, 1);
   assert.equal(w.state().progress.done, 1);
   assert.equal(w.created[0].active, false);
@@ -324,19 +325,118 @@ test('chat cleanup: archive checks eligibility and marks only the UUID and resul
   assert.doesNotMatch(outgoing, /token|cookie|Authorization|Private cleanup title|https:\/\/chatgpt\.com/i);
 });
 
-test('chat cleanup: an archived chat is not archived again; delete still confirms it', async () => {
+test('chat cleanup: an archived chat is skipped for both archive and delete', async () => {
   for (const action of ['archive', 'delete']) {
     const w = cleanupWorker({ setting: action, unarchive: true });
     await w.welcome(); await w.done(); await w.finish();
     const clicked = w.pages.filter(p => p.name === 'clickChatMenuItem');
-    assert.equal(clicked.length, action === 'archive' ? 0 : 1);
-    assert.equal(w.state().progress.alreadyArchived, action === 'archive' ? 1 : 0);
-    assert.equal(w.calls('chat_cleanup_mark')[0].params.state, action === 'archive' ? 'archived' : 'deleted');
-    if (action === 'delete') {
-      assert.deepEqual(clicked[0].params, ['Delete']);
-      assert.ok(w.pages.some(p => p.name === 'confirmDeleteChat'));
-    }
+    assert.equal(clicked.length, 0);
+    assert.equal(w.state().progress.alreadyArchived, 1);
+    assert.equal(w.calls('chat_cleanup_mark')[0].params.state, 'archived');
+    assert.equal(w.pages.some(p => ['deleteDialogState', 'confirmDeleteChat'].includes(p.name)), false);
+    assert.ok(w.pages.some(p => p.name === 'closeChatMenu'));
   }
+});
+
+test('chat cleanup: a new manual archive drops a stopped delete queue', async () => {
+  let language = 'tr';
+  const chats = [cleanupChat(), cleanupChat(1)];
+  const w = cleanupWorker({ chats, page: name => name === 'chatPageState' && language === 'tr'
+    ? { onChat: true, trigger: true, lang: language } : undefined });
+  await w.welcome();
+  await w.send({ type: 'cleanup:start', action: 'delete', confirmed: true });
+  await w.finish();
+  assert.equal(w.state().progress.error, 'unsupported_language');
+  assert.equal(w.state().queue.length, 0);
+  assert.equal(w.state().progress.notProcessed, 2);
+  assert.equal(w.calls('chat_cleanup_release').length, 1);
+  language = 'en';
+  const started = await w.send({ type: 'cleanup:start', action: 'archive' });
+  assert.equal(started.queued, 2);
+  await w.finish();
+  assert.deepEqual(w.pages.filter(p => p.name === 'clickChatMenuItem').map(p => p.params[0]), ['Archive', 'Archive']);
+  assert.equal(w.pages.some(p => p.name === 'confirmDeleteChat'), false);
+});
+
+test('chat cleanup: manual archive updates pending deletes without changing the in-flight chat', async () => {
+  let release, entered;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const opening = new Promise(resolve => { entered = resolve; });
+  let opens = 0;
+  const w = cleanupWorker({ setting: 'delete', chats: [0, 1, 2].map(cleanupChat), page: async name => {
+    if (name === 'openChatMenu' && ++opens === 1) { entered(); await blocked; }
+  } });
+  await w.welcome(); await w.done([0, 1, 2].map(cleanupChat)); await opening;
+  const started = await w.send({ type: 'cleanup:start', action: 'archive' });
+  assert.equal(started.queued, 2);
+  assert.deepEqual(w.state().queue.map(item => [item.action, item.source]), [['delete', 'auto'], ['archive', 'manual'], ['archive', 'manual']]);
+  release(); await w.finish();
+  assert.deepEqual(w.pages.filter(p => p.name === 'clickChatMenuItem').map(p => p.params), [
+    ['Delete', 'Private cleanup title'], ['Archive', 'Private cleanup title'], ['Archive', 'Private cleanup title'],
+  ]);
+});
+
+test('chat cleanup: an idle manual archive replaces deletes preserved after a host error', async () => {
+  let checks = 0;
+  const w = cleanupWorker({ chats: [cleanupChat(), cleanupChat(1)], host: msg => {
+    if (msg.method === 'chat_cleanup_check' && ++checks === 1) return { __error: 'not connected' };
+  } });
+  await w.welcome();
+  await w.send({ type: 'cleanup:start', action: 'delete', confirmed: true });
+  await w.finish();
+  assert.equal(w.state().progress.error, 'not_connected');
+  assert.equal(w.state().queue.length, 2);
+  const started = await w.send({ type: 'cleanup:start', action: 'archive' });
+  assert.equal(started.queued, 2);
+  await w.finish();
+  assert.deepEqual(w.pages.filter(p => p.name === 'clickChatMenuItem').map(p => p.params[0]), ['Archive', 'Archive']);
+});
+
+test('chat cleanup: auto items reread keep, invalid and changed actions before processing', async () => {
+  for (const next of ['keep', 'invalid', 'archive']) {
+    let changed = false;
+    const w = cleanupWorker({ setting: 'delete', onSleep(ms) {
+      if (ms === 1000 && !changed) { changed = true; w.local.chatCleanup = next; }
+    } });
+    await w.welcome(); await w.done([cleanupChat(), cleanupChat(1)]); await w.finish();
+    assert.equal(changed, true);
+    const labels = w.pages.filter(p => p.name === 'clickChatMenuItem').map(p => p.params[0]);
+    assert.deepEqual(labels, next === 'archive' ? ['Delete', 'Archive'] : ['Delete']);
+    assert.equal(w.calls('chat_cleanup_mark').length, next === 'archive' ? 2 : 1);
+    assert.equal(w.state().progress.skipped, next === 'archive' ? 0 : 1);
+  }
+});
+
+test('chat cleanup: stop or a current job after reservation releases before driving the chat', async () => {
+  for (const reason of ['stop', 'current']) {
+    let release, entered;
+    const blocked = new Promise(resolve => { release = resolve; });
+    const checking = new Promise(resolve => { entered = resolve; });
+    let checks = 0;
+    const w = cleanupWorker({ setting: 'archive', host: async msg => {
+      if (msg.method === 'chat_cleanup_check' && ++checks === 1) { entered(); await blocked; }
+    } });
+    await w.welcome(); await w.done(); await checking;
+    if (reason === 'stop') await w.send({ type: 'cleanup:stop' });
+    else vm.runInContext('current = { job: { id: "active" } }', w.ctx);
+    release();
+    await w.wait(() => w.calls('chat_cleanup_release').length === 1);
+    assert.equal(w.created.length, 0);
+    assert.equal(w.calls('chat_cleanup_mark').length, 0);
+    if (reason === 'current') await w.send({ type: 'cleanup:stop' });
+    await w.finish();
+    assert.equal(w.state().progress.notProcessed, 1);
+  }
+});
+
+test('chat cleanup: dismiss clears a stored error and persists the acknowledgement', async () => {
+  const w = cleanupWorker({ setting: 'archive', page: name => name === 'chatPageState'
+    ? { onChat: true, trigger: true, lang: 'tr' } : undefined });
+  await w.welcome(); await w.done(); await w.finish();
+  assert.equal((await w.send({ type: 'cleanup:status' })).progress.error, 'unsupported_language');
+  assert.deepEqual(plain(await w.send({ type: 'cleanup:dismiss' })), { ok: true });
+  assert.equal(w.session.cleanupProgress, null);
+  assert.equal((await w.send({ type: 'cleanup:status' })).progress, null);
 });
 
 test('chat cleanup: ineligible chats are skipped before any tab or page interaction', async () => {
@@ -368,10 +468,12 @@ test('chat cleanup: waits for the current job, then reuses one separate helper t
 
 test('chat cleanup: three consecutive failures mark fixed codes and clear remaining items', async () => {
   const w = cleanupWorker({ setting: 'archive', page: name => name === 'openChatMenu' ? { ok: false, error: 'menu_trigger_not_found' } : undefined });
-  await w.welcome(); await w.done([0, 1, 2, 3].map(cleanupChat)); await w.finish();
+  await w.welcome(); await w.done(Array.from({ length: 10 }, (_, n) => cleanupChat(n))); await w.finish();
   assert.equal(w.state().progress.error, 'too_many_failures');
   assert.equal(w.state().progress.failed, 3);
   assert.equal(w.state().progress.done, 3);
+  assert.equal(w.state().progress.notProcessed, 7);
+  assert.equal(w.session.cleanupProgress.notProcessed, 7);
   assert.equal(w.calls('chat_cleanup_check').length, 3);
   assert.deepEqual(w.calls('chat_cleanup_mark').map(msg => plain(msg.params)), [0, 1, 2].map(n => ({
     id: cleanupChat(n).id, state: 'failed', error: 'menu_trigger_not_found',
@@ -389,6 +491,9 @@ test('chat cleanup: non-English, empty language, login and challenge stop withou
     assert.ok(w.pages.every(p => p.name === 'chatPageState'));
     assert.equal(w.calls('chat_cleanup_mark').length, 0);
     assert.equal(w.calls('chat_cleanup_check').length, 1);
+    assert.equal(w.calls('chat_cleanup_release').length, 1);
+    assert.equal(w.state().queue.length, 0);
+    assert.equal(w.state().progress.notProcessed, 2);
   }
 });
 
@@ -410,6 +515,8 @@ test('chat cleanup: manual delete requires explicit confirmation and extension-p
   await w.finish();
   assert.equal(w.state().progress.deleted, 1);
   assert.equal(w.state().progress.source, 'manual');
+  assert.deepEqual(w.session.cleanupProgress.kept, { active: 2 });
+  assert.equal(w.session.cleanupProgress.keptTotal, 2);
 });
 
 test('chat cleanup: disconnected preview and start return stable errors without host calls', async () => {
@@ -465,6 +572,7 @@ test('chat cleanup: stop finishes the in-flight chat and discards queued chats',
   assert.equal(w.state().progress.archived, 1);
   assert.equal(w.calls('chat_cleanup_check').length, 1);
   assert.equal(w.session.cleanupQueue.length, 0);
+  assert.equal(w.state().progress.notProcessed, 1);
 });
 
 test('chat cleanup: closed helper stops without marking and active helpers remain open', async () => {
@@ -474,9 +582,31 @@ test('chat cleanup: closed helper stops without marking and active helpers remai
   await closed.welcome(); await closed.done(); await closed.finish();
   assert.equal(closed.state().progress.error, 'tab_closed');
   assert.equal(closed.calls('chat_cleanup_mark').length, 0);
+  assert.equal(closed.calls('chat_cleanup_release').length, 1);
+  assert.equal(closed.state().progress.notProcessed, 1);
   const active = cleanupWorker({ setting: 'archive', activeTab: true });
   await active.welcome(); await active.done(); await active.finish();
   assert.equal(active.removed.length, 0);
+});
+
+test('chat cleanup: stop during a gate failure counts every unprocessed chat once', async () => {
+  let release, entered;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const reading = new Promise(resolve => { entered = resolve; });
+  const w = cleanupWorker({ setting: 'archive', page: async name => {
+    if (name === 'chatPageState') {
+      entered(); await blocked;
+      return { onChat: true, trigger: true, lang: 'tr' };
+    }
+  } });
+  await w.welcome(); await w.done([cleanupChat(), cleanupChat(1)]); await reading;
+  await w.send({ type: 'cleanup:stop' });
+  await w.send({ type: 'cleanup:stop' });
+  release(); await w.finish();
+  assert.equal(w.state().progress.notProcessed, 2);
+  assert.equal(w.state().progress.done, 0);
+  assert.equal(w.calls('chat_cleanup_mark').length, 0);
+  assert.equal(w.calls('chat_cleanup_release').length, 1);
 });
 
 test('chat cleanup: restores session work only after welcome and continues prior progress', async () => {
@@ -494,6 +624,9 @@ test('chat cleanup: restores session work only after welcome and continues prior
   assert.equal(w.state().progress.done, 2);
   assert.equal(w.state().progress.startedAt, 123);
   assert.deepEqual(w.session.cleanupQueue, []);
+  assert.deepEqual(w.session.cleanupProgress.kept, {});
+  assert.equal(w.session.cleanupProgress.keptTotal, 0);
+  assert.equal(w.session.cleanupProgress.notProcessed, 0);
 });
 
 test('chat cleanup: an enqueue during the final tab close continues without losing progress', async () => {
@@ -578,6 +711,7 @@ test('chat cleanup: mark rejection counts once without a success for archive, de
     assert.equal(p.done, 1);
     assert.equal(p.consecutiveFailures, options.page ? 1 : 0);
     assert.equal(p.error, null);
+    assert.equal(w.calls('chat_cleanup_release').length, 1);
   }
 });
 

@@ -623,14 +623,28 @@
     return { ok: true, title };
   }
 
-  function chatMenuElements() {
-    return [...new Set($$('[role="menu"]').filter(shown).flatMap(menu => $$('[role="menuitem"]', menu).filter(shown)))];
+  function chatMenu() {
+    const trigger = chatTrigger();
+    if (!trigger || !(trigger.getAttribute('aria-expanded') === 'true' || trigger.getAttribute('data-state') === 'open')) return null;
+    const controls = trigger.getAttribute('aria-controls');
+    if (controls) {
+      const menu = document.getElementById(controls);
+      return menu && shown(menu) && menu.getAttribute('role') === 'menu' ? menu : null;
+    }
+    const menus = $$('[role="menu"]').filter(shown);
+    return menus.length === 1 ? menus[0] : null;
   }
 
-  function chatMenuItems() { return chatMenuElements().map(el => squash(el.innerText)); }
+  function chatMenuItems() {
+    const menu = chatMenu();
+    return menu ? $$('[role="menuitem"]', menu).filter(shown).map(el => squash(el.innerText)) : [];
+  }
 
-  function clickChatMenuItem(label) {
-    const items = chatMenuElements().filter(el => sameLabel(el.innerText, label));
+  function clickChatMenuItem(label, expectedTitle) {
+    const menu = chatMenu();
+    if (!menu) return { clicked: false, error: 'menu_unexpected' };
+    if (expectedTitle !== undefined && !sameLabel(chatTrigger()?.innerText, expectedTitle)) return { clicked: false, error: 'title_mismatch' };
+    const items = $$('[role="menuitem"]', menu).filter(shown).filter(el => sameLabel(el.innerText, label));
     if (items.length !== 1) return { clicked: false, error: items.length ? 'item_ambiguous' : 'item_not_found' };
     press(items[0]);
     return { clicked: true };

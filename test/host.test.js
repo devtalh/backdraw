@@ -1113,6 +1113,69 @@ test('the host', async t => {
   });
 });
 
+test('cleanup reservations block referenced jobs, allow other chats and resume on mark, release or expiry', () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(ROOT, 'host.js'), 'utf8').split('// ---------------------------------------------------------------- start')[0];
+  const a = '6812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const b = '7812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const url = id => `https://chatgpt.com/c/${id}`;
+  for (const end of ['archived', 'deleted', 'release', 'expiry']) {
+    let time = 100000;
+    const timers = [], immediates = [], messages = [];
+    class Clock extends Date { static now() { return time; } }
+    const context = { module: { exports: {} }, Buffer, Date: Clock,
+      process: { stdout: { write: frame => messages.push(JSON.parse(frame.subarray(4).toString('utf8'))) } },
+      require: name => {
+        if (name === './shared') return { LOG_DIR: DIR, readJson: (_file, fallback) => fallback, writeJson() {} };
+        if (name === 'fs') return { mkdirSync() {}, statSync: () => ({ size: 0 }), appendFileSync() {} };
+        if (name === 'net') return { createServer: () => ({}) };
+        return require(name.startsWith('.') ? path.join(ROOT, name) : name);
+      },
+      setTimeout: (callback, ms) => { const timer = { callback, ms, cleared: false }; timers.push(timer); return timer; },
+      clearTimeout: timer => { if (timer) timer.cleared = true; },
+      setImmediate: callback => immediates.push(callback),
+    };
+    vm.runInNewContext(source + '\nmodule.exports = { jobs, handlers, pump, finishJob, createJob, ' +
+      'connect: () => { extension = { version: "test" }; } };', context);
+    const api = context.module.exports;
+    api.connect();
+    api.jobs.push({ id: 'owner', mode: 'generate', startUrl: null, status: 'succeeded', conversationUrl: url(a), images: [{}] });
+    const check = reserve => api.handlers.chat_cleanup_check({ ids: [a], reserve });
+    check(false);
+    assert.equal(timers.length, 0);
+    api.handlers.chat_cleanup_check({ ids: [a, b], reserve: true });
+    assert.equal(timers.length, 0);
+    assert.deepEqual(Array.from(check(true).eligible), [a]);
+    const waiting = api.createJob({ prompt: 'Reserved chat', startUrl: url(a) });
+    assert.equal(waiting.status, 'queued');
+    assert.equal(messages.some(m => m.type === 'run'), false);
+    const other = api.createJob({ prompt: 'Another chat', startUrl: url(b) });
+    assert.equal(other.status, 'running');
+    assert.deepEqual(messages.filter(m => m.type === 'run').map(m => m.job.id), [other.id]);
+    api.finishJob(other, { status: 'failed' });
+    while (immediates.length) immediates.shift()();
+    assert.equal(waiting.status, 'queued');
+    if (end === 'release') api.handlers.chat_cleanup_release({ id: a.toUpperCase() });
+    else if (end === 'expiry') {
+      const timer = timers.find(timer => timer.ms === 180000 && !timer.cleared);
+      assert.ok(timer);
+      time += 180000;
+      timer.callback();
+    } else api.handlers.chat_cleanup_mark({ id: a, state: end });
+    while (immediates.length) immediates.shift()();
+    assert.equal(timers.filter(timer => timer.ms === 180000 && !timer.cleared).length, 0);
+    if (end === 'deleted') {
+      assert.equal(waiting.status, 'failed');
+      assert.equal(waiting.reason, 'chat_deleted');
+      assert.equal(waiting.error, 'This ChatGPT conversation was deleted by Backdraw chat cleanup. Start a new chat and pass the saved image in reference_images instead.');
+      assert.equal(messages.some(m => m.type === 'run' && m.job.id === waiting.id), false);
+    } else {
+      assert.equal(waiting.status, 'running', end);
+      assert.equal(messages.filter(m => m.type === 'run' && m.job.id === waiting.id).length, 1);
+    }
+  }
+});
+
 test('sprite cancellation clears its fallback and previews, and stale callbacks cannot disturb another run', () => {
   const vm = require('node:vm');
   // Load the real handlers without starting a pipe or touching persistent files.

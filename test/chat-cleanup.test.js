@@ -49,6 +49,17 @@ test('a project or empty start owns the resulting successful chat', () => {
   }
 });
 
+test('ownership rejects redirected existing chats, missing starts and malformed conversation starts', () => {
+  const missing = make('missing', { conversationUrl: url(B) });
+  delete missing.startUrl;
+  for (const job of [missing, make('redirect', { startUrl: url(A), conversationUrl: url(B) }),
+    make('invalid', { startUrl: 'https://chatgpt.com/C/abc', conversationUrl: url(B) })]) {
+    assert.deepEqual([...ownedChatIds(job)], []);
+    assert.deepEqual(cleanupPlan([job]).eligible, []);
+    assert.equal(cleanupPlan([job]).kept.not_created, job.id === 'redirect' ? 2 : 1);
+  }
+});
+
 test('any active reference keeps a chat, including a queued start URL alone', () => {
   for (const status of ACTIVE) {
     const jobs = [make(), make('next', { status, startUrl: url(A), conversationUrl: null })];

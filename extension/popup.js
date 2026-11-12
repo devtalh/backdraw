@@ -348,8 +348,9 @@ function renderCleanup() {
   }
   if (cleanupView === 'finished') {
     box.append(note(finishText(cleanupProgress, t)));
-    const kept = keptSummary(cleanupStart?.kept, cleanupStart?.keptTotal, t, true);
+    const kept = keptSummary(cleanupProgress?.kept, cleanupProgress?.keptTotal, t, true);
     if (kept) box.append(note(kept));
+    box.append(actions(button(t('cleanupDismiss'), dismissCleanup)));
   }
   if (cleanupError) box.append(note(errorText(cleanupError, t), 'err'));
 }
@@ -408,6 +409,17 @@ async function stopCleanup() {
   renderCleanup();
 }
 
+async function dismissCleanup() {
+  const r = await ask('cleanup:dismiss');
+  if (popupClosed) return;
+  if (r?.ok) {
+    cleanupProgress = null;
+    cleanupError = null;
+    cleanupView = 'idle';
+  } else cleanupError = r?.error || 'unknown';
+  renderCleanup();
+}
+
 async function pollCleanup(initial = false) {
   clearTimeout(cleanupTimer);
   if (popupClosed) return;
@@ -423,12 +435,16 @@ async function pollCleanup(initial = false) {
       $('settings').hidden = false;
       $('settingsBtn').setAttribute('aria-expanded', 'true');
     }
-  } else if (cleanupView === 'tracking') {
+  } else if (cleanupView === 'tracking' || (initial && r?.ok && r.progress?.error)) {
     if (r?.ok && r.progress) {
       cleanupProgress = r.progress;
       cleanupError = r.progress.error;
       cleanupView = 'finished';
       cleanupStopping = false;
+      if (initial) {
+        $('settings').hidden = false;
+        $('settingsBtn').setAttribute('aria-expanded', 'true');
+      }
     } else if (!r?.ok) cleanupError = r?.error || 'unknown';
   }
   renderCleanup();

@@ -283,6 +283,14 @@ let cleanupStop = false;
 let cleanupProgress = null;
 let cleanupResume = false;
 let cleanupWrites = Promise.resolve();
+let cleanupItem = null;
+let cleanupDriving = false;
+
+function discardCleanupQueue() {
+  const pending = cleanupQueue.filter(item => item !== cleanupItem || !cleanupDriving).length;
+  if (cleanupProgress) cleanupProgress.notProcessed = (cleanupProgress.notProcessed || 0) + pending;
+  cleanupQueue = [];
+}
 
 function cleanupTarget(chat) {
   if (!chat || typeof chat.id !== 'string' || !UUID.test(chat.id) || typeof chat.url !== 'string') return null;
@@ -307,15 +315,27 @@ const cleanupLoaded = chrome.storage.session.get(['cleanupQueue', 'cleanupProgre
     return target && CLEANUP_ACTIONS.has(item.action) && ['auto', 'manual'].includes(item.source)
       ? [{ ...target, action: item.action, source: item.source }] : [];
   }).filter((item, index, all) => all.findIndex(other => other.id === item.id) === index);
-  cleanupProgress = stored.cleanupProgress || null;
+  cleanupProgress = stored.cleanupProgress ? { notProcessed: 0, kept: {}, keptTotal: 0, ...stored.cleanupProgress } : null;
   cleanupResume = !!cleanupProgress?.running && !!cleanupQueue.length;
   if (cleanupProgress?.running) cleanupProgress = { ...cleanupProgress, running: false };
   return saveCleanup();
 }).catch(() => {});
 
-async function enqueueCleanup(chats, action, source) {
+async function enqueueCleanup(chats, action, source, plan = null) {
   if (!CLEANUP_ACTIONS.has(action)) return 0;
   await cleanupLoaded;
+  if (source === 'manual') {
+    if (!cleanupRunning) {
+      cleanupQueue = [];
+      cleanupResume = false;
+    } else {
+      for (const item of cleanupQueue) {
+        if (item !== cleanupItem) Object.assign(item, { action, source });
+      }
+      cleanupProgress.kept = plan?.kept || {};
+      cleanupProgress.keptTotal = plan?.keptTotal || 0;
+    }
+  }
   let added = 0;
   for (const chat of Array.isArray(chats) ? chats : []) {
     const target = cleanupTarget(chat);
@@ -325,8 +345,9 @@ async function enqueueCleanup(chats, action, source) {
   }
   if (cleanupRunning || cleanupResume) cleanupProgress.total += added;
   await saveCleanup();
-  drainCleanup();
-  return added;
+  const queued = source === 'manual' ? cleanupQueue.filter(item => item !== cleanupItem && item.action === action).length : added;
+  drainCleanup(plan);
+  return queued;
 }
 
 async function cleanChat(tabId, item) {
@@ -369,7 +390,7 @@ async function cleanChat(tabId, item) {
       await pageCall(tabId, 'closeChatMenu');
       return 'menu_unexpected';
     }
-    if (item.action === 'archive' && exact(items, 'Unarchive')) {
+    if (exact(items, 'Unarchive')) {
       await pageCall(tabId, 'closeChatMenu');
       return 'already_archived';
     }
@@ -379,7 +400,7 @@ async function cleanChat(tabId, item) {
       await pageCall(tabId, 'closeChatMenu');
       return gate(state) || 'wrong_page';
     }
-    const clicked = await pageCall(tabId, 'clickChatMenuItem', item.action === 'archive' ? 'Archive' : 'Delete');
+    const clicked = await pageCall(tabId, 'clickChatMenuItem', item.action === 'archive' ? 'Archive' : 'Delete', title);
     if (!clicked?.clicked) {
       await pageCall(tabId, 'closeChatMenu');
       return CLEANUP_ERRORS.has(clicked?.error) ? clicked.error : 'item_not_found';
@@ -411,7 +432,7 @@ async function cleanChat(tabId, item) {
   }
 }
 
-async function drainCleanup() {
+async function drainCleanup(plan = null) {
   if (cleanupRunning || !cleanupQueue.length) return;
   cleanupRunning = true;
   cleanupStop = false;
@@ -419,6 +440,7 @@ async function drainCleanup() {
   cleanupProgress = cleanupResume ? { ...cleanupProgress, running: true, error: null, finishedAt: null } : {
     running: true, action: first.action, source: first.source, total: cleanupQueue.length, done: 0,
     archived: 0, deleted: 0, alreadyArchived: 0, skipped: 0, failed: 0, consecutiveFailures: 0,
+    notProcessed: 0, kept: plan?.kept || {}, keptTotal: plan?.keptTotal || 0,
     error: null, startedAt: Date.now(), finishedAt: null,
   };
   cleanupResume = false;
@@ -429,53 +451,79 @@ async function drainCleanup() {
       if (!hostReady) { cleanupProgress.error = 'not_connected'; break; }
       if (current) { await sleep(3000); continue; }
       const item = cleanupQueue[0];
-      let eligible;
-      try { ({ eligible } = await callHost('chat_cleanup_check', { ids: [item.id] })); }
-      catch { cleanupProgress.error = 'not_connected'; break; }
-      // A stop while checking eligibility has not started driving this chat yet.
-      if (cleanupStop) break;
-      if (current) continue; // a job may have arrived while the host was checking
-      if (!eligible?.includes(item.id)) {
-        cleanupProgress.skipped++;
-      } else {
-        let result;
-        try {
-          const tab = tabId === null ? null : await chrome.tabs.get(tabId).catch(() => null);
-          if (!tab) tabId = (await createBackgroundTab(item.url)).id;
-          else await chrome.tabs.update(tabId, { url: item.url });
-          result = await cleanChat(tabId, item);
-        } catch (e) {
-          result = /no tab with id|tab was closed|closed tab/i.test(String(e?.message || e)) ? 'tab_closed' : 'not_confirmed';
+      cleanupItem = item;
+      cleanupDriving = false;
+      let marked = false;
+      let processed = false;
+      try {
+        if (item.source === 'auto') {
+          const prefs = await chrome.storage.local.get(CLEANUP_KEY);
+          if (!CLEANUP_ACTIONS.has(prefs[CLEANUP_KEY])) {
+            if (cleanupStop) break;
+            cleanupQueue.shift();
+            cleanupProgress.skipped++;
+            cleanupProgress.done++;
+            await saveCleanup();
+            continue;
+          }
+          item.action = prefs[CLEANUP_KEY];
         }
-        if (CLEANUP_GATES.has(result)) { cleanupProgress.error = result; break; }
-        const succeeded = ['archived', 'already_archived', 'deleted'].includes(result);
-        const state = succeeded ? (result === 'deleted' ? 'deleted' : 'archived') : 'failed';
-        const error = succeeded ? null : CLEANUP_ERRORS.has(result) ? result : 'not_confirmed';
-        let markFailed = false;
-        try { await callHost('chat_cleanup_mark', { id: item.id, state, error }); }
-        catch { markFailed = true; }
-        // Update progress together with dequeueing, after the host call has settled.
-        if (succeeded && !markFailed) {
-          cleanupProgress[result === 'already_archived' ? 'alreadyArchived' : state]++;
+        let eligible;
+        try { ({ eligible } = await callHost('chat_cleanup_check', { ids: [item.id], reserve: true })); }
+        catch { cleanupProgress.error = 'not_connected'; break; }
+        // A stop while checking eligibility has not started driving this chat yet.
+        if (cleanupStop) break;
+        if (current) continue; // a job may have arrived while the host was checking
+        if (!eligible?.includes(item.id)) {
+          cleanupProgress.skipped++;
         } else {
-          cleanupProgress.failed++;
+          cleanupDriving = true;
+          let result;
+          try {
+            const tab = tabId === null ? null : await chrome.tabs.get(tabId).catch(() => null);
+            if (!tab) tabId = (await createBackgroundTab(item.url)).id;
+            else await chrome.tabs.update(tabId, { url: item.url });
+            result = await cleanChat(tabId, item);
+          } catch (e) {
+            result = /no tab with id|tab was closed|closed tab/i.test(String(e?.message || e)) ? 'tab_closed' : 'not_confirmed';
+          }
+          if (CLEANUP_GATES.has(result)) { cleanupProgress.error = result; break; }
+          const succeeded = ['archived', 'already_archived', 'deleted'].includes(result);
+          const state = succeeded ? (result === 'deleted' ? 'deleted' : 'archived') : 'failed';
+          const error = succeeded ? null : CLEANUP_ERRORS.has(result) ? result : 'not_confirmed';
+          let markFailed = false;
+          try { await callHost('chat_cleanup_mark', { id: item.id, state, error }); marked = true; }
+          catch { markFailed = true; }
+          // Update progress together with dequeueing, after the host call has settled.
+          if (succeeded && !markFailed) {
+            cleanupProgress[result === 'already_archived' ? 'alreadyArchived' : state]++;
+          } else {
+            cleanupProgress.failed++;
+          }
+          cleanupProgress.consecutiveFailures = succeeded ? 0 : cleanupProgress.consecutiveFailures + 1;
         }
-        cleanupProgress.consecutiveFailures = succeeded ? 0 : cleanupProgress.consecutiveFailures + 1;
+        // Keep the in-flight item in session storage until its result has been recorded.
+        if (cleanupQueue[0] === item) cleanupQueue.shift();
+        processed = true;
+        cleanupProgress.done++;
+        if (cleanupProgress.consecutiveFailures >= 3) {
+          cleanupProgress.error = 'too_many_failures';
+          discardCleanupQueue();
+        }
+        await saveCleanup();
+      } finally {
+        if (!marked) await callHost('chat_cleanup_release', { id: item.id }).catch(() => {});
+        if (cleanupStop && cleanupDriving && !processed && !cleanupQueue.includes(item)) cleanupProgress.notProcessed++;
+        cleanupItem = null;
+        cleanupDriving = false;
       }
-      // Keep the in-flight item in session storage until its result has been recorded.
-      if (cleanupQueue[0] === item) cleanupQueue.shift();
-      cleanupProgress.done++;
-      if (cleanupProgress.consecutiveFailures >= 3) {
-        cleanupProgress.error = 'too_many_failures';
-        cleanupQueue = [];
-      }
-      await saveCleanup();
       if (cleanupProgress.error) break;
       if (cleanupQueue.length && !cleanupStop) await sleep(1000);
     }
   } catch {
-    cleanupProgress.error = 'not_connected';
+    cleanupProgress.error = hostReady ? 'not_confirmed' : 'not_connected';
   } finally {
+    if (cleanupStop || (cleanupProgress.error && cleanupProgress.error !== 'not_connected')) discardCleanupQueue();
     cleanupProgress.running = false;
     cleanupProgress.finishedAt = Date.now();
     await saveCleanup().catch(() => {});
@@ -493,13 +541,19 @@ async function drainCleanup() {
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (!msg || sender.id !== chrome.runtime.id || !String(sender.url || '').startsWith(chrome.runtime.getURL(''))) return;
-  if (!['cleanup:preview', 'cleanup:start', 'cleanup:stop', 'cleanup:status'].includes(msg.type)) return;
+  if (!['cleanup:preview', 'cleanup:start', 'cleanup:stop', 'cleanup:status', 'cleanup:dismiss'].includes(msg.type)) return;
   (async () => {
     await cleanupLoaded;
     if (msg.type === 'cleanup:status') return { ok: true, progress: cleanupProgress, queued: cleanupQueue.length };
+    if (msg.type === 'cleanup:dismiss') {
+      if (cleanupRunning) return { ok: false, error: 'busy' };
+      cleanupProgress = null;
+      await saveCleanup();
+      return { ok: true };
+    }
     if (msg.type === 'cleanup:stop') {
       cleanupStop = true;
-      cleanupQueue = [];
+      discardCleanupQueue();
       await saveCleanup();
       return { ok: true };
     }
@@ -510,7 +564,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     if (!hostReady) return { ok: false, error: 'not_connected' };
     const result = await callHost('chat_cleanup_list');
     if (msg.type === 'cleanup:preview') return { ok: true, result };
-    const queued = await enqueueCleanup(result.eligible, msg.action, 'manual');
+    const queued = await enqueueCleanup(result.eligible, msg.action, 'manual', result);
     return { ok: true, queued, kept: result.kept, keptTotal: result.keptTotal, cleaned: result.cleaned };
   })().then(reply, () => reply({ ok: false, error: 'not_connected' }));
   return true;

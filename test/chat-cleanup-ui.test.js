@@ -71,6 +71,15 @@ test('cleanup errors: all codes and unknown values have safe texts in both langu
   }
 });
 
+test('finish text includes unprocessed chats with singular and plural wording', () => {
+  for (const [lang, singular, plural] of [['en', '1 not processed', '7 not processed'], ['tr', '1 işlenmedi', '7 işlenmedi']]) {
+    const t = translate(lang);
+    assert.ok(finishText({ notProcessed: 1 }, t).includes(singular));
+    assert.ok(finishText({ failed: 3, notProcessed: 7 }, t).includes(plural));
+    assert.ok(!finishText({ notProcessed: 0 }, t).includes(plural));
+  }
+});
+
 // Minimal DOM stand-in: execute the actual popup handlers, without Chrome or a browser.
 class Element {
   constructor(tag = 'div') { this.tagName = tag; this.children = []; this.hidden = false; this.disabled = false; this.value = ''; this.dataset = {}; this.attrs = {}; }
@@ -157,12 +166,12 @@ test('popup delete all: first click sends nothing, cancel keeps preview, second 
   assert.equal(p.nodes.get('cleanupView').textContent, 'No Backdraw chats to clean up.');
 });
 
-test('popup archive: progress, stop, finished totals and kept reasons use the start response', async () => {
+test('popup archive: progress, stop, finished totals and kept reasons use persisted progress', async () => {
   let progress = null;
   const p = await popup({ reply: m => {
     if (m.type === 'cleanup:preview') return { ok: true, result: { eligible: [{}], kept: {}, keptTotal: 0 } };
     if (m.type === 'cleanup:start') {
-      progress = { running: true, action: 'archive', done: 0, total: 2, failed: 0 };
+      progress = { running: true, action: 'archive', done: 0, total: 2, failed: 0, kept: { failed: 2, text_reply: 1 }, keptTotal: 3 };
       return { ok: true, queued: 2, kept: { failed: 2, text_reply: 1 }, keptTotal: 3 };
     }
     if (m.type === 'cleanup:status') return { ok: true, progress };
@@ -180,6 +189,32 @@ test('popup archive: progress, stop, finished totals and kept reasons use the st
   assert.match(p.nodes.get('cleanupView').textContent, /Done: 1 archived\.3 chats were left open: 2 failed jobs, 1 ChatGPT question\./);
   assert.match(p.nodes.get('cleanupView').textContent, /background ChatGPT tab was closed/);
   assert.equal([...p.timers.values()].some(t => t.ms === 1000), false);
+});
+
+test('popup reopen shows auto language errors and persisted manual kept counts until dismissed', async () => {
+  for (const lang of ['en', 'tr']) for (const source of ['auto', 'manual']) {
+    let progress = { running: false, source, error: 'unsupported_language', notProcessed: 7,
+      kept: source === 'manual' ? { failed: 2, text_reply: 1 } : {}, keptTotal: source === 'manual' ? 3 : 0 };
+    const reply = m => {
+      if (m.type === 'cleanup:status') return { ok: true, progress };
+      if (m.type === 'cleanup:dismiss') { progress = null; return { ok: true }; }
+    };
+    const stored = { [ctx.i18n.LANGUAGE_KEY]: lang };
+    const p = await popup({ stored, reply });
+    assert.equal(p.nodes.get('settings').hidden, false);
+    const text = p.nodes.get('cleanupView').textContent;
+    assert.ok(text.includes(translate(lang)('cleanupErrLanguage')));
+    assert.ok(text.includes(keptSummary(progress.kept, progress.keptTotal, translate(lang), true)));
+    assert.ok(text.includes(lang === 'en' ? '7 not processed' : '7 işlenmedi'));
+    await p.click('cleanupView', lang === 'en' ? 'OK' : 'Tamam');
+    assert.ok(p.sent.some(m => m.type === 'cleanup:dismiss'));
+    assert.equal(p.nodes.get('cleanupView').hidden, true);
+    const reopened = await popup({ stored, reply });
+    assert.equal(reopened.nodes.get('cleanupView').hidden, true);
+  }
+  const success = await popup({ reply: m => m.type === 'cleanup:status'
+    ? { ok: true, progress: { running: false, archived: 1, error: null } } : undefined });
+  assert.equal(success.nodes.get('cleanupView').hidden, true);
 });
 
 test('popup reopen resumes running progress, clears timers on close and does not stop the worker', async () => {

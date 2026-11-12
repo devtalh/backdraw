@@ -245,7 +245,8 @@ test('chat menu clicks use exact labels inside visible menus only', () => {
   const outside = cleanupElement('div', 'Archive', { role: 'menuitem' });
   const unarchive = cleanupElement('div', 'Unarchive', { role: 'menuitem' });
   const menu = cleanupElement('div', '', { role: 'menu' }, [unarchive]);
-  const { page, document } = loadCleanupPage({ children: [outside, menu] });
+  const trigger = cleanupElement('button', 'Example chat', { 'aria-haspopup': 'menu', 'aria-expanded': 'true' });
+  const { page, document } = loadCleanupPage({ children: [cleanupElement('header', '', {}, [trigger]), outside, menu] });
   assert.equal(page.clickChatMenuItem('Archive').error, 'item_not_found');
   assert.equal(outside.clicks + unarchive.clicks, 0);
   const archive = cleanupElement('div', '  ARCHIVE  ', { role: 'menuitem' });
@@ -258,6 +259,38 @@ test('chat menu clicks use exact labels inside visible menus only', () => {
   assert.equal(page.chatMenuItems().length, 0);
   page.closeChatMenu();
   assert.equal(document.body.events[0].key, 'Escape');
+});
+
+test('chat menu stays bound to the open title trigger and validates the expected title', () => {
+  const archiveA = cleanupElement('div', 'Archive', { role: 'menuitem' });
+  const archiveB = cleanupElement('div', 'Archive', { role: 'menuitem' });
+  const menuA = cleanupElement('div', '', { role: 'menu', id: 'menu-a' }, [archiveA]);
+  const menuB = cleanupElement('div', '', { role: 'menu', id: 'menu-b' }, [archiveB]);
+  const trigger = cleanupElement('button', 'Example chat', {
+    'aria-haspopup': 'menu', 'aria-expanded': 'true', 'aria-controls': 'menu-a',
+  });
+  const { page } = loadCleanupPage({ children: [cleanupElement('header', '', {}, [trigger]), menuA, menuB] });
+  assert.deepEqual(Array.from(page.chatMenuItems()), ['Archive']);
+  assert.equal(page.clickChatMenuItem('Archive', ' example   CHAT ').clicked, true);
+  assert.equal(archiveA.clicks, 1);
+  assert.equal(archiveB.clicks, 0);
+  assert.equal(page.clickChatMenuItem('Archive', 'Other chat').error, 'title_mismatch');
+  assert.equal(archiveA.clicks, 1);
+  delete trigger.attrs['aria-controls'];
+  assert.equal(page.chatMenuItems().length, 0);
+  assert.equal(page.clickChatMenuItem('Archive').error, 'menu_unexpected');
+  trigger.attrs['aria-controls'] = 'menu-a';
+  trigger.attrs['aria-expanded'] = 'false';
+  assert.equal(page.chatMenuItems().length, 0);
+  assert.equal(page.clickChatMenuItem('Archive').error, 'menu_unexpected');
+  trigger.attrs['data-state'] = 'open';
+  menuA.hidden = true;
+  assert.equal(page.clickChatMenuItem('Archive').error, 'menu_unexpected');
+  menuA.hidden = false;
+  menuA.attrs.role = 'dialog';
+  assert.equal(page.clickChatMenuItem('Archive').error, 'menu_unexpected');
+  assert.equal(archiveA.clicks, 1);
+  assert.equal(archiveB.clicks, 0);
 });
 
 test('delete confirmation validates the exact title and cancels missing or ambiguous confirmations', () => {
