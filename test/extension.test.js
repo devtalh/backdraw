@@ -376,6 +376,57 @@ test('chat cleanup: manual archive updates pending deletes without changing the 
   ]);
 });
 
+test('chat cleanup: a manual request during a running cleanup updates the progress action and source', async () => {
+  for (const [setting, manual, extra] of [['archive', 'delete', { confirmed: true }], ['delete', 'archive', {}]]) {
+    let release, entered;
+    const blocked = new Promise(resolve => { release = resolve; });
+    const opening = new Promise(resolve => { entered = resolve; });
+    let opens = 0;
+    const w = cleanupWorker({ setting, chats: [0, 1, 2].map(cleanupChat), page: async name => {
+      if (name === 'openChatMenu' && ++opens === 1) { entered(); await blocked; }
+    } });
+    await w.welcome(); await w.done([0, 1, 2].map(cleanupChat)); await opening;
+    assert.equal(w.state().progress.action, setting);
+    assert.equal(w.state().progress.source, 'auto');
+    await w.send({ type: 'cleanup:start', action: manual, ...extra });
+    assert.equal(w.state().progress.action, manual);
+    assert.equal(w.state().progress.source, 'manual');
+    release(); await w.finish();
+  }
+});
+
+test('chat cleanup: an auto item whose setting turned to keep is skipped without a reservation release', async () => {
+  let changed = false;
+  const w = cleanupWorker({ setting: 'archive', onSleep(ms) {
+    if (ms === 1000 && !changed) { changed = true; w.local.chatCleanup = 'keep'; }
+  } });
+  await w.welcome(); await w.done([cleanupChat(), cleanupChat(1)]); await w.finish();
+  assert.equal(changed, true);
+  assert.equal(w.state().progress.skipped, 1);
+  assert.equal(w.calls('chat_cleanup_check').length, 1);
+  assert.equal(w.calls('chat_cleanup_release').length, 0);
+});
+
+test('chat cleanup: items queued after an error finishes are discarded instead of left in the queue', async () => {
+  let release, entered;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const closing = new Promise(resolve => { entered = resolve; });
+  let closes = 0;
+  const w = cleanupWorker({ setting: 'archive', page: name => name === 'chatPageState'
+    ? { onChat: true, trigger: true, lang: 'tr' } : undefined, onRemove: async () => {
+    if (++closes === 1) { entered(); await blocked; }
+  } });
+  await w.welcome(); await w.done(); await closing;
+  assert.equal(w.state().progress.error, 'unsupported_language');
+  await w.done([cleanupChat(1)]);
+  assert.equal(w.state().queue.length, 1);
+  release(); await w.finish();
+  await w.wait(() => w.state().queue.length === 0 && w.session.cleanupQueue.length === 0);
+  assert.equal(w.state().progress.notProcessed, 2);
+  assert.equal(w.session.cleanupProgress.notProcessed, 2);
+  assert.equal(w.calls('chat_cleanup_check').length, 1);
+});
+
 test('chat cleanup: an idle manual archive replaces deletes preserved after a host error', async () => {
   let checks = 0;
   const w = cleanupWorker({ chats: [cleanupChat(), cleanupChat(1)], host: msg => {

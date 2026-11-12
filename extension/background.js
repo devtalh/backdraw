@@ -332,6 +332,8 @@ async function enqueueCleanup(chats, action, source, plan = null) {
       for (const item of cleanupQueue) {
         if (item !== cleanupItem) Object.assign(item, { action, source });
       }
+      cleanupProgress.action = action;
+      cleanupProgress.source = 'manual';
       cleanupProgress.kept = plan?.kept || {};
       cleanupProgress.keptTotal = plan?.keptTotal || 0;
     }
@@ -455,6 +457,7 @@ async function drainCleanup(plan = null) {
       cleanupDriving = false;
       let marked = false;
       let processed = false;
+      let reserved = false;
       try {
         if (item.source === 'auto') {
           const prefs = await chrome.storage.local.get(CLEANUP_KEY);
@@ -469,6 +472,7 @@ async function drainCleanup(plan = null) {
           item.action = prefs[CLEANUP_KEY];
         }
         let eligible;
+        reserved = true;
         try { ({ eligible } = await callHost('chat_cleanup_check', { ids: [item.id], reserve: true })); }
         catch { cleanupProgress.error = 'not_connected'; break; }
         // A stop while checking eligibility has not started driving this chat yet.
@@ -512,7 +516,7 @@ async function drainCleanup(plan = null) {
         }
         await saveCleanup();
       } finally {
-        if (!marked) await callHost('chat_cleanup_release', { id: item.id }).catch(() => {});
+        if (reserved && !marked) await callHost('chat_cleanup_release', { id: item.id }).catch(() => {});
         if (cleanupStop && cleanupDriving && !processed && !cleanupQueue.includes(item)) cleanupProgress.notProcessed++;
         cleanupItem = null;
         cleanupDriving = false;
@@ -535,6 +539,10 @@ async function drainCleanup(plan = null) {
     if (cleanupQueue.length && !cleanupStop && !error) {
       cleanupResume = true;
       drainCleanup();
+    } else if (cleanupQueue.length && (cleanupStop || (error && error !== 'not_connected'))) {
+      // Items queued after the failure or stop must not sit in the queue silently.
+      discardCleanupQueue();
+      await saveCleanup().catch(() => {});
     }
   }
 }

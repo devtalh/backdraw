@@ -26,6 +26,9 @@ const { withCollection, isInside } = require('./lib/collections');
 const store = require('./lib/collection-store');
 const { callAssembler, answerCall } = require('./lib/extension-calls');
 const { CHAT_STATES, chatIdFromUrl, ownedChatIds, referencedChatIds, cleanupPlan, eligibleForJob } = require('./lib/chat-cleanup');
+// Fixed failure codes the extension may report; anything else is stored as 'not_confirmed'.
+const CLEANUP_ERROR_CODES = new Set(['bad_target', 'wrong_page', 'menu_trigger_not_found', 'menu_unexpected',
+  'item_not_found', 'item_ambiguous', 'dialog_not_found', 'title_mismatch', 'confirm_button_not_found', 'not_confirmed']);
 const gallery = require('./lib/gallery');
 const platform = require('./platform');
 
@@ -869,7 +872,7 @@ const handlers = {
     if (!jobs.some(job => ownedChatIds(job).has(id))) {
       throw new shared.BridgeError('Not a chat this bridge opened.', 'BAD_REQUEST');
     }
-    const entry = { state, at: now(), error: state === 'failed' ? String(p.error || '').slice(0, 200) : null };
+    const entry = { state, at: now(), error: state === 'failed' ? (CLEANUP_ERROR_CODES.has(p.error) ? p.error : 'not_confirmed') : null };
     for (const job of jobs) {
       if (referencedChatIds(job).has(id)) {
         job.chatStates ||= {};

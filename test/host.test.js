@@ -1407,7 +1407,13 @@ test('chat cleanup host API and completion messages survive a restart', async t 
       await extensionCall('chat_cleanup_mark', { id: a, state: 'failed', error: 'x'.repeat(250) });
       await receive(m => m.type === 'gallery_changed');
       const failed = (await request('job', { jobId: owner.id })).chatStates[a];
-      assert.equal(failed.error, 'x'.repeat(200));
+      assert.equal(failed.error, 'not_confirmed');
+      await extensionCall('chat_cleanup_mark', { id: a, state: 'failed', error: 'Private title: free text' });
+      await receive(m => m.type === 'gallery_changed');
+      assert.equal((await request('job', { jobId: owner.id })).chatStates[a].error, 'not_confirmed');
+      await extensionCall('chat_cleanup_mark', { id: a, state: 'failed', error: 'title_mismatch' });
+      await receive(m => m.type === 'gallery_changed');
+      assert.equal((await request('job', { jobId: owner.id })).chatStates[a].error, 'title_mismatch');
       assert.equal(failed.state, 'failed'); assert.ok(Number.isFinite(Date.parse(failed.at)));
       assert.deepEqual(await extensionCall('chat_cleanup_check', { ids: [a] }), { eligible: [a] });
       assert.deepEqual(await extensionCall('chat_cleanup_mark', { id: a.toUpperCase(), state: 'archived', error: 'Ignored' }), { id: a, state: 'archived' });
@@ -1442,7 +1448,7 @@ test('chat cleanup host API and completion messages survive a restart', async t 
       const log = fs.readFileSync(path.join(dir, 'logs', 'host.log'), 'utf8');
       assert.doesNotMatch(log, forbidden);
       const marks = log.split('\n').filter(line => line.includes(`chat ${a} `));
-      assert.equal(marks.length, 3);
+      assert.equal(marks.length, 5); // three original marks plus two extra failed marks for the error-code checks
       for (const line of marks) assert.match(line, new RegExp(`\\[info\\] chat ${a} (failed|archived|deleted)$`));
     });
   } finally {
