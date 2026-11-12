@@ -150,7 +150,7 @@ test('popup setting: defaults to keep, validates stored modes, saves archive/kee
 });
 
 test('popup delete all: first click sends nothing, cancel keeps preview, second confirmation sends confirmed true', async () => {
-  const p = await popup({ reply: m => m.type === 'cleanup:preview' ? { ok: true, result: { eligible: [{ id: 'a' }, { id: 'b' }], deletable: [{ id: 'a' }, { id: 'b' }], kept: {}, keptTotal: 0, maxJobs: 87 } }
+  const p = await popup({ reply: m => m.type === 'cleanup:preview' ? { ok: true, result: { eligible: [{ id: 'a' }, { id: 'b' }], kept: {}, keptTotal: 0, maxJobs: 87 } }
     : m.type === 'cleanup:start' ? { ok: true, queued: 0 } : undefined });
   await p.click('cleanupNow');
   assert.match(p.nodes.get('cleanupHint').textContent, /last 87 jobs/);
@@ -169,7 +169,7 @@ test('popup delete all: first click sends nothing, cancel keeps preview, second 
 test('popup archive: progress, stop, finished totals and kept reasons use persisted progress', async () => {
   let progress = null;
   const p = await popup({ reply: m => {
-    if (m.type === 'cleanup:preview') return { ok: true, result: { eligible: [{}], deletable: [{}], kept: {}, keptTotal: 0 } };
+    if (m.type === 'cleanup:preview') return { ok: true, result: { eligible: [{}], kept: {}, keptTotal: 0 } };
     if (m.type === 'cleanup:start') {
       progress = { running: true, action: 'archive', done: 0, total: 2, failed: 0, kept: { failed: 2, text_reply: 1 }, keptTotal: 3 };
       return { ok: true, queued: 2, kept: { failed: 2, text_reply: 1 }, keptTotal: 3 };
@@ -228,7 +228,7 @@ test('popup reopen resumes running progress, clears timers on close and does not
 });
 
 test('popup preview: disconnected errors and no eligible chats show no archive/delete actions', async () => {
-  for (const response of [{ ok: false, error: 'not_connected' }, { ok: true, result: { eligible: [], deletable: [], kept: { failed: 1 }, keptTotal: 1 } }]) {
+  for (const response of [{ ok: false, error: 'not_connected' }, { ok: true, result: { eligible: [], kept: { failed: 1 }, keptTotal: 1 } }]) {
     const p = await popup({ reply: m => m.type === 'cleanup:preview' ? response : undefined });
     await p.click('cleanupNow');
     const text = p.nodes.get('cleanupView').textContent;
@@ -238,44 +238,74 @@ test('popup preview: disconnected errors and no eligible chats show no archive/d
   }
 });
 
-test('preview text: archivable and deletable counts are separate, with already archived chats called out', () => {
-  const chats = (count, archived = 0) => Array.from({ length: count }, (_, i) => (i < archived ? { id: String(i), archived: true } : { id: String(i) }));
+test('preview text: one eligible count covers both actions, with singulars and empty totals', () => {
+  const chats = count => Array.from({ length: count }, (_, i) => ({ id: String(i) }));
   for (const [lang, cases] of [
     ['en', [
-      [{ eligible: chats(3), deletable: chats(5, 2) }, '3 chats can be archived. 5 chats can be deleted (2 of them already archived).'],
-      [{ eligible: chats(1), deletable: chats(1) }, '1 chat can be archived. 1 chat can be deleted.'],
-      [{ eligible: [], deletable: chats(1, 1) }, '1 chat can be deleted (already archived).'],
-      [{ eligible: [], deletable: chats(4) }, '4 chats can be deleted.'],
-      [{ eligible: [], deletable: [] }, 'No Backdraw chats to clean up.'],
+      [{ eligible: chats(3) }, '3 chats can be archived or deleted.'],
+      [{ eligible: chats(1) }, '1 chat can be archived or deleted.'],
+      [{ eligible: [], cleaned: { archived: 1 } }, 'No Backdraw chats to clean up.'],
+      [{ eligible: chats(4) }, '4 chats can be archived or deleted.'],
+      [{ eligible: [] }, 'No Backdraw chats to clean up.'],
     ]],
     ['tr', [
-      [{ eligible: chats(3), deletable: chats(5, 2) }, '3 sohbet arşivlenebilir. 5 sohbet silinebilir (2 tanesi zaten arşivli).'],
-      [{ eligible: [], deletable: chats(1, 1) }, '1 sohbet silinebilir (zaten arşivli).'],
-      [{ eligible: [], deletable: [] }, 'Temizlenecek Backdraw sohbeti yok.'],
+      [{ eligible: chats(3) }, '3 sohbet arşivlenebilir veya silinebilir.'],
+      [{ eligible: [], cleaned: { archived: 1 } }, 'Temizlenecek Backdraw sohbeti yok.'],
+      [{ eligible: [] }, 'Temizlenecek Backdraw sohbeti yok.'],
+      [{ eligible: chats(1) }, '1 sohbet arşivlenebilir veya silinebilir.'],
     ]],
   ]) for (const [preview, text] of cases) assert.equal(ctx.backdrawCleanupText.previewText(preview, translate(lang)), text);
 });
 
-test('popup preview: only delete is offered when every eligible chat is archived, and confirmation uses the deletable count', async () => {
+test('popup preview: both actions use the eligible count, including delete confirmation', async () => {
   const p = await popup({ reply: m => m.type === 'cleanup:preview'
-    ? { ok: true, result: { eligible: [], deletable: [{ id: 'a', archived: true }, { id: 'b', archived: true }], kept: {}, keptTotal: 0 } }
+    ? { ok: true, result: { eligible: [{ id: 'a' }, { id: 'b' }], cleaned: { archived: 0 }, kept: {}, keptTotal: 0 } }
     : m.type === 'cleanup:start' ? { ok: true, queued: 0 } : undefined });
   await p.click('cleanupNow');
-  assert.equal(p.nodes.get('cleanupView').textContent, '2 chats can be deleted (2 of them already archived).Delete all');
-  await assert.rejects(() => p.click('cleanupView', 'Archive all'));
+  assert.equal(p.nodes.get('cleanupView').textContent, '2 chats can be archived or deleted.Archive allDelete all');
   await p.click('cleanupView', 'Delete all');
   assert.match(p.nodes.get('cleanupView').textContent, /Delete 2 chats\? This can't be undone/);
   await p.click('cleanupView', 'Delete 2 chats');
   assert.deepEqual(p.sent.filter(m => m.type === 'cleanup:start'), [{ type: 'cleanup:start', action: 'delete', confirmed: true }]);
 });
 
-test('popup preview: only archive is offered when nothing is deletable', async () => {
+test('popup preview: a single eligible chat offers both actions', async () => {
   const p = await popup({ reply: m => m.type === 'cleanup:preview'
-    ? { ok: true, result: { eligible: [{ id: 'a' }], deletable: [], kept: {}, keptTotal: 0 } } : undefined });
+    ? { ok: true, result: { eligible: [{ id: 'a' }], kept: {}, keptTotal: 0 } } : undefined });
   await p.click('cleanupNow');
-  assert.equal(p.nodes.get('cleanupView').textContent, '1 chat can be archived.Archive all');
-  assert.doesNotMatch(p.nodes.get('cleanupView').textContent, /Delete all/);
+  assert.equal(p.nodes.get('cleanupView').textContent, '1 chat can be archived or deleted.Archive allDelete all');
+  assert.match(p.nodes.get('cleanupView').textContent, /Delete all/);
   await p.click('cleanupView', 'Archive all');
+});
+
+test('popup preview: archived hints use exact English and Turkish wording, even with no eligible chats', async () => {
+  for (const [lang, hint] of [
+    ['en', 'Chats already in the archive are not deleted here; to delete them, open Settings > Archived chats in ChatGPT.'],
+    ['tr', "Arşivdeki sohbetler burada silinmez; silmek için ChatGPT'de Settings > Archived chats sayfasını aç."],
+  ]) for (const n of [0, 1]) for (const archived of [0, 2]) {
+    const p = await popup({ stored: { [ctx.i18n.LANGUAGE_KEY]: lang }, reply: m => m.type === 'cleanup:preview'
+      ? { ok: true, result: { eligible: Array(n).fill({}), cleaned: { archived }, kept: {}, keptTotal: 0 } } : undefined });
+    await p.click('cleanupNow');
+    const text = p.nodes.get('cleanupView').textContent;
+    assert.equal(text.includes(hint), archived > 0);
+    if (!n) {
+      assert.ok(text.startsWith(translate(lang)('cleanupEmpty')));
+      await assert.rejects(() => p.click('cleanupView', translate(lang)('cleanupArchiveAll')));
+      await assert.rejects(() => p.click('cleanupView', translate(lang)('cleanupDeleteAll')));
+    }
+  }
+});
+
+test('popup finish: archived hint appears only for delete with already archived results', async () => {
+  for (const lang of ['en', 'tr']) for (const action of ['archive', 'delete']) for (const alreadyArchived of [0, 1]) {
+    let progress = { running: true, action, alreadyArchived, done: 1, total: 1 };
+    const p = await popup({ stored: { [ctx.i18n.LANGUAGE_KEY]: lang }, reply: m => m.type === 'cleanup:status'
+      ? { ok: true, progress } : undefined });
+    progress = { ...progress, running: false };
+    await p.poll();
+    assert.equal(p.nodes.get('cleanupView').textContent.includes(translate(lang)('cleanupArchivedHint')),
+      action === 'delete' && alreadyArchived > 0);
+  }
 });
 
 test('finish text: chats already gone from ChatGPT are listed with exact English and Turkish wording', () => {

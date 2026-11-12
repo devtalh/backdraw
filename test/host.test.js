@@ -1276,6 +1276,7 @@ test('chat cleanup host API and completion messages survive a restart', async t 
   const pipe = process.platform === 'win32' ? `\\\\.\\pipe\\${tag}` : path.join(os.tmpdir(), `${tag}.sock`);
   const a = '9812a3b4-1c2d-8000-9e8f-0123456789ab';
   const b = 'a812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const c = 'c812a3b4-1c2d-8000-9e8f-0123456789ab';
   const unknown = 'b812a3b4-1c2d-8000-9e8f-0123456789ab';
   const url = id => `https://chatgpt.com/c/${id}`;
   const messages = [], traffic = [];
@@ -1398,7 +1399,7 @@ test('chat cleanup host API and completion messages survive a restart', async t 
       await finish(recovered, url(a));
       assert.deepEqual(await extensionCall('chat_cleanup_check', { ids: [a] }), { eligible: [a] });
     });
-    await t.test('mark validates ownership and state, copies state to every reference and persists it', async () => {
+    await t.test('mark validates ownership and state, copies state to every reference and persists it', async t => {
       for (const id of [null, 'short', 12]) {
         await assert.rejects(extensionCall('chat_cleanup_mark', { id, state: 'deleted' }), { code: 'BAD_REQUEST' });
       }
@@ -1413,9 +1414,6 @@ test('chat cleanup host API and completion messages survive a restart', async t 
       await extensionCall('chat_cleanup_mark', { id: a, state: 'failed', error: 'Private title: free text' });
       await receive(m => m.type === 'gallery_changed');
       assert.equal((await request('job', { jobId: owner.id })).chatStates[a].error, 'not_confirmed');
-      await extensionCall('chat_cleanup_mark', { id: a, state: 'failed', error: 'title_mismatch' });
-      await receive(m => m.type === 'gallery_changed');
-      assert.equal((await request('job', { jobId: owner.id })).chatStates[a].error, 'title_mismatch');
       assert.equal(failed.state, 'failed'); assert.ok(Number.isFinite(Date.parse(failed.at)));
       assert.deepEqual(await extensionCall('chat_cleanup_check', { ids: [a] }), { eligible: [a] });
       assert.deepEqual(await extensionCall('chat_cleanup_mark', { id: a.toUpperCase(), state: 'archived', error: 'Ignored' }), { id: a, state: 'archived' });
@@ -1423,22 +1421,43 @@ test('chat cleanup host API and completion messages survive a restart', async t 
       assert.equal((await request('job', { jobId: owner.id })).chatStates[a].error, null);
       const archivedReturn = await request('generate', { prompt: 'Archived chat remains usable', startUrl: url(a) });
       await finish(archivedReturn, url(a));
-      assert.deepEqual(await extensionCall('chat_cleanup_mark', { id: a, state: 'deleted' }), { id: a, state: 'deleted' });
+      await assert.rejects(extensionCall('chat_cleanup_mark', { id: a, state: 'deleted' }), {
+        code: 'BAD_REQUEST', message: 'This chat is archived; the bridge does not delete archived chats.',
+      });
+      await t.test('archived chats reject failed marks without changing state or becoming eligible', async () => {
+        const archived = (await request('job', { jobId: owner.id })).chatStates[a];
+        const stored = fs.readFileSync(path.join(dir, 'data', 'jobs.json'), 'utf8');
+        await assert.rejects(extensionCall('chat_cleanup_mark', { id: a, state: 'failed', error: 'title_mismatch' }), {
+          code: 'BAD_REQUEST', message: 'This chat is archived; the bridge leaves archived chats as they are.',
+        });
+        assert.deepEqual((await request('job', { jobId: owner.id })).chatStates[a], archived);
+        assert.deepEqual(await extensionCall('chat_cleanup_check', { ids: [a], reserve: true }), { eligible: [] });
+        assert.equal(fs.readFileSync(path.join(dir, 'data', 'jobs.json'), 'utf8'), stored);
+        assert.equal((await extensionCall('chat_cleanup_list')).eligible.some(chat => chat.id === a), false);
+      });
+      const deleteOwner = await request('generate', { prompt: 'Separate cleanup chat' });
+      await finish(deleteOwner, url(c));
+      returning = await request('generate', { prompt: 'Separate cleanup reference', startUrl: url(c) });
+      await finish(returning, url(c));
+      await extensionCall('chat_cleanup_mark', { id: c, state: 'failed', error: 'title_mismatch' });
+      await receive(m => m.type === 'gallery_changed');
+      assert.equal((await request('job', { jobId: deleteOwner.id })).chatStates[c].error, 'title_mismatch');
+      assert.deepEqual(await extensionCall('chat_cleanup_mark', { id: c, state: 'deleted' }), { id: c, state: 'deleted' });
       await receive(m => m.type === 'gallery_changed');
       const stored = JSON.parse(fs.readFileSync(path.join(dir, 'data', 'jobs.json'), 'utf8'));
-      for (const job of stored.filter(j => j.startUrl === url(a) || j.conversationUrl === url(a))) {
-        assert.deepEqual(job.chatStates[a], stored.find(j => j.id === owner.id).chatStates[a]);
+      for (const job of stored.filter(j => j.startUrl === url(c) || j.conversationUrl === url(c))) {
+        assert.deepEqual(job.chatStates[c], stored.find(j => j.id === deleteOwner.id).chatStates[c]);
       }
       await stop(); await start();
       const plan = await extensionCall('chat_cleanup_list');
       assert.equal(plan.maxJobs, 100);
-      assert.deepEqual(plan.cleaned, { archived: 0, deleted: 1, gone: 0 });
+      assert.deepEqual(plan.cleaned, { archived: 1, deleted: 1, gone: 0 });
       assert.deepEqual(plan.eligible, []);
-      assert.equal((await request('job', { jobId: returning.id })).chatStates[a].state, 'deleted');
+      assert.equal((await request('job', { jobId: returning.id })).chatStates[c].state, 'deleted');
     });
     await t.test('deleted conversations reject new jobs without adding history', async () => {
       const before = (await extensionCall('chat_cleanup_list')).jobsScanned;
-      await assert.rejects(request('generate', { prompt: 'Deleted chat', startUrl: url(a) }), {
+      await assert.rejects(request('generate', { prompt: 'Deleted chat', startUrl: url(c) }), {
         code: 'CHAT_DELETED',
         message: 'This ChatGPT conversation was deleted by Backdraw chat cleanup. Start a new chat and pass the saved image in reference_images instead.',
       });
@@ -1473,7 +1492,7 @@ test('chat cleanup host API and completion messages survive a restart', async t 
       await assert.rejects(request('generate', { prompt: 'Gone chat', startUrl: url(b) }), { code: 'CHAT_GONE', message: goneMessage });
       const plan = await extensionCall('chat_cleanup_list');
       assert.equal(plan.jobsScanned, before);
-      assert.deepEqual(plan.cleaned, { archived: 0, deleted: 1, gone: 1 });
+      assert.deepEqual(plan.cleaned, { archived: 1, deleted: 1, gone: 1 });
       assert.deepEqual(await extensionCall('chat_cleanup_check', { ids: [b], action: 'delete' }), { eligible: [] });
     });
     await t.test('cleanup traffic and scratch host logs contain no session secrets', () => {
@@ -1481,9 +1500,9 @@ test('chat cleanup host API and completion messages survive a restart', async t 
       assert.doesNotMatch(JSON.stringify(traffic), forbidden);
       const log = fs.readFileSync(path.join(dir, 'logs', 'host.log'), 'utf8');
       assert.doesNotMatch(log, forbidden);
-      const marks = log.split('\n').filter(line => line.includes(`chat ${a} `));
-      assert.equal(marks.length, 5); // three original marks plus two extra failed marks for the error-code checks
-      for (const line of marks) assert.match(line, new RegExp(`\\[info\\] chat ${a} (failed|archived|deleted)$`));
+      const marks = log.split('\n').filter(line => line.includes(`chat ${a} `) || line.includes(`chat ${c} `));
+      assert.equal(marks.length, 5); // Three marks on the archived chat and two on the separate deleted chat.
+      for (const line of marks) assert.match(line, new RegExp(`\\[info\\] chat (${a}|${c}) (failed|archived|deleted)$`));
     });
   } finally {
     if (host && host.exitCode === null) await stop();
@@ -1493,7 +1512,7 @@ test('chat cleanup host API and completion messages survive a restart', async t 
   }
 });
 
-test('cleanup check honors the action, archived chats are deletable and deleted chats are final', () => {
+test('cleanup check ignores the action, never reserves archived chats and deleted chats are final', () => {
   const vm = require('node:vm');
   const source = fs.readFileSync(path.join(ROOT, 'host.js'), 'utf8').split('// ---------------------------------------------------------------- start')[0];
   const a = '6812a3b4-1c2d-8000-9e8f-0123456789ab';
@@ -1514,7 +1533,7 @@ test('cleanup check honors the action, archived chats are deletable and deleted 
     setTimeout: (callback, ms) => { const timer = { callback, ms }; timers.push(timer); return timer; },
     clearTimeout() {}, setImmediate() {},
   };
-  vm.runInNewContext(source + '\nmodule.exports = { jobs, handlers, connect: () => { extension = { version: "test" }; } };', context);
+  vm.runInNewContext(source + '\nmodule.exports = { jobs, handlers, cleanupReservations, connect: () => { extension = { version: "test" }; } };', context);
   const api = context.module.exports;
   api.connect();
   api.jobs.push({ id: 'one', mode: 'generate', startUrl: null, status: 'succeeded', conversationUrl: url(a), images: [{}] });
@@ -1525,22 +1544,38 @@ test('cleanup check honors the action, archived chats are deletable and deleted 
   api.handlers.chat_cleanup_mark({ id: a, state: 'archived' });
   assert.deepEqual(check(), [b]);
   assert.deepEqual(check('archive'), [b]);
-  assert.deepEqual(check('delete'), [a, b]);
+  assert.deepEqual(check('delete'), [b]);
   const list = api.handlers.chat_cleanup_list();
   assert.deepEqual(list.eligible.map(chat => chat.id), [b]);
-  assert.deepEqual(list.deletable.map(chat => [chat.id, !!chat.archived]), [[a, true], [b, false]]);
-  // A delete check reserves the archived chat like any other.
-  assert.equal(check('delete', { ids: [a], reserve: true }).length, 1);
-  const marked = api.handlers.chat_cleanup_mark({ id: a, state: 'deleted' });
-  assert.deepEqual({ id: marked.id, state: marked.state }, { id: a, state: 'deleted' });
-  assert.throws(() => api.handlers.chat_cleanup_mark({ id: a, state: 'archived' }), { code: 'BAD_REQUEST', message: 'This chat was already deleted.' });
-  assert.throws(() => api.handlers.chat_cleanup_mark({ id: a, state: 'failed' }), { code: 'BAD_REQUEST' });
+  assert.equal(Object.hasOwn(list, 'deletable'), false);
+  assert.equal(check('delete', { ids: [a], reserve: true }).length, 0);
+  assert.equal(api.cleanupReservations.has(a), false);
+  assert.throws(() => api.handlers.chat_cleanup_mark({ id: a, state: 'deleted' }), {
+    code: 'BAD_REQUEST', message: 'This chat is archived; the bridge does not delete archived chats.',
+  });
+  assert.equal(api.jobs[0].chatStates[a].state, 'archived');
+  assert.equal(api.handlers.chat_cleanup_mark({ id: a, state: 'archived' }).state, 'archived');
+  const archived = { ...api.jobs[0].chatStates[a] };
+  assert.throws(() => api.handlers.chat_cleanup_mark({ id: a, state: 'failed' }), {
+    code: 'BAD_REQUEST', message: 'This chat is archived; the bridge leaves archived chats as they are.',
+  });
+  assert.deepEqual({ ...api.jobs[0].chatStates[a] }, archived);
+  assert.deepEqual(check('delete'), [b]);
+  assert.equal(check('delete', { ids: [a], reserve: true }).length, 0);
+  assert.equal(api.cleanupReservations.has(a), false);
+  const c = '8812a3b4-1c2d-8000-9e8f-0123456789ab';
+  api.jobs.push({ id: 'three', mode: 'generate', startUrl: null, status: 'succeeded', conversationUrl: url(c), images: [{}] });
+  api.handlers.chat_cleanup_mark({ id: c, state: 'failed' });
+  const marked = api.handlers.chat_cleanup_mark({ id: c, state: 'deleted' });
+  assert.deepEqual({ id: marked.id, state: marked.state }, { id: c, state: 'deleted' });
+  assert.throws(() => api.handlers.chat_cleanup_mark({ id: c, state: 'archived' }), { code: 'BAD_REQUEST', message: 'This chat was already deleted.' });
+  assert.throws(() => api.handlers.chat_cleanup_mark({ id: c, state: 'failed' }), { code: 'BAD_REQUEST' });
   assert.deepEqual(check('delete'), [b]);
   assert.deepEqual(check('archive'), [b]);
   const after = api.handlers.chat_cleanup_list();
-  assert.deepEqual(after.deletable.map(chat => chat.id), [b]);
+  assert.equal(Object.hasOwn(after, 'deletable'), false);
   assert.deepEqual(after.eligible.map(chat => chat.id), [b]);
-  assert.deepEqual(after.cleaned, { archived: 0, deleted: 1, gone: 0 });
+  assert.deepEqual(after.cleaned, { archived: 1, deleted: 1, gone: 0 });
 });
 
 test('a chat found gone leaves every cleanup list, takes archived to gone and is final', () => {
@@ -1579,7 +1614,7 @@ test('a chat found gone leaves every cleanup list, takes archived to gone and is
   assert.deepEqual(Array.from(api.handlers.chat_cleanup_check({ ids: [a, b], action: 'archive' }).eligible), [b]);
   const list = api.handlers.chat_cleanup_list();
   assert.deepEqual(list.eligible.map(chat => chat.id), [b]);
-  assert.deepEqual(list.deletable.map(chat => chat.id), [b]);
+  assert.equal(Object.hasOwn(list, 'deletable'), false);
   assert.deepEqual(list.cleaned, { archived: 0, deleted: 0, gone: 1 });
   assert.throws(() => api.createJob({ prompt: 'Gone chat', startUrl: url(a) }), {
     code: 'CHAT_GONE',

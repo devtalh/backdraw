@@ -862,7 +862,7 @@ const handlers = {
       throw new shared.BridgeError('ids must be an array of at most 200 chat ids.', 'BAD_REQUEST');
     }
     const plan = cleanupPlan(jobs);
-    const eligible = new Set((p.action === 'delete' ? plan.deletable : plan.eligible).map(chat => chat.id));
+    const eligible = new Set(plan.eligible.map(chat => chat.id));
     const ids = p.ids.filter(id => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
       .map(id => id.toLowerCase()).filter(id => eligible.has(id));
     if (p.reserve === true && p.ids.length === 1 && ids.length === 1) {
@@ -892,6 +892,12 @@ const handlers = {
       if (prior && (!latest || String(prior.at || '') >= String(latest.at || ''))) latest = prior;
     }
     if (latest?.state === 'deleted') throw new shared.BridgeError('This chat was already deleted.', 'BAD_REQUEST');
+    if (latest?.state === 'archived' && state === 'deleted') {
+      throw new shared.BridgeError('This chat is archived; the bridge does not delete archived chats.', 'BAD_REQUEST');
+    }
+    if (latest?.state === 'archived' && state === 'failed') {
+      throw new shared.BridgeError('This chat is archived; the bridge leaves archived chats as they are.', 'BAD_REQUEST');
+    }
     if (latest?.state === 'gone') throw new shared.BridgeError('This chat is already gone from ChatGPT.', 'BAD_REQUEST');
     const entry = { state, at: now(), error: state === 'failed' ? (CLEANUP_ERROR_CODES.has(p.error) ? p.error : 'not_confirmed') : null };
     for (const job of jobs) {

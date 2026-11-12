@@ -11,7 +11,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Popup chat cleanup setting (Keep/Archive/Delete, default Keep) and **Clean up now**. Only chats
   of successful jobs in Backdraw's own records are eligible, using the chat menu in ChatGPT's
-  English interface without reading session credentials.
+  English interface without reading session credentials. Chats that are already archived are skipped, and a chat whose menu does not appear is retried once after a reload.
 
 ### Fixed
 

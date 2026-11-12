@@ -220,7 +220,7 @@ Açılır pencerenin ayarlarındaki **İş bitince ChatGPT sohbeti** seçeneği 
 arşivlemeyi veya silmeyi sağlar. Silme ayrıca onay ister; temizlik sürerken **Durdur** kullanılabilir.
 Yalnızca Backdraw'ın açtığı ve görselleri kaydedilerek başarıyla biten işlerin sohbetleri uygundur.
 Başarısız, zaman aşımına uğrayan veya ChatGPT'nin soru sorduğu işlerin sohbetleri açık kalır.
-Backdraw yalnızca son 100 iş kaydındaki sohbetleri bilir; daha eski sohbetler bilinmez. Backdraw'ın zaten arşivlediği sohbetler sonradan silinebilir ama bir daha arşivlenmez.
+Backdraw yalnızca son 100 iş kaydındaki sohbetleri bilir; daha eski sohbetler bilinmez. Zaten arşivlenmiş sohbetler hem Arşivle hem Sil'de atlanır; silmek için ChatGPT'de Settings > Archived chats sayfasını kullan. Bir sohbetin menüsü görünmezse Backdraw sekmeyi yeniden yükleyip o sohbeti bir kez daha dener.
 
 Temizlik ChatGPT'nin **İngilizce arayüzündeki** sohbet menüsünü kullanır ve oturum bilgilerini okumaz.
 Silme geri alınamaz ama görseller ChatGPT Library'de ve bilgisayarında kalır.

@@ -11,15 +11,9 @@
     return t(`cleanupKept${done ? 'Done' : 'Preview'}${keptTotal === 1 ? '_one' : ''}`, { n: keptTotal, list });
   }
 
-  // N chats can be archived; M can be deleted, K of those already archived.
   function previewText(preview, t) {
-    const n = preview?.eligible?.length || 0, m = preview?.deletable?.length || 0;
-    const k = (preview?.deletable || []).filter(chat => chat.archived).length;
-    const one = count => (count === 1 ? '_one' : '');
-    const parts = [];
-    if (n) parts.push(t('cleanupArchivable' + one(n), { n }));
-    if (m) parts.push(k ? t('cleanupDeletableArchived' + one(m), { n: m, k }) : t('cleanupDeletable' + one(m), { n: m }));
-    return parts.length ? parts.join(' ') : t('cleanupEmpty');
+    const n = preview?.eligible?.length || 0;
+    return n ? t('cleanupEligible' + (n === 1 ? '_one' : ''), { n }) : t('cleanupEmpty');
   }
 
   function progressText(progress, t) {

@@ -400,8 +400,8 @@ async function cleanChat(tabId, item) {
       await pageCall(tabId, 'closeChatMenu');
       return stopped('menu_unexpected');
     }
-    // An archived chat only needs to be skipped when archiving; deleting works from the same menu.
-    if (exact(items, 'Unarchive') && item.action === 'archive') {
+    // Archived chats are left untouched by either cleanup action.
+    if (exact(items, 'Unarchive')) {
       await pageCall(tabId, 'closeChatMenu');
       return stopped('already_archived');
     }
@@ -444,6 +444,25 @@ async function cleanChat(tabId, item) {
     return stopped('not_confirmed');
   } catch (e) {
     return stopped(/no tab with id|tab was closed|closed tab/i.test(String(e?.message || e)) ? 'tab_closed' : 'not_confirmed');
+  }
+}
+
+async function reloadAndWait(tabId, ms = 30000) {
+  let loading = false, timer, finish;
+  const ready = new Promise(resolve => { finish = resolve; });
+  const onUpdated = (id, changeInfo) => {
+    if (id !== tabId) return;
+    if (changeInfo.status === 'loading') loading = true;
+    else if (loading && changeInfo.status === 'complete') finish(true);
+  };
+  chrome.tabs.onUpdated.addListener(onUpdated);
+  try {
+    timer = setTimeout(() => finish(false), ms);
+    await chrome.tabs.reload(tabId);
+    return await ready;
+  } finally {
+    clearTimeout(timer);
+    chrome.tabs.onUpdated.removeListener(onUpdated);
   }
 }
 
@@ -503,6 +522,14 @@ async function drainCleanup(plan = null) {
             if (!tab) tabId = (await createBackgroundTab(item.url)).id;
             else await chrome.tabs.update(tabId, { url: item.url });
             outcome = await cleanChat(tabId, item);
+            if (!cleanupStop && ((outcome.step === 'load' && outcome.code === 'menu_trigger_not_found') ||
+                (outcome.step === 'menu_items' && outcome.code === 'menu_unexpected'))) {
+              const { step, code } = outcome;
+              log('info', 'chat cleanup: retrying after reload', { id: item.id, step, code });
+              const reloaded = await reloadAndWait(tabId);
+              if (!reloaded) log('warn', 'chat cleanup: reload did not finish', { id: item.id });
+              if (reloaded && !cleanupStop) outcome = await cleanChat(tabId, item);
+            }
           } catch (e) {
             outcome = { code: /no tab with id|tab was closed|closed tab/i.test(String(e?.message || e)) ? 'tab_closed' : 'not_confirmed', step: 'load' };
           }
@@ -514,6 +541,7 @@ async function drainCleanup(plan = null) {
             break;
           }
           const gone = result === 'gone';
+          const archivedSkip = result === 'already_archived' && item.action === 'delete';
           const succeeded = ['archived', 'already_archived', 'deleted'].includes(result);
           const state = gone ? 'gone' : succeeded ? (result === 'deleted' ? 'deleted' : 'archived') : 'failed';
           const error = succeeded || gone ? null : CLEANUP_ERRORS.has(result) ? result : 'not_confirmed';
@@ -529,7 +557,7 @@ async function drainCleanup(plan = null) {
           if (gone) {
             // A chat ChatGPT already lost is not a page problem: it neither adds to nor resets the brake.
             log('info', 'chat cleanup: chat already gone', { id: item.id });
-          } else {
+          } else if (!archivedSkip) {
             cleanupProgress.consecutiveFailures = succeeded ? 0 : cleanupProgress.consecutiveFailures + 1;
             if (!succeeded) {
               lastFailure = { step, code: result };
@@ -605,7 +633,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     if (!hostReady) return { ok: false, error: 'not_connected' };
     const result = await callHost('chat_cleanup_list');
     if (msg.type === 'cleanup:preview') return { ok: true, result };
-    const queued = await enqueueCleanup(msg.action === 'delete' ? result.deletable : result.eligible, msg.action, 'manual', result);
+    const queued = await enqueueCleanup(result.eligible, msg.action, 'manual', result);
     return { ok: true, queued, kept: result.kept, keptTotal: result.keptTotal, cleaned: result.cleaned };
   })().then(reply, () => reply({ ok: false, error: 'not_connected' }));
   return true;
