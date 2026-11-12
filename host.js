@@ -25,6 +25,7 @@ const { MAX_REFS, MAX_REF_BYTES, MAX_REFS_TOTAL_BYTES, MAX_COLLECTION_BYTES, MAX
 const { withCollection, isInside } = require('./lib/collections');
 const store = require('./lib/collection-store');
 const { callAssembler, answerCall } = require('./lib/extension-calls');
+const { CHAT_STATES, chatIdFromUrl, ownedChatIds, referencedChatIds, cleanupPlan, eligibleForJob } = require('./lib/chat-cleanup');
 const gallery = require('./lib/gallery');
 const platform = require('./platform');
 
@@ -206,6 +207,10 @@ function createJob(p) {
   if (mode === 'collect' && !/\/c\/[0-9a-f-]{8,}/i.test(startUrl || '')) {
     throw new shared.BridgeError('A ChatGPT conversation link (https://chatgpt.com/…/c/…) is required.', 'BAD_REQUEST');
   }
+  const sid = chatIdFromUrl(startUrl);
+  if (sid && jobs.some(job => job.chatStates?.[sid]?.state === 'deleted')) {
+    throw new shared.BridgeError('This ChatGPT conversation was deleted by Backdraw chat cleanup. Start a new chat and pass the saved image in reference_images instead.', 'CHAT_DELETED');
+  }
   if (!startUrl && !config.project) {
     throw new shared.BridgeError('No ChatGPT project is selected yet. Call list_projects, then select_project ' +
       "with the user's images project.", 'NO_PROJECT');
@@ -303,6 +308,10 @@ function finishJob(job, fields) {
   refStore.delete(job.id);
   if (runningId === job.id) { runningId = null; clearTimeout(watchdog); }
   saveJobs();
+  if (job.status === 'succeeded') {
+    const chats = eligibleForJob(jobs, job);
+    if (chats.length && extension) toExtension({ type: 'chat_done', jobId: job.id, chats });
+  }
   log('info', `job ${job.id} ${job.status}`, { error: job.error, conversation: job.conversationUrl, files: job.images.map(i => i.path) });
   setImmediate(pump);
 }
@@ -770,6 +779,7 @@ function publicJob(j) {
     aspect: j.aspect ? j.aspect.target.label : null, transparent: !!j.transparent, animated: !!j.animated, animatedRetry: !!j.animatedRetry, motion: j.motion || null,
     copyTo: j.copyTo || null, copies: j.copies || [],
     collection: j.collection || null,
+    chatStates: j.chatStates || null,
     sprite: j.sprite ? {
       ...Object.fromEntries(['motion', 'frames', 'columns', 'rows', 'view', 'background', 'regenerated',
         'regenerateReason', 'warning', 'chosen'].map(key => [key, j.sprite[key]])),
@@ -807,6 +817,36 @@ const handlers = {
   add_local_animation: p => addLocalAnimation(p),
   generate: p => publicJob(createWithCollection(p)),
   job: p => publicJob(findJob(p.jobId)),
+  chat_cleanup_list: () => ({ ...cleanupPlan(jobs), maxJobs: MAX_JOBS }),
+  chat_cleanup_check: p => {
+    if (!Array.isArray(p.ids) || p.ids.length > 200) {
+      throw new shared.BridgeError('ids must be an array of at most 200 chat ids.', 'BAD_REQUEST');
+    }
+    const eligible = new Set(cleanupPlan(jobs).eligible.map(chat => chat.id));
+    return { eligible: p.ids.filter(id => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
+      .map(id => id.toLowerCase()).filter(id => eligible.has(id)) };
+  },
+  chat_cleanup_mark: p => {
+    if (typeof p.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.id)) {
+      throw new shared.BridgeError('id must be a chat UUID.', 'BAD_REQUEST');
+    }
+    if (!CHAT_STATES.has(p.state)) throw new shared.BridgeError('Invalid chat cleanup state.', 'BAD_REQUEST');
+    const id = p.id.toLowerCase(), state = p.state;
+    if (!jobs.some(job => ownedChatIds(job).has(id))) {
+      throw new shared.BridgeError('Not a chat this bridge opened.', 'BAD_REQUEST');
+    }
+    const entry = { state, at: now(), error: state === 'failed' ? String(p.error || '').slice(0, 200) : null };
+    for (const job of jobs) {
+      if (referencedChatIds(job).has(id)) {
+        job.chatStates ||= {};
+        job.chatStates[id] = entry;
+      }
+    }
+    saveJobs();
+    if (extension) toExtension({ type: 'gallery_changed' });
+    log('info', `chat ${id} ${state}`);
+    return { id, state };
+  },
   // The MCP server copies finished images into the caller's output_dir and records it here once.
   mark_copied: p => {
     const job = findJob(p.jobId);

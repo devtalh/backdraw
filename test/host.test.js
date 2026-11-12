@@ -962,6 +962,7 @@ test('the host', async t => {
     sheetReply(job.id, 'jump-4x4');
     const second = (await nextFromHost('run')).job;
     assert.equal(second.id, job.id); assert.equal(second.text, first.text); assert.equal(second.startUrl, PROJECT.url);
+    assert.equal(fromHost.filter(m => m.type === 'chat_done' && m.jobId === job.id).length, 0);
     const refChunks = fromHost.filter(m => m.type === 'ref_chunk' && m.jobId === job.id);
     assert.equal(refChunks.length, 2); assert.equal(refChunks[0].data, refChunks[1].data);
     assert.match((await call('job', { jobId: job.id })).message, /Regenerating.*count:/);
@@ -973,6 +974,12 @@ test('the host', async t => {
     assert.equal(done.sprite.attempts.length, 2); assert.equal(done.sprite.chosen, 1);
     assert.match(done.sprite.regenerateReason, /count:/); assert.equal(done.images.length, 3);
     assert.equal(done.conversationUrl, secondUrl); assert.equal(done.images[0].gif.transparent, false);
+    const chatDone = await until(() => fromHost.find(m => m.type === 'chat_done' && m.jobId === job.id), 'sprite chat_done');
+    assert.deepEqual(Object.keys(chatDone).sort(), ['chats', 'jobId', 'type']);
+    assert.deepEqual(chatDone.chats, [
+      { id: '6812a3b4-1c2d-8000-9e8f-0123456789ab', url: CHAT_URL },
+      { id: '7812a3b4-1c2d-8000-9e8f-0123456789ab', url: secondUrl },
+    ]);
     assert.ok(fs.existsSync(done.sprite.attempts[1].transparentGif));
     assert.deepEqual(fs.readFileSync(done.images[1].path), sheetBytes('walk-4x2'));
     assert.deepEqual(fs.readFileSync(done.images[2].path), sheetBytes('jump-4x4'));
@@ -1196,4 +1203,189 @@ test('sprite cancellation clears its fallback and previews, and stale callbacks 
   watchdogTimer.callback();
   assert.equal(timeout.status, 'cancelled'); assert.equal(timeout.error, 'Cancelled.');
   assert.equal(api.running(), null); assert.equal(cancellationTimer.cleared, true);
+});
+
+test('chat cleanup host API and completion messages survive a restart', async t => {
+  const tag = `${TAG}-cleanup`;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${tag}-`));
+  const pipe = process.platform === 'win32' ? `\\\\.\\pipe\\${tag}` : path.join(os.tmpdir(), `${tag}.sock`);
+  const a = '9812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const b = 'a812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const unknown = 'b812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const url = id => `https://chatgpt.com/c/${id}`;
+  const messages = [], traffic = [];
+  let host, exit;
+  for (const f of ['host.js', 'shared.js', 'identity.js', 'package.json', 'lib', 'platform', 'extension/gifframes.js']) {
+    fs.cpSync(path.join(ROOT, f), path.join(dir, f), { recursive: true });
+  }
+  fs.mkdirSync(path.join(dir, 'data'));
+  fs.writeFileSync(path.join(dir, 'data', 'config.json'), JSON.stringify({
+    project: PROJECT, outputDir: path.join(dir, 'images'), collectionsDir: path.join(dir, 'refs'),
+  }));
+  const request = (method, params = {}) => new Promise((resolve, reject) => {
+    const sock = net.connect(pipe);
+    let buf = '';
+    sock.setEncoding('utf8');
+    sock.on('error', reject);
+    sock.on('connect', () => sock.write(JSON.stringify({ id: 1, method, params }) + '\n'));
+    sock.on('data', chunk => {
+      buf += chunk;
+      if (!buf.includes('\n')) return;
+      sock.destroy();
+      const reply = JSON.parse(buf.slice(0, buf.indexOf('\n')));
+      if (reply.error) reject(Object.assign(new Error(reply.error.message), { code: reply.error.code }));
+      else resolve(reply.result);
+    });
+  });
+  const send = msg => {
+    traffic.push(msg);
+    const body = Buffer.from(JSON.stringify(msg)), head = Buffer.alloc(4);
+    head.writeUInt32LE(body.length, 0);
+    host.stdin.write(Buffer.concat([head, body]));
+  };
+  const receive = predicate => until(() => {
+    const i = messages.findIndex(predicate);
+    return i >= 0 && messages.splice(i, 1)[0];
+  }, 'cleanup host message');
+  let seq = 0;
+  const extensionCall = async (method, params = {}) => {
+    const reqId = `cleanup-${++seq}`;
+    send({ type: 'call', reqId, method, params });
+    const reply = await receive(msg => msg.type === 'reply' && msg.reqId === reqId);
+    if (!reply.ok) throw Object.assign(new Error(reply.error), { code: reply.code });
+    return reply.result;
+  };
+  const start = async () => {
+    let buffer = Buffer.alloc(0);
+    host = spawn(process.execPath, [path.join(dir, 'host.js')], { cwd: dir,
+      env: { ...process.env, [identity.PIPE_ENV]: pipe }, stdio: ['pipe', 'pipe', 'ignore'] });
+    exit = new Promise(resolve => host.once('exit', resolve));
+    host.stdout.on('data', chunk => {
+      buffer = Buffer.concat([buffer, chunk]);
+      while (buffer.length >= 4 && buffer.length >= 4 + buffer.readUInt32LE(0)) {
+        const size = buffer.readUInt32LE(0);
+        const msg = JSON.parse(buffer.subarray(4, size + 4).toString('utf8'));
+        messages.push(msg); traffic.push(msg);
+        buffer = buffer.subarray(size + 4);
+      }
+    });
+    await until(asyncReady, 'cleanup host startup');
+    send({ type: 'hello', version: 'test' });
+    await receive(msg => msg.type === 'welcome');
+  };
+  let ready = false, checking = false;
+  const asyncReady = () => {
+    if (!checking && !ready) {
+      checking = true;
+      request('status').then(() => { ready = true; }, () => {}).finally(() => { checking = false; });
+    }
+    return ready;
+  };
+  const stop = async () => { host.stdin.end(); await exit; ready = false; };
+  const finish = async (job, conversationUrl, ok = true) => {
+    await receive(msg => msg.type === 'run' && msg.job.id === job.id);
+    send({ type: 'result', jobId: job.id, conversationUrl, ok, status: ok ? 'succeeded' : 'failed',
+      ...(ok ? { images: [{ data: b64(JPEG), mime: 'image/jpeg' }] } : { error: 'Test failure' }) });
+    let done;
+    await until(() => {
+      if (!checking) {
+        checking = true;
+        request('job', { jobId: job.id }).then(value => { done = value; }).finally(() => { checking = false; });
+      }
+      return done && !['queued', 'running'].includes(done.status) && done;
+    }, 'cleanup job completion');
+    return done;
+  };
+  try {
+    await start();
+    let owner, returning;
+    await t.test('success sends only the documented completion fields; failure and existing chats do not', async () => {
+      owner = await request('generate', { prompt: 'Cleanup image' });
+      assert.equal(owner.chatStates, null);
+      await finish(owner, url(a));
+      const msg = await receive(m => m.type === 'chat_done' && m.jobId === owner.id);
+      assert.deepEqual(Object.keys(msg).sort(), ['chats', 'jobId', 'type']);
+      assert.deepEqual(msg, { type: 'chat_done', jobId: owner.id, chats: [{ id: a, url: url(a) }] });
+      assert.deepEqual(Object.keys(msg.chats[0]).sort(), ['id', 'url']);
+      const failed = await request('generate', { prompt: 'Failed cleanup image' });
+      await finish(failed, url(b), false);
+      returning = await request('generate', { prompt: 'Existing cleanup chat', startUrl: url(a) });
+      await finish(returning, url(a));
+      await extensionCall('chat_cleanup_list');
+      assert.equal(traffic.filter(m => m.type === 'chat_done').length, 1);
+    });
+    await t.test('check validates ids and rechecks a queued start URL before marking', async () => {
+      for (const ids of [null, {}, Array(201).fill(a)]) {
+        await assert.rejects(extensionCall('chat_cleanup_check', { ids }), { code: 'BAD_REQUEST' });
+      }
+      assert.deepEqual(await extensionCall('chat_cleanup_check', { ids: [a.toUpperCase(), unknown, null, 1, 'short'] }), { eligible: [a] });
+      const blocker = await request('generate', { prompt: 'Queue blocker' });
+      await receive(m => m.type === 'run' && m.job.id === blocker.id);
+      const queued = await request('generate', { prompt: 'Queued cleanup reference', startUrl: url(a) });
+      assert.equal(queued.status, 'queued');
+      assert.deepEqual(await extensionCall('chat_cleanup_check', { ids: [a] }), { eligible: [] });
+      await request('cancel', { jobId: queued.id });
+      send({ type: 'result', jobId: blocker.id, ok: false, status: 'failed', error: 'Blocker complete' });
+      // A reply on the same stdio stream confirms the preceding result was handled.
+      await extensionCall('chat_cleanup_list');
+      assert.equal((await request('job', { jobId: blocker.id })).status, 'failed');
+      const recovered = await request('generate', { prompt: 'Cleanup reference recovery', startUrl: url(a) });
+      await finish(recovered, url(a));
+      assert.deepEqual(await extensionCall('chat_cleanup_check', { ids: [a] }), { eligible: [a] });
+    });
+    await t.test('mark validates ownership and state, copies state to every reference and persists it', async () => {
+      for (const id of [null, 'short', 12]) {
+        await assert.rejects(extensionCall('chat_cleanup_mark', { id, state: 'deleted' }), { code: 'BAD_REQUEST' });
+      }
+      await assert.rejects(extensionCall('chat_cleanup_mark', { id: unknown, state: 'deleted' }), {
+        code: 'BAD_REQUEST', message: 'Not a chat this bridge opened.',
+      });
+      await assert.rejects(extensionCall('chat_cleanup_mark', { id: a, state: 'invalid' }), { code: 'BAD_REQUEST' });
+      await extensionCall('chat_cleanup_mark', { id: a, state: 'failed', error: 'x'.repeat(250) });
+      await receive(m => m.type === 'gallery_changed');
+      const failed = (await request('job', { jobId: owner.id })).chatStates[a];
+      assert.equal(failed.error, 'x'.repeat(200));
+      assert.equal(failed.state, 'failed'); assert.ok(Number.isFinite(Date.parse(failed.at)));
+      assert.deepEqual(await extensionCall('chat_cleanup_check', { ids: [a] }), { eligible: [a] });
+      assert.deepEqual(await extensionCall('chat_cleanup_mark', { id: a.toUpperCase(), state: 'archived', error: 'Ignored' }), { id: a, state: 'archived' });
+      await receive(m => m.type === 'gallery_changed');
+      assert.equal((await request('job', { jobId: owner.id })).chatStates[a].error, null);
+      const archivedReturn = await request('generate', { prompt: 'Archived chat remains usable', startUrl: url(a) });
+      await finish(archivedReturn, url(a));
+      assert.deepEqual(await extensionCall('chat_cleanup_mark', { id: a, state: 'deleted' }), { id: a, state: 'deleted' });
+      await receive(m => m.type === 'gallery_changed');
+      const stored = JSON.parse(fs.readFileSync(path.join(dir, 'data', 'jobs.json'), 'utf8'));
+      for (const job of stored.filter(j => j.startUrl === url(a) || j.conversationUrl === url(a))) {
+        assert.deepEqual(job.chatStates[a], stored.find(j => j.id === owner.id).chatStates[a]);
+      }
+      await stop(); await start();
+      const plan = await extensionCall('chat_cleanup_list');
+      assert.equal(plan.maxJobs, 100);
+      assert.deepEqual(plan.cleaned, { archived: 0, deleted: 1 });
+      assert.deepEqual(plan.eligible, []);
+      assert.equal((await request('job', { jobId: returning.id })).chatStates[a].state, 'deleted');
+    });
+    await t.test('deleted conversations reject new jobs without adding history', async () => {
+      const before = (await extensionCall('chat_cleanup_list')).jobsScanned;
+      await assert.rejects(request('generate', { prompt: 'Deleted chat', startUrl: url(a) }), {
+        code: 'CHAT_DELETED',
+        message: 'This ChatGPT conversation was deleted by Backdraw chat cleanup. Start a new chat and pass the saved image in reference_images instead.',
+      });
+      assert.equal((await extensionCall('chat_cleanup_list')).jobsScanned, before);
+    });
+    await t.test('cleanup traffic and scratch host logs contain no session secrets', () => {
+      const forbidden = /\x74oken|\x63ookie|\x41uthorization/i;
+      assert.doesNotMatch(JSON.stringify(traffic), forbidden);
+      const log = fs.readFileSync(path.join(dir, 'logs', 'host.log'), 'utf8');
+      assert.doesNotMatch(log, forbidden);
+      const marks = log.split('\n').filter(line => line.includes(`chat ${a} `));
+      assert.equal(marks.length, 3);
+      for (const line of marks) assert.match(line, new RegExp(`\\[info\\] chat ${a} (failed|archived|deleted)$`));
+    });
+  } finally {
+    if (host && host.exitCode === null) await stop();
+    assert.equal(path.dirname(path.resolve(dir)), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(dir).startsWith(`${tag}-`));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
