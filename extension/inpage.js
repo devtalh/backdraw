@@ -604,12 +604,13 @@
     return candidates.length === 1 ? candidates[0] : null;
   }
 
-  // ChatGPT sends a deleted chat's link to the home page with this notice.
+  // ChatGPT sends a deleted chat's link to the home page with this notice. It is a Sonner toast
+  // (ol.codex-sonner-toaster > li.toast-* > ... > div.alert-root) with no role, aria-live or test id.
   const GONE_TEXT = /^you don['’]t have access to this conversation/i;
 
   function chatGone() {
     if (location.hostname !== 'chatgpt.com' || location.pathname !== '/') return false;
-    return $$('[role="alert"], [role="dialog"], [role="status"], [aria-live], [data-testid*="toast" i]').some(el => {
+    return $$('[role="alert"], [role="dialog"], [role="status"], [aria-live], [data-testid*="toast" i], .alert-root, ol[class*="sonner"] li, li[class*="toast"]').some(el => {
       if (!shown(el)) return false;
       const text = squash(el.innerText || el.textContent);
       return text.length <= 400 && GONE_TEXT.test(text);

@@ -872,6 +872,44 @@ test('chat cleanup: three real unexpected pages still stop the run and name the 
   assert.deepEqual(w.calls('chat_cleanup_mark').map(msg => msg.params.error), ['wrong_page', 'wrong_page', 'wrong_page']);
 });
 
+test('chat cleanup: a toast that appears after the first reads on the home page still marks the chat gone', async () => {
+  let reads = 0;
+  const w = cleanupWorker({ setting: 'archive', page: name => name === 'chatPageState' ? (++reads >= 3 ? GONE_PAGE : LOST_PAGE) : undefined });
+  await w.welcome(); await w.done(); await w.finish();
+  const p = w.state().progress;
+  assert.equal(reads, 3);
+  assert.equal(p.error, null);
+  assert.equal(p.stop, null);
+  assert.equal(p.gone, 1);
+  assert.equal(p.failed, 0);
+  assert.equal(p.consecutiveFailures, 0);
+  assert.deepEqual(w.calls('chat_cleanup_mark').map(msg => plain(msg.params)), [{ id: cleanupChat().id, state: 'gone', error: null }]);
+  assert.equal(w.pages.some(page => page.name === 'openChatMenu'), false);
+});
+
+test('chat cleanup: a home page that never shows the toast is polled for at least four seconds, then wrong_page', async () => {
+  let reads = 0;
+  const w = cleanupWorker({ setting: 'archive', page: name => name === 'chatPageState' ? (++reads, LOST_PAGE) : undefined });
+  await w.welcome(); await w.done(); await w.finish();
+  const p = w.state().progress;
+  assert.ok(reads >= 8, `expected at least 8 reads, saw ${reads}`);
+  assert.equal(p.gone, 0);
+  assert.equal(p.failed, 1);
+  assert.equal(p.stop, null);
+  assert.deepEqual(w.calls('chat_cleanup_mark').map(msg => plain(msg.params)), [{ id: cleanupChat().id, state: 'failed', error: 'wrong_page' }]);
+});
+
+test('chat cleanup: the first page state is read right after navigating, before any wait', async () => {
+  const events = [];
+  const w = cleanupWorker({ setting: 'archive',
+    onSleep: ms => events.push(`sleep:${ms}`),
+    page: name => { if (name === 'chatPageState') events.push(`read:tabs=${w.created.length}`); return name === 'chatPageState' ? GONE_PAGE : undefined; } });
+  await w.welcome(); await w.done(); await w.finish();
+  assert.equal(events[0], 'read:tabs=1');
+  assert.equal(w.state().progress.gone, 1);
+  assert.equal(events.includes('sleep:500'), false);
+});
+
 test('chat cleanup: a gone chat neither adds to nor resets the failure count', async () => {
   const w = cleanupWorker({ setting: 'archive', page: pagesByChat(['lost', 'gone', 'lost', 'lost', 'ok']) });
   await w.welcome(); await w.done([0, 1, 2, 3, 4].map(cleanupChat)); await w.finish();

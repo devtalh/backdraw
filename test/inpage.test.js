@@ -174,7 +174,7 @@ const CHAT_ID = '12345678-abcd-1234-abcd-123456789abc';
 // A small tree for cleanup selectors. Unknown selectors match nothing, like an absent composer.
 function cleanupElement(tag, text = '', attrs = {}, children = []) {
   const node = element(text, {
-    tagName: tag.toUpperCase(), attrs, children, clicks: 0, events: [],
+    tagName: tag.toUpperCase(), attrs, children, parent: null, clicks: 0, events: [],
     getAttribute(name) { return this.attrs[name] ?? null; },
     getBoundingClientRect() { return { width: this.hidden ? 0 : 100, height: 30 }; },
     dispatchEvent(event) { this.events.push(event); },
@@ -192,12 +192,30 @@ function cleanupElement(tag, text = '', attrs = {}, children = []) {
         if (contains) return (child.attrs[contains[1]] || '').toLowerCase().includes(contains[2].toLowerCase());
         const present = sel.match(/^\[([\w-]+)\]$/);
         if (present) return child.attrs[present[1]] !== undefined;
-        const match = sel.match(/^([a-z][a-z0-9]*)?(?:\[([\w-]+)="([^"]*)"\])?$/i);
-        return !!match && (!match[1] || child.tagName === match[1].toUpperCase()) &&
-          (!match[2] || child.attrs[match[2]] === match[3]);
+        // Compound selector: tag, classes and one attribute test; "a b" also needs an ancestor matching a.
+        const simple = (node, text) => {
+          const match = text.match(/^([a-z][a-z0-9]*)?((?:\.[\w-]+)*)(?:\[([\w-]+)(\*?)="([^"]*)"\])?$/i);
+          if (!match) return false;
+          const [, name, classes, attr, partial, value] = match;
+          if (name && node.tagName !== name.toUpperCase()) return false;
+          const have = (node.attrs.class || '').split(/\s+/);
+          if (classes && !classes.slice(1).split('.').every(c => have.includes(c))) return false;
+          if (!attr) return true;
+          return partial ? (node.attrs[attr] || '').includes(value) : node.attrs[attr] === value;
+        };
+        const [last, ...before] = sel.split(/\s+/).reverse();
+        if (!simple(child, last)) return false;
+        let ancestor = child.parent;
+        for (const text of before) {
+          while (ancestor && !simple(ancestor, text)) ancestor = ancestor.parent;
+          if (!ancestor) return false;
+          ancestor = ancestor.parent;
+        }
+        return true;
       }));
     },
   });
+  children.forEach(child => { child.parent = node; });
   if (tag === 'header') {
     const mark = el => { el.inHeader = true; el.children.forEach(mark); };
     children.forEach(mark);
@@ -270,6 +288,53 @@ test('chatPageState does not report gone without both the home page and a visibl
   assert.equal(state([alert(GONE_NOTICE + ' ' + 'x'.repeat(400))], { path: '/' }).gone, false);
   assert.equal(state([alert((GONE_NOTICE + ' ').padEnd(400, 'x'))], { path: '/' }).gone, true);
   assert.equal(state([alert((GONE_NOTICE + ' ').padEnd(401, 'x'))], { path: '/' }).gone, false);
+});
+
+// The access notice as ChatGPT renders it: a Sonner toast with typographic apostrophes and no
+// role, aria-live or test id anywhere in the tree.
+const SONNER_NOTICE = GONE_NOTICE.replace("don't", 'don’t').replace("you're", 'you’re');
+const sonnerToast = (text = SONNER_NOTICE, { toaster = 'codex-sonner-toaster', item = 'toast-abc' } = {}) => {
+  const root = cleanupElement('div', text, { class: 'alert-root' });
+  const toast = cleanupElement('ol', '', { class: toaster }, [
+    cleanupElement('li', '', { class: item }, [cleanupElement('div', '', {}, [root])]),
+  ]);
+  return { toast, root };
+};
+
+test('chatPageState recognises the access notice rendered as a Sonner toast without role or aria attributes', () => {
+  const state = (children, options = {}) => loadCleanupPage({ path: '/', children, ...options }).page.chatPageState(CHAT_ID);
+  const { toast, root } = sonnerToast();
+  assert.deepEqual(root.attrs, { class: 'alert-root' });
+  assert.equal(state([toast]).gone, true);
+  assert.equal(state([toast]).onChat, false);
+  // The alert root alone, outside any toaster.
+  assert.equal(state([cleanupElement('div', SONNER_NOTICE, { class: 'alert-root' })]).gone, true);
+  // The toast item alone, whether it is found by its toaster or by its own class.
+  const inToaster = cleanupElement('ol', '', { class: 'codex-sonner-toaster' }, [cleanupElement('li', SONNER_NOTICE, { class: 'x' })]);
+  assert.equal(state([inToaster]).gone, true);
+  assert.equal(state([cleanupElement('li', SONNER_NOTICE, { class: 'toast-abc' })]).gone, true);
+  // Neither an item outside a toaster nor an unrelated list item is a toast.
+  assert.equal(state([cleanupElement('li', SONNER_NOTICE, { class: 'x' })]).gone, false);
+  assert.equal(state([cleanupElement('ol', '', { class: 'menu' }, [cleanupElement('li', SONNER_NOTICE, { class: 'x' })])]).gone, false);
+});
+
+test('chatPageState ignores Sonner toasts that are on a chat page, show other text, are hidden or are too long', () => {
+  const homeState = (children) => loadCleanupPage({ path: '/', children }).page.chatPageState(CHAT_ID);
+  // The same toast on a conversation page is not a redirect.
+  const onChat = loadCleanupPage({ children: [sonnerToast().toast] }).page.chatPageState(CHAT_ID);
+  assert.equal(onChat.onChat, true);
+  assert.equal(onChat.gone, false);
+  assert.equal(homeState([sonnerToast('Something went wrong. Please try again.').toast]).gone, false);
+  assert.equal(homeState([sonnerToast('Error: ' + SONNER_NOTICE).toast]).gone, false);
+  const hidden = sonnerToast();
+  hidden.root.hidden = true;
+  assert.equal(homeState([hidden.toast]).gone, false);
+  assert.equal(homeState([sonnerToast(SONNER_NOTICE + ' ' + 'x'.repeat(400)).toast]).gone, false);
+  assert.equal(homeState([sonnerToast((SONNER_NOTICE + ' ').padEnd(400, 'x')).toast]).gone, true);
+  assert.equal(homeState([sonnerToast((SONNER_NOTICE + ' ').padEnd(401, 'x')).toast]).gone, false);
+  assert.equal(homeState([cleanupElement('div', SONNER_NOTICE, { class: 'alert-root' })]).gone, true);
+  assert.equal(homeState([cleanupElement('div', SONNER_NOTICE + ' ' + 'x'.repeat(400), { class: 'alert-root' })]).gone, false);
+  assert.equal(homeState([cleanupElement('li', SONNER_NOTICE + ' ' + 'x'.repeat(400), { class: 'toast-abc' })]).gone, false);
 });
 
 test('openChatMenu selects the header title, excludes the model switcher and rejects ambiguity', () => {
