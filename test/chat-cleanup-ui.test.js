@@ -8,7 +8,7 @@ const vm = require('node:vm');
 const read = f => fs.readFileSync(path.join(__dirname, '..', 'extension', f), 'utf8');
 const ctx = vm.createContext({});
 for (const f of ['i18n.js', 'chat-cleanup-ui.js']) vm.runInContext(read(f), ctx, { filename: f });
-const { keptSummary, progressText, finishText, errorText } = ctx.backdrawCleanupText;
+const { keptSummary, progressText, finishText, errorText, stopText } = ctx.backdrawCleanupText;
 const translate = lang => (key, vars) => ctx.i18n.translate(lang, key, vars);
 
 test('kept summaries: exact preview and result examples, singulars, plurals and empty totals', () => {
@@ -276,4 +276,59 @@ test('popup preview: only archive is offered when nothing is deletable', async (
   assert.equal(p.nodes.get('cleanupView').textContent, '1 chat can be archived.Archive all');
   assert.doesNotMatch(p.nodes.get('cleanupView').textContent, /Delete all/);
   await p.click('cleanupView', 'Archive all');
+});
+
+test('finish text: chats already gone from ChatGPT are listed with exact English and Turkish wording', () => {
+  for (const [lang, one, many, combined] of [
+    ['en', 'Done: 1 chat was already gone from ChatGPT.', 'Done: 3 chats were already gone from ChatGPT.',
+      'Done: 2 archived, 3 chats were already gone from ChatGPT, 1 failed.'],
+    ['tr', 'Bitti: 1 sohbet ChatGPT\'de zaten yoktu.', 'Bitti: 3 sohbet ChatGPT\'de zaten yoktu.',
+      'Bitti: 2 arşivlendi, 3 sohbet ChatGPT\'de zaten yoktu, 1 hata.'],
+  ]) {
+    const t = translate(lang);
+    assert.equal(finishText({ gone: 1 }, t), one);
+    assert.equal(finishText({ gone: 3 }, t), many);
+    assert.equal(finishText({ archived: 2, gone: 3, failed: 1 }, t), combined);
+    assert.equal(finishText({ gone: 0 }, t), t('cleanupUnchanged'));
+  }
+  assert.equal(finishText({ gone: 3 }, translate('tr')), 'Bitti: 3 sohbet ChatGPT\'de zaten yoktu.');
+});
+
+test('stop text: names the step that stopped the cleanup in both languages, with a safe fallback', () => {
+  const steps = {
+    load: ['opening the chat', 'sohbeti açma'], language: ['checking the language', 'dili kontrol etme'],
+    open_menu: ['opening the chat menu', 'sohbet menüsünü açma'], menu_items: ['reading the menu', 'menüyü okuma'],
+    click_item: ['choosing Archive or Delete', 'Arşivle veya Sil\'i seçme'],
+    delete_dialog: ['waiting for the delete dialog', 'silme penceresini bekleme'],
+    confirm_delete: ['confirming the delete', 'silmeyi onaylama'], verify: ['checking the result', 'sonucu doğrulama'],
+  };
+  for (const [step, [en, tr]] of Object.entries(steps)) {
+    const progress = { error: 'too_many_failures', stop: { step, code: 'menu_trigger_not_found' } };
+    assert.equal(stopText(progress, translate('en')), `Stopped at: ${en} (menu_trigger_not_found)`);
+    assert.equal(stopText(progress, translate('tr')), `Durduğu adım: ${tr} (menu_trigger_not_found)`);
+  }
+  assert.equal(stopText({ error: 'login', stop: { step: 'nope', code: 'login' } }, translate('en')), 'Stopped at: unknown step (login)');
+  assert.equal(stopText({ error: 'login', stop: { step: 'toString', code: 'login' } }, translate('tr')), 'Durduğu adım: bilinmeyen adım (login)');
+  assert.equal(stopText({ error: 'login', stop: { step: 'load', code: 'Private title: free text' } }, translate('en')), 'Stopped at: opening the chat (unknown)');
+  for (const progress of [null, {}, { error: 'login' }, { error: 'login', stop: null }, { stop: { step: 'load', code: 'wrong_page' } }, { error: 'login', stop: 'load' }]) {
+    assert.equal(stopText(progress, translate('en')), '');
+  }
+});
+
+test('popup finished view shows the totals, the error and the step the cleanup stopped at', async () => {
+  for (const [lang, done, step] of [
+    ['en', 'Done: 1 archived, 3 chats were already gone from ChatGPT, 3 failed.', 'Stopped at: opening the chat (wrong_page)'],
+    ['tr', 'Bitti: 1 arşivlendi, 3 sohbet ChatGPT\'de zaten yoktu, 3 hata.', 'Durduğu adım: sohbeti açma (wrong_page)'],
+  ]) {
+    const progress = { running: false, error: 'too_many_failures', archived: 1, gone: 3, failed: 3, notProcessed: 0,
+      stop: { step: 'load', code: 'wrong_page' }, kept: {}, keptTotal: 0 };
+    const p = await popup({ stored: { [ctx.i18n.LANGUAGE_KEY]: lang }, reply: m => m.type === 'cleanup:status' ? { ok: true, progress } : undefined });
+    const text = p.nodes.get('cleanupView').textContent;
+    assert.ok(text.includes(done), text);
+    assert.ok(text.includes(translate(lang)('cleanupErrFailures')), text);
+    assert.ok(text.includes(step), text);
+  }
+  const noStop = await popup({ reply: m => m.type === 'cleanup:status'
+    ? { ok: true, progress: { running: false, error: 'tab_closed', stop: null } } : undefined });
+  assert.doesNotMatch(noStop.nodes.get('cleanupView').textContent, /Stopped at/);
 });

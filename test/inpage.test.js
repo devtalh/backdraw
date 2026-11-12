@@ -188,6 +188,10 @@ function cleanupElement(tag, text = '', attrs = {}, children = []) {
         if (sel === 'header button[aria-haspopup="menu"]') {
           return child.tagName === 'BUTTON' && child.attrs['aria-haspopup'] === 'menu' && child.inHeader;
         }
+        const contains = sel.match(/^\[([\w-]+)\*="([^"]*)" i\]$/);
+        if (contains) return (child.attrs[contains[1]] || '').toLowerCase().includes(contains[2].toLowerCase());
+        const present = sel.match(/^\[([\w-]+)\]$/);
+        if (present) return child.attrs[present[1]] !== undefined;
         const match = sel.match(/^([a-z][a-z0-9]*)?(?:\[([\w-]+)="([^"]*)"\])?$/i);
         return !!match && (!match[1] || child.tagName === match[1].toUpperCase()) &&
           (!match[2] || child.attrs[match[2]] === match[3]);
@@ -222,6 +226,50 @@ test('chatPageState accepts only exact conversation UUID paths and reports langu
     assert.equal(loadCleanupPage({ path }).page.chatPageState(CHAT_ID).onChat, false, path);
   }
   assert.equal(loadCleanupPage({ hostname: 'example.com' }).page.chatPageState(CHAT_ID).onChat, false);
+});
+
+const GONE_NOTICE = "You don't have access to this conversation. Make sure you're logged in to the right account, or ask the conversation owner to send you a share link.";
+
+test('chatPageState reports a chat ChatGPT already lost: home page redirect plus the visible access notice', () => {
+  const alert = (text = GONE_NOTICE, attrs = { role: 'alert' }) => cleanupElement('div', text, attrs);
+  const gone = (children, options = {}) => loadCleanupPage({ path: '/', children, ...options }).page.chatPageState(CHAT_ID);
+  assert.equal(gone([alert()]).gone, true);
+  assert.equal(gone([alert()]).onChat, false);
+  assert.equal(gone([alert(GONE_NOTICE.replace("don't", 'don\u2019t'))]).gone, true);
+  assert.equal(gone([alert(GONE_NOTICE.toUpperCase())]).gone, true);
+  assert.equal(gone([alert(' You  don\'t have\naccess to this conversation. ')]).gone, true);
+  assert.equal(gone([alert(GONE_NOTICE, { 'data-testid': 'Toast-Item' })]).gone, true);
+  assert.equal(gone([alert(GONE_NOTICE, { role: 'status' })]).gone, true);
+  assert.equal(gone([alert(GONE_NOTICE, { role: 'dialog' })]).gone, true);
+  assert.equal(gone([alert(GONE_NOTICE, { 'aria-live': 'polite' })]).gone, true);
+  assert.equal(gone([cleanupElement('div', GONE_NOTICE, { 'data-testid': 'toast' }, [cleanupElement('span', 'x')])]).gone, true);
+});
+
+test('chatPageState does not report gone without both the home page and a visible access notice', () => {
+  const alert = (text = GONE_NOTICE, attrs = { role: 'alert' }) => cleanupElement('div', text, attrs);
+  const state = (children, options = {}) => loadCleanupPage({ children, ...options }).page.chatPageState(CHAT_ID);
+  // The same notice on a conversation page is not a redirect.
+  const onChat = state([alert()]);
+  assert.equal(onChat.onChat, true);
+  assert.equal(onChat.gone, false);
+  assert.equal(state([alert()], { path: `/c/${CHAT_ID.replace(/^1/, '2')}` }).gone, false);
+  assert.equal(state([alert()], { path: '/c' }).gone, false);
+  assert.equal(state([alert()], { path: '/share/abc' }).gone, false);
+  assert.equal(state([alert()], { path: '/', hostname: 'example.com' }).gone, false);
+  // The home page without the notice, or with another notice, is an ordinary unexpected page.
+  assert.equal(state([], { path: '/' }).gone, false);
+  assert.equal(state([alert('Something went wrong. Please try again.')], { path: '/' }).gone, false);
+  assert.equal(state([alert('Error: ' + GONE_NOTICE)], { path: '/' }).gone, false);
+  assert.equal(state([alert('You do not have access to this conversation.')], { path: '/' }).gone, false);
+  // A hidden notice is stale markup, not something the page is showing.
+  const hidden = alert();
+  hidden.hidden = true;
+  assert.equal(state([hidden], { path: '/' }).gone, false);
+  // Elements that are not alert-like regions never match, and a huge region does not match by its start alone.
+  assert.equal(state([alert(GONE_NOTICE, {})], { path: '/' }).gone, false);
+  assert.equal(state([alert(GONE_NOTICE + ' ' + 'x'.repeat(400))], { path: '/' }).gone, false);
+  assert.equal(state([alert((GONE_NOTICE + ' ').padEnd(400, 'x'))], { path: '/' }).gone, true);
+  assert.equal(state([alert((GONE_NOTICE + ' ').padEnd(401, 'x'))], { path: '/' }).gone, false);
 });
 
 test('openChatMenu selects the header title, excludes the model switcher and rejects ambiguity', () => {

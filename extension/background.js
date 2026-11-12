@@ -315,7 +315,7 @@ const cleanupLoaded = chrome.storage.session.get(['cleanupQueue', 'cleanupProgre
     return target && CLEANUP_ACTIONS.has(item.action) && ['auto', 'manual'].includes(item.source)
       ? [{ ...target, action: item.action, source: item.source }] : [];
   }).filter((item, index, all) => all.findIndex(other => other.id === item.id) === index);
-  cleanupProgress = stored.cleanupProgress ? { notProcessed: 0, kept: {}, keptTotal: 0, ...stored.cleanupProgress } : null;
+  cleanupProgress = stored.cleanupProgress ? { notProcessed: 0, kept: {}, keptTotal: 0, gone: 0, stop: null, ...stored.cleanupProgress } : null;
   cleanupResume = !!cleanupProgress?.running && !!cleanupQueue.length;
   if (cleanupProgress?.running) cleanupProgress = { ...cleanupProgress, running: false };
   return saveCleanup();
@@ -353,7 +353,10 @@ async function enqueueCleanup(chats, action, source, plan = null) {
 }
 
 async function cleanChat(tabId, item) {
-  if (!UUID.test(item.id)) return 'bad_target';
+  // The step the chat was at when it stopped; shown to the user and logged, never page text.
+  let step = 'load';
+  const stopped = code => ({ code, step });
+  if (!UUID.test(item.id)) return stopped('bad_target');
   // Loading pages can reject injection. Only a closed tab is a terminal injection error.
   const readState = async () => {
     try { return await pageCall(tabId, 'chatPageState', item.id); }
@@ -369,19 +372,24 @@ async function cleanChat(tabId, item) {
     const until = Date.now() + 30000;
     while (Date.now() < until) {
       state = await readState();
-      if (state?.login) return 'login';
-      if (state?.challenge) return 'challenge';
+      if (state?.login) return stopped('login');
+      if (state?.challenge) return stopped('challenge');
+      // ChatGPT already lost this chat: nothing is left to archive or delete.
+      if (state?.gone) return stopped('gone');
       if (state?.onChat) sawChat = true;
       if (state?.onChat && state.trigger) break;
       await sleep(500);
     }
-    if (!state?.onChat || !state.trigger) return sawChat ? 'menu_trigger_not_found' : 'wrong_page';
-    if (gate(state)) return gate(state);
+    if (!state?.onChat || !state.trigger) return stopped(sawChat ? 'menu_trigger_not_found' : 'wrong_page');
+    step = 'language';
+    if (gate(state)) return stopped(gate(state));
     const title = state.title;
+    step = 'open_menu';
     const opened = await pageCall(tabId, 'openChatMenu', item.id);
-    if (!opened?.ok) return CLEANUP_ERRORS.has(opened?.error) ? opened.error : 'menu_trigger_not_found';
+    if (!opened?.ok) return stopped(CLEANUP_ERRORS.has(opened?.error) ? opened.error : 'menu_trigger_not_found');
     const exact = (items, label) => items.some(text => String(text).replace(/\s+/g, ' ').trim().toLowerCase() === label.toLowerCase());
     let items = [];
+    step = 'menu_items';
     const menuUntil = Date.now() + 5000;
     while (Date.now() < menuUntil) {
       items = await pageCall(tabId, 'chatMenuItems');
@@ -390,25 +398,27 @@ async function cleanChat(tabId, item) {
     }
     if (!exact(items, 'Delete') || !(exact(items, 'Archive') || exact(items, 'Unarchive'))) {
       await pageCall(tabId, 'closeChatMenu');
-      return 'menu_unexpected';
+      return stopped('menu_unexpected');
     }
     // An archived chat only needs to be skipped when archiving; deleting works from the same menu.
     if (exact(items, 'Unarchive') && item.action === 'archive') {
       await pageCall(tabId, 'closeChatMenu');
-      return 'already_archived';
+      return stopped('already_archived');
     }
+    step = 'click_item';
     // Recheck the target and language immediately before choosing a destructive menu item.
     state = await readState();
     if (!state || gate(state) || !state.onChat) {
       await pageCall(tabId, 'closeChatMenu');
-      return gate(state) || 'wrong_page';
+      return stopped(gate(state) || 'wrong_page');
     }
     const clicked = await pageCall(tabId, 'clickChatMenuItem', item.action === 'archive' ? 'Archive' : 'Delete', title);
     if (!clicked?.clicked) {
       await pageCall(tabId, 'closeChatMenu');
-      return CLEANUP_ERRORS.has(clicked?.error) ? clicked.error : 'item_not_found';
+      return stopped(CLEANUP_ERRORS.has(clicked?.error) ? clicked.error : 'item_not_found');
     }
     if (item.action === 'delete') {
+      step = 'delete_dialog';
       let dialog;
       const dialogUntil = Date.now() + 5000;
       while (Date.now() < dialogUntil) {
@@ -416,22 +426,24 @@ async function cleanChat(tabId, item) {
         if (dialog?.found) break;
         await sleep(500);
       }
-      if (!dialog?.found) return 'dialog_not_found';
+      if (!dialog?.found) return stopped('dialog_not_found');
       state = await readState();
-      if (!state || gate(state) || !state.onChat) return gate(state) || 'wrong_page';
+      if (!state || gate(state) || !state.onChat) return stopped(gate(state) || 'wrong_page');
+      step = 'confirm_delete';
       const confirmed = await pageCall(tabId, 'confirmDeleteChat', title);
-      if (!confirmed?.ok) return CLEANUP_ERRORS.has(confirmed?.error) ? confirmed.error : 'not_confirmed';
+      if (!confirmed?.ok) return stopped(CLEANUP_ERRORS.has(confirmed?.error) ? confirmed.error : 'not_confirmed');
     }
+    step = 'verify';
     const confirmUntil = Date.now() + 15000;
     while (Date.now() < confirmUntil) {
       state = await readState();
-      if (gate(state)) return gate(state);
-      if (state && !state.onChat) return item.action === 'archive' ? 'archived' : 'deleted';
+      if (gate(state)) return stopped(gate(state));
+      if (state && !state.onChat) return stopped(item.action === 'archive' ? 'archived' : 'deleted');
       await sleep(500);
     }
-    return 'not_confirmed';
+    return stopped('not_confirmed');
   } catch (e) {
-    return /no tab with id|tab was closed|closed tab/i.test(String(e?.message || e)) ? 'tab_closed' : 'not_confirmed';
+    return stopped(/no tab with id|tab was closed|closed tab/i.test(String(e?.message || e)) ? 'tab_closed' : 'not_confirmed');
   }
 }
 
@@ -440,14 +452,16 @@ async function drainCleanup(plan = null) {
   cleanupRunning = true;
   cleanupStop = false;
   const first = cleanupQueue[0];
-  cleanupProgress = cleanupResume ? { ...cleanupProgress, running: true, error: null, finishedAt: null } : {
+  cleanupProgress = cleanupResume ? { ...cleanupProgress, running: true, error: null, stop: null, finishedAt: null } : {
     running: true, action: first.action, source: first.source, total: cleanupQueue.length, done: 0,
-    archived: 0, deleted: 0, alreadyArchived: 0, skipped: 0, failed: 0, consecutiveFailures: 0,
+    archived: 0, deleted: 0, alreadyArchived: 0, gone: 0, skipped: 0, failed: 0, consecutiveFailures: 0,
     notProcessed: 0, kept: plan?.kept || {}, keptTotal: plan?.keptTotal || 0,
-    error: null, startedAt: Date.now(), finishedAt: null,
+    error: null, stop: null, startedAt: Date.now(), finishedAt: null,
   };
   cleanupResume = false;
   let tabId = null;
+  // The step and result code of the last chat that failed, kept for the stop reason.
+  let lastFailure = null;
   try {
     await saveCleanup();
     while (cleanupQueue.length && !cleanupStop) {
@@ -483,29 +497,46 @@ async function drainCleanup(plan = null) {
           cleanupProgress.skipped++;
         } else {
           cleanupDriving = true;
-          let result;
+          let outcome;
           try {
             const tab = tabId === null ? null : await chrome.tabs.get(tabId).catch(() => null);
             if (!tab) tabId = (await createBackgroundTab(item.url)).id;
             else await chrome.tabs.update(tabId, { url: item.url });
-            result = await cleanChat(tabId, item);
+            outcome = await cleanChat(tabId, item);
           } catch (e) {
-            result = /no tab with id|tab was closed|closed tab/i.test(String(e?.message || e)) ? 'tab_closed' : 'not_confirmed';
+            outcome = { code: /no tab with id|tab was closed|closed tab/i.test(String(e?.message || e)) ? 'tab_closed' : 'not_confirmed', step: 'load' };
           }
-          if (CLEANUP_GATES.has(result)) { cleanupProgress.error = result; break; }
+          const { code: result, step } = outcome;
+          if (CLEANUP_GATES.has(result)) {
+            cleanupProgress.error = result;
+            cleanupProgress.stop = { step, code: result };
+            log('warn', 'chat cleanup stopped at a step', { id: item.id, step, code: result });
+            break;
+          }
+          const gone = result === 'gone';
           const succeeded = ['archived', 'already_archived', 'deleted'].includes(result);
-          const state = succeeded ? (result === 'deleted' ? 'deleted' : 'archived') : 'failed';
-          const error = succeeded ? null : CLEANUP_ERRORS.has(result) ? result : 'not_confirmed';
+          const state = gone ? 'gone' : succeeded ? (result === 'deleted' ? 'deleted' : 'archived') : 'failed';
+          const error = succeeded || gone ? null : CLEANUP_ERRORS.has(result) ? result : 'not_confirmed';
           let markFailed = false;
           try { await callHost('chat_cleanup_mark', { id: item.id, state, error }); marked = true; }
           catch { markFailed = true; }
           // Update progress together with dequeueing, after the host call has settled.
-          if (succeeded && !markFailed) {
+          if ((succeeded || gone) && !markFailed) {
             cleanupProgress[result === 'already_archived' ? 'alreadyArchived' : state]++;
           } else {
             cleanupProgress.failed++;
           }
-          cleanupProgress.consecutiveFailures = succeeded ? 0 : cleanupProgress.consecutiveFailures + 1;
+          if (gone) {
+            // A chat ChatGPT already lost is not a page problem: it neither adds to nor resets the brake.
+            log('info', 'chat cleanup: chat already gone', { id: item.id });
+          } else {
+            cleanupProgress.consecutiveFailures = succeeded ? 0 : cleanupProgress.consecutiveFailures + 1;
+            if (!succeeded) {
+              lastFailure = { step, code: result };
+              log('warn', cleanupProgress.consecutiveFailures >= 3 ? 'chat cleanup stopped at a step' : 'chat cleanup step failed',
+                { id: item.id, step, code: result });
+            }
+          }
         }
         // Keep the in-flight item in session storage until its result has been recorded.
         if (cleanupQueue[0] === item) cleanupQueue.shift();
@@ -513,6 +544,7 @@ async function drainCleanup(plan = null) {
         cleanupProgress.done++;
         if (cleanupProgress.consecutiveFailures >= 3) {
           cleanupProgress.error = 'too_many_failures';
+          cleanupProgress.stop = lastFailure;
           discardCleanupQueue();
         }
         await saveCleanup();
@@ -533,8 +565,8 @@ async function drainCleanup(plan = null) {
     cleanupProgress.finishedAt = Date.now();
     await saveCleanup().catch(() => {});
     if (tabId !== null) await closeTabQuietly(tabId);
-    const { archived, deleted, alreadyArchived, skipped, failed, error } = cleanupProgress;
-    log('info', 'chat cleanup finished', { archived, deleted, alreadyArchived, skipped, failed, error });
+    const { archived, deleted, alreadyArchived, gone, skipped, failed, error } = cleanupProgress;
+    log('info', 'chat cleanup finished', { archived, deleted, alreadyArchived, gone, skipped, failed, error });
     cleanupRunning = false;
     // An enqueue can arrive while the final storage write or tab close is pending.
     if (cleanupQueue.length && !cleanupStop && !error) {

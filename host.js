@@ -51,6 +51,7 @@ const refStore = new Map(); // jobId -> reference images (kept in memory only, u
 const cancelTimers = new Map();
 const cleanupReservations = new Map(); // chat id -> expiry time
 let cleanupReservationTimer = null;
+const CHAT_GONE_MESSAGE = 'This ChatGPT conversation no longer exists in ChatGPT. Start a new chat and pass the saved image in reference_images instead.';
 const CHAT_DELETED_MESSAGE = 'This ChatGPT conversation was deleted by Backdraw chat cleanup. Start a new chat and pass the saved image in reference_images instead.';
 
 function scheduleCleanupReservations() {
@@ -183,6 +184,16 @@ const extensionCalls = callAssembler(Math.ceil(MAX_COLLECTION_BYTES / 3) * 4 + 4
 
 function clamp(n, lo, hi) { return Math.min(hi, Math.max(lo, n)); }
 
+// 'deleted' (by Backdraw cleanup) or 'gone' (already missing from ChatGPT) when a chat can no longer be opened.
+function closedChatState(chatId) {
+  if (!chatId) return null;
+  for (const job of jobs) {
+    const state = job.chatStates?.[chatId]?.state;
+    if (state === 'deleted' || state === 'gone') return state;
+  }
+  return null;
+}
+
 function findJob(id) {
   const job = jobs.find(j => j.id === id);
   if (!job) throw new shared.BridgeError(`Unknown job id "${id}".`, 'NOT_FOUND');
@@ -228,9 +239,8 @@ function createJob(p) {
     throw new shared.BridgeError('A ChatGPT conversation link (https://chatgpt.com/…/c/…) is required.', 'BAD_REQUEST');
   }
   const sid = chatIdFromUrl(startUrl);
-  if (sid && jobs.some(job => job.chatStates?.[sid]?.state === 'deleted')) {
-    throw new shared.BridgeError(CHAT_DELETED_MESSAGE, 'CHAT_DELETED');
-  }
+  const closed = closedChatState(sid);
+  if (closed) throw new shared.BridgeError(closed === 'gone' ? CHAT_GONE_MESSAGE : CHAT_DELETED_MESSAGE, closed === 'gone' ? 'CHAT_GONE' : 'CHAT_DELETED');
   if (!startUrl && !config.project) {
     throw new shared.BridgeError('No ChatGPT project is selected yet. Call list_projects, then select_project ' +
       "with the user's images project.", 'NO_PROJECT');
@@ -288,8 +298,11 @@ function pump() {
     ![...referencedChatIds(j)].some(id => (cleanupReservations.get(id) || 0) > Date.now()));
   if (!job) return;
   const startId = chatIdFromUrl(job.startUrl);
-  if (startId && jobs.some(j => j.chatStates?.[startId]?.state === 'deleted')) {
-    finishJob(job, { status: 'failed', reason: 'chat_deleted', error: CHAT_DELETED_MESSAGE });
+  const closed = closedChatState(startId);
+  if (closed) {
+    finishJob(job, closed === 'gone'
+      ? { status: 'failed', reason: 'chat_gone', error: CHAT_GONE_MESSAGE }
+      : { status: 'failed', reason: 'chat_deleted', error: CHAT_DELETED_MESSAGE });
     return;
   }
   runningId = job.id;
@@ -879,6 +892,7 @@ const handlers = {
       if (prior && (!latest || String(prior.at || '') >= String(latest.at || ''))) latest = prior;
     }
     if (latest?.state === 'deleted') throw new shared.BridgeError('This chat was already deleted.', 'BAD_REQUEST');
+    if (latest?.state === 'gone') throw new shared.BridgeError('This chat is already gone from ChatGPT.', 'BAD_REQUEST');
     const entry = { state, at: now(), error: state === 'failed' ? (CLEANUP_ERROR_CODES.has(p.error) ? p.error : 'not_confirmed') : null };
     for (const job of jobs) {
       if (referencedChatIds(job).has(id)) {

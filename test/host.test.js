@@ -1119,7 +1119,7 @@ test('cleanup reservations block referenced jobs, allow other chats and resume o
   const a = '6812a3b4-1c2d-8000-9e8f-0123456789ab';
   const b = '7812a3b4-1c2d-8000-9e8f-0123456789ab';
   const url = id => `https://chatgpt.com/c/${id}`;
-  for (const end of ['archived', 'deleted', 'release', 'expiry']) {
+  for (const end of ['archived', 'deleted', 'gone', 'release', 'expiry']) {
     let time = 100000;
     const timers = [], immediates = [], messages = [];
     class Clock extends Date { static now() { return time; } }
@@ -1164,10 +1164,12 @@ test('cleanup reservations block referenced jobs, allow other chats and resume o
     } else api.handlers.chat_cleanup_mark({ id: a, state: end });
     while (immediates.length) immediates.shift()();
     assert.equal(timers.filter(timer => timer.ms === 180000 && !timer.cleared).length, 0);
-    if (end === 'deleted') {
+    if (end === 'deleted' || end === 'gone') {
       assert.equal(waiting.status, 'failed');
-      assert.equal(waiting.reason, 'chat_deleted');
-      assert.equal(waiting.error, 'This ChatGPT conversation was deleted by Backdraw chat cleanup. Start a new chat and pass the saved image in reference_images instead.');
+      assert.equal(waiting.reason, end === 'gone' ? 'chat_gone' : 'chat_deleted');
+      assert.equal(waiting.error, end === 'gone'
+        ? 'This ChatGPT conversation no longer exists in ChatGPT. Start a new chat and pass the saved image in reference_images instead.'
+        : 'This ChatGPT conversation was deleted by Backdraw chat cleanup. Start a new chat and pass the saved image in reference_images instead.');
       assert.equal(messages.some(m => m.type === 'run' && m.job.id === waiting.id), false);
     } else {
       assert.equal(waiting.status, 'running', end);
@@ -1430,7 +1432,7 @@ test('chat cleanup host API and completion messages survive a restart', async t 
       await stop(); await start();
       const plan = await extensionCall('chat_cleanup_list');
       assert.equal(plan.maxJobs, 100);
-      assert.deepEqual(plan.cleaned, { archived: 0, deleted: 1 });
+      assert.deepEqual(plan.cleaned, { archived: 0, deleted: 1, gone: 0 });
       assert.deepEqual(plan.eligible, []);
       assert.equal((await request('job', { jobId: returning.id })).chatStates[a].state, 'deleted');
     });
@@ -1441,6 +1443,38 @@ test('chat cleanup host API and completion messages survive a restart', async t 
         message: 'This ChatGPT conversation was deleted by Backdraw chat cleanup. Start a new chat and pass the saved image in reference_images instead.',
       });
       assert.equal((await extensionCall('chat_cleanup_list')).jobsScanned, before);
+    });
+    await t.test('gone conversations are final: marks are refused, new jobs are rejected and queued jobs fail', async () => {
+      const goneMessage = 'This ChatGPT conversation no longer exists in ChatGPT. Start a new chat and pass the saved image in reference_images instead.';
+      // A queued job that references the chat before ChatGPT is found to have lost it.
+      const blocker = await request('generate', { prompt: 'Gone blocker' });
+      await receive(m => m.type === 'run' && m.job.id === blocker.id);
+      const queued = await request('generate', { prompt: 'Queued before gone', startUrl: url(b) });
+      assert.equal(queued.status, 'queued');
+      assert.deepEqual(await extensionCall('chat_cleanup_mark', { id: b, state: 'gone', error: 'Private title: free text' }), { id: b, state: 'gone' });
+      await receive(m => m.type === 'gallery_changed');
+      const lost = await request('job', { jobId: queued.id });
+      assert.equal(lost.chatStates[b].state, 'gone');
+      assert.equal(lost.chatStates[b].error, null);
+      send({ type: 'result', jobId: blocker.id, ok: false, status: 'failed', error: 'Blocker complete' });
+      let failedQueued;
+      for (let i = 0; i < 100 && failedQueued?.status !== 'failed'; i++) {
+        if (i) await sleep(20);
+        failedQueued = await request('job', { jobId: queued.id });
+      }
+      assert.equal(failedQueued.reason, 'chat_gone');
+      assert.equal(failedQueued.error, goneMessage);
+      assert.equal(traffic.some(m => m.type === 'run' && m.job.id === queued.id), false);
+      // Final: no later mark, no new job, no cleanup list entry.
+      for (const state of ['archived', 'deleted', 'failed', 'gone']) {
+        await assert.rejects(extensionCall('chat_cleanup_mark', { id: b, state }), { code: 'BAD_REQUEST', message: 'This chat is already gone from ChatGPT.' });
+      }
+      const before = (await extensionCall('chat_cleanup_list')).jobsScanned;
+      await assert.rejects(request('generate', { prompt: 'Gone chat', startUrl: url(b) }), { code: 'CHAT_GONE', message: goneMessage });
+      const plan = await extensionCall('chat_cleanup_list');
+      assert.equal(plan.jobsScanned, before);
+      assert.deepEqual(plan.cleaned, { archived: 0, deleted: 1, gone: 1 });
+      assert.deepEqual(await extensionCall('chat_cleanup_check', { ids: [b], action: 'delete' }), { eligible: [] });
     });
     await t.test('cleanup traffic and scratch host logs contain no session secrets', () => {
       const forbidden = /\x74oken|\x63ookie|\x41uthorization/i;
@@ -1506,5 +1540,49 @@ test('cleanup check honors the action, archived chats are deletable and deleted 
   const after = api.handlers.chat_cleanup_list();
   assert.deepEqual(after.deletable.map(chat => chat.id), [b]);
   assert.deepEqual(after.eligible.map(chat => chat.id), [b]);
-  assert.deepEqual(after.cleaned, { archived: 0, deleted: 1 });
+  assert.deepEqual(after.cleaned, { archived: 0, deleted: 1, gone: 0 });
+});
+
+test('a chat found gone leaves every cleanup list, takes archived to gone and is final', () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(ROOT, 'host.js'), 'utf8').split('// ---------------------------------------------------------------- start')[0];
+  const a = '6812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const b = '7812a3b4-1c2d-8000-9e8f-0123456789ab';
+  const url = id => `https://chatgpt.com/c/${id}`;
+  const context = { module: { exports: {} }, Buffer, Date,
+    process: { stdout: { write() {} } },
+    require: name => {
+      if (name === './shared') {
+        class BridgeError extends Error { constructor(message, code) { super(message); this.code = code; } }
+        return { LOG_DIR: DIR, readJson: (_file, fallback) => fallback, writeJson() {}, BridgeError };
+      }
+      if (name === 'fs') return { mkdirSync() {}, statSync: () => ({ size: 0 }), appendFileSync() {} };
+      if (name === 'net') return { createServer: () => ({}) };
+      return require(name.startsWith('.') ? path.join(ROOT, name) : name);
+    },
+    setTimeout: (callback, ms) => ({ callback, ms }), clearTimeout() {}, setImmediate() {},
+  };
+  vm.runInNewContext(source + '\nmodule.exports = { jobs, handlers, createJob, connect: () => { extension = { version: "test" }; } };', context);
+  const api = context.module.exports;
+  api.connect();
+  api.jobs.push({ id: 'one', mode: 'generate', startUrl: null, status: 'succeeded', conversationUrl: url(a), images: [{}] });
+  api.jobs.push({ id: 'two', mode: 'generate', startUrl: null, status: 'succeeded', conversationUrl: url(b), images: [{}] });
+  api.handlers.chat_cleanup_mark({ id: a, state: 'archived' });
+  const marked = api.handlers.chat_cleanup_mark({ id: a, state: 'gone', error: 'not_confirmed' });
+  assert.deepEqual({ id: marked.id, state: marked.state }, { id: a, state: 'gone' });
+  assert.equal(api.jobs[0].chatStates[a].state, 'gone');
+  assert.equal(api.jobs[0].chatStates[a].error, null);
+  for (const state of ['archived', 'deleted', 'failed', 'gone']) {
+    assert.throws(() => api.handlers.chat_cleanup_mark({ id: a, state }), { code: 'BAD_REQUEST', message: 'This chat is already gone from ChatGPT.' });
+  }
+  assert.deepEqual(Array.from(api.handlers.chat_cleanup_check({ ids: [a, b], action: 'delete' }).eligible), [b]);
+  assert.deepEqual(Array.from(api.handlers.chat_cleanup_check({ ids: [a, b], action: 'archive' }).eligible), [b]);
+  const list = api.handlers.chat_cleanup_list();
+  assert.deepEqual(list.eligible.map(chat => chat.id), [b]);
+  assert.deepEqual(list.deletable.map(chat => chat.id), [b]);
+  assert.deepEqual(list.cleaned, { archived: 0, deleted: 0, gone: 1 });
+  assert.throws(() => api.createJob({ prompt: 'Gone chat', startUrl: url(a) }), {
+    code: 'CHAT_GONE',
+    message: 'This ChatGPT conversation no longer exists in ChatGPT. Start a new chat and pass the saved image in reference_images instead.',
+  });
 });

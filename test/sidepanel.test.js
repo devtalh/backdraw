@@ -51,7 +51,7 @@ test('sidepanel: every text key exists in English and Turkish, and every step th
   for (const step of reported) assert.ok(steps[step], step);
 });
 
-test('sidepanel cards: deleted chats are disabled, archived chats stay enabled with a pill, in both languages', () => {
+test('sidepanel cards: deleted and gone chats are disabled, archived chats stay enabled with a pill, in both languages', () => {
   const source = read('sidepanel.js');
   const cardSource = source.slice(source.indexOf('function card(it) {'), source.indexOf('// ---------------------------------------------------------------- thumbnails'));
   const buttonSource = source.slice(source.indexOf('function iconButton('), source.indexOf('function showMessage('));
@@ -62,7 +62,7 @@ test('sidepanel cards: deleted chats are disabled, archived chats stay enabled w
       CHAT: /^https:\/\/chatgpt\.com\//i, showThumb() {}, formatDate: () => '', document: {}, chrome: {} });
     vm.runInContext(buttonSource + cardSource, ctx);
     const conversationUrl = 'https://chatgpt.com/c/6812a3b4-1c2d-8000-9e8f-0123456789ab';
-    for (const [chatState, disabled, key] of [['deleted', true, 'chatDeleted'], ['archived', false, 'openArchivedChat'], [null, false, 'openChat']]) {
+    for (const [chatState, disabled, key] of [['deleted', true, 'chatDeleted'], ['gone', true, 'chatGone'], ['archived', false, 'openArchivedChat'], [null, false, 'openChat']]) {
       const card = ctx.card({ conversationUrl, chatState });
       const body = card.children[1];
       const chat = body.children[2].children[0];

@@ -604,12 +604,24 @@
     return candidates.length === 1 ? candidates[0] : null;
   }
 
+  // ChatGPT sends a deleted chat's link to the home page with this notice.
+  const GONE_TEXT = /^you don['’]t have access to this conversation/i;
+
+  function chatGone() {
+    if (location.hostname !== 'chatgpt.com' || location.pathname !== '/') return false;
+    return $$('[role="alert"], [role="dialog"], [role="status"], [aria-live], [data-testid*="toast" i]').some(el => {
+      if (!shown(el)) return false;
+      const text = squash(el.innerText || el.textContent);
+      return text.length <= 400 && GONE_TEXT.test(text);
+    });
+  }
+
   function chatPageState(id) {
     const trigger = chatTrigger();
     return {
       onChat: location.hostname === 'chatgpt.com' && location.pathname.match(CHAT_PATH)?.[1].toLowerCase() === String(id).toLowerCase(),
       lang: document.documentElement.lang || '', title: trigger ? squash(trigger.innerText) : null,
-      trigger: !!trigger, login: loginWall(), challenge: challenge(!!editor()),
+      trigger: !!trigger, login: loginWall(), challenge: challenge(!!editor()), gone: chatGone(),
       menuOpen: $$('[role="menu"]').some(shown),
     };
   }

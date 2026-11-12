@@ -32,6 +32,10 @@ test('conversation lines: cleanup states for ordinary and sprite results, with u
     assert.deepEqual(deleted, original.map(line => line === oldLine
       ? 'ChatGPT conversation: deleted by Backdraw chat cleanup. The images are saved locally and stay in the ChatGPT Library.' : line));
     assert.ok(!deleted.join('\n').includes(CHAT_URL));
+    const gone = resultLines({ ...base, chatStates: { [id]: { state: 'gone' } } });
+    assert.deepEqual(gone, original.map(line => line === oldLine
+      ? 'ChatGPT conversation: no longer exists in ChatGPT. The images are saved locally.' : line));
+    assert.ok(!gone.join('\n').includes(CHAT_URL));
   }
 });
 

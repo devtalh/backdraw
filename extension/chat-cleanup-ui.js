@@ -30,7 +30,7 @@
 
   function finishText(progress, t) {
     const p = progress || {};
-    const keys = { archived: 'cleanupArchived', alreadyArchived: 'cleanupAlreadyArchived', deleted: 'cleanupDeleted', skipped: 'cleanupSkipped', failed: 'cleanupFailed', notProcessed: 'cleanupNotProcessed' };
+    const keys = { archived: 'cleanupArchived', alreadyArchived: 'cleanupAlreadyArchived', deleted: 'cleanupDeleted', gone: 'cleanupGone', skipped: 'cleanupSkipped', failed: 'cleanupFailed', notProcessed: 'cleanupNotProcessed' };
     const list = Object.entries(keys).filter(([field]) => p[field] > 0).map(([field, key]) =>
       t(key + (p[field] === 1 ? '_one' : ''), { n: p[field] })).join(', ');
     return list ? t('cleanupFinished', { list }) : t('cleanupUnchanged');
@@ -42,5 +42,18 @@
     return t(Object.hasOwn(keys, code) ? keys[code] : 'cleanupErrUnknown');
   }
 
-  globalThis.backdrawCleanupText = { keptSummary, previewText, progressText, finishText, errorText };
+  const STEP_KEYS = { load: 'cleanupStep_load', language: 'cleanupStep_language', open_menu: 'cleanupStep_open_menu',
+    menu_items: 'cleanupStep_menu_items', click_item: 'cleanupStep_click_item', delete_dialog: 'cleanupStep_delete_dialog',
+    confirm_delete: 'cleanupStep_confirm_delete', verify: 'cleanupStep_verify' };
+
+  // "Stopped at: <step> (<code>)" for the failure that ended a cleanup; empty when no step is known.
+  function stopText(progress, t) {
+    const stop = progress?.stop;
+    if (!progress?.error || !stop || typeof stop !== 'object') return '';
+    const stepKey = Object.hasOwn(STEP_KEYS, stop.step) ? STEP_KEYS[stop.step] : 'cleanupStep_unknown';
+    const code = /^[a-z_]{1,40}$/.test(String(stop.code)) ? stop.code : 'unknown';
+    return t('cleanupStoppedAt', { step: t(stepKey), code });
+  }
+
+  globalThis.backdrawCleanupText = { keptSummary, previewText, progressText, finishText, errorText, stopText };
 })();

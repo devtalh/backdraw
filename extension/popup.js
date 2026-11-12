@@ -251,7 +251,7 @@ async function start() {
 
 // ---------------------------------------------------------------- chat cleanup
 
-const { keptSummary, previewText, progressText, finishText, errorText } = backdrawCleanupText;
+const { keptSummary, previewText, progressText, finishText, errorText, stopText } = backdrawCleanupText;
 let savedCleanupMode = 'keep';
 let cleanupDeletePending = false;
 let cleanupSettingSaving = false;
@@ -352,7 +352,11 @@ function renderCleanup() {
     if (kept) box.append(note(kept));
     box.append(actions(button(t('cleanupDismiss'), dismissCleanup)));
   }
-  if (cleanupError) box.append(note(errorText(cleanupError, t), 'err'));
+  if (cleanupError) {
+    box.append(note(errorText(cleanupError, t), 'err'));
+    const stop = stopText(cleanupProgress, t);
+    if (stop) box.append(note(stop, 'err'));
+  }
 }
 
 async function previewCleanup() {

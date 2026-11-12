@@ -50,10 +50,10 @@ test('listGallery: succeeded jobs only, newest first, a job\'s images in order, 
 test('listGallery: chat states follow the conversation id, including project links and failed or absent states', () => {
   const id = '6812a3b4-1c2d-8000-9e8f-0123456789ab';
   for (const conversationUrl of [`https://chatgpt.com/c/${id}`, `https://chatgpt.com/g/g-p-0123abcd-art/c/${id}`]) {
-    for (const state of ['archived', 'deleted', 'failed', undefined]) {
+    for (const state of ['archived', 'deleted', 'gone', 'failed', undefined]) {
       const j = job('img_state', 'succeeded', [im('state.png')], { conversationUrl,
         ...(state ? { chatStates: { [id]: { state } } } : {}) });
-      assert.equal(g.listGallery([j]).items[0].chatState, ['archived', 'deleted'].includes(state) ? state : null);
+      assert.equal(g.listGallery([j]).items[0].chatState, ['archived', 'deleted', 'gone'].includes(state) ? state : null);
     }
     const unrelated = job('img_other', 'succeeded', [im('other.png')], { conversationUrl, chatStates: { unrelated: { state: 'deleted' } } });
     assert.equal(g.listGallery([unrelated]).items[0].chatState, null);

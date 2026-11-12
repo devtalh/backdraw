@@ -92,7 +92,7 @@ test('i18n: every key the extension uses exists', () => {
 });
 
 test('cleanup texts: every static key, dynamic reason and count variant exists in both languages', () => {
-  const keys = new Set(['chatDeleted', 'chatArchived', 'openArchivedChat']);
+  const keys = new Set(['chatDeleted', 'chatGone', 'chatArchived', 'openArchivedChat']);
   for (const key of Object.keys(i18n.STRINGS.en)) if (/^(cleanup|reason_)/.test(key)) keys.add(key);
   for (const file of ['chat-cleanup-ui.js', 'popup.js']) {
     for (const [, key] of read(file).matchAll(/['"]((?:cleanup|reason_)[A-Za-z_]+)['"]/g)) {

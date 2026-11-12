@@ -257,10 +257,10 @@ function card(it) {
   if (it.chatState === 'archived') meta.append(el('span', { className: 'pill', textContent: t('chatArchived') }));
 
   const hasChat = CHAT.test(it.conversationUrl || '');
-  const chatTitle = it.chatState === 'deleted' ? t('chatDeleted')
+  const chatTitle = it.chatState === 'deleted' ? t('chatDeleted') : it.chatState === 'gone' ? t('chatGone')
     : hasChat && it.chatState === 'archived' ? t('openArchivedChat') : t(hasChat ? 'openChat' : 'noChatLink');
   const chat = iconButton('chat', chatTitle, () => chrome.tabs.create({ url: it.conversationUrl }));
-  chat.disabled = !hasChat || it.chatState === 'deleted';
+  chat.disabled = !hasChat || it.chatState === 'deleted' || it.chatState === 'gone';
   const reveal = iconButton('folder', t('showInFolder'), async () => {
     reveal.disabled = true;
     try {
