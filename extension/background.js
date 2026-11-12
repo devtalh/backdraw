@@ -455,14 +455,12 @@ async function drainCleanup() {
         try { await callHost('chat_cleanup_mark', { id: item.id, state, error }); }
         catch { markFailed = true; }
         // Update progress together with dequeueing, after the host call has settled.
-        if (succeeded) {
+        if (succeeded && !markFailed) {
           cleanupProgress[result === 'already_archived' ? 'alreadyArchived' : state]++;
-          cleanupProgress.consecutiveFailures = 0;
         } else {
           cleanupProgress.failed++;
-          cleanupProgress.consecutiveFailures++;
         }
-        if (markFailed) cleanupProgress.failed++;
+        cleanupProgress.consecutiveFailures = succeeded ? 0 : cleanupProgress.consecutiveFailures + 1;
       }
       // Keep the in-flight item in session storage until its result has been recorded.
       if (cleanupQueue[0] === item) cleanupQueue.shift();

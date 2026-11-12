@@ -51,6 +51,33 @@ test('sidepanel: every text key exists in English and Turkish, and every step th
   for (const step of reported) assert.ok(steps[step], step);
 });
 
+test('sidepanel cards: deleted chats are disabled, archived chats stay enabled with a pill, in both languages', () => {
+  const source = read('sidepanel.js');
+  const cardSource = source.slice(source.indexOf('function card(it) {'), source.indexOf('// ---------------------------------------------------------------- thumbnails'));
+  const buttonSource = source.slice(source.indexOf('function iconButton('), source.indexOf('function showMessage('));
+  for (const lang of ['en', 'tr']) {
+    const el = (tag, props = {}, ...children) => ({ tag, ...props, children, style: {},
+      append(...more) { this.children.push(...more); }, setAttribute(k, v) { this[k] = v; } });
+    const ctx = vm.createContext({ el, icon: () => null, t: (key, vars) => i18n.translate(lang, key, vars),
+      CHAT: /^https:\/\/chatgpt\.com\//i, showThumb() {}, formatDate: () => '', document: {}, chrome: {} });
+    vm.runInContext(buttonSource + cardSource, ctx);
+    const conversationUrl = 'https://chatgpt.com/c/6812a3b4-1c2d-8000-9e8f-0123456789ab';
+    for (const [chatState, disabled, key] of [['deleted', true, 'chatDeleted'], ['archived', false, 'openArchivedChat'], [null, false, 'openChat']]) {
+      const card = ctx.card({ conversationUrl, chatState });
+      const body = card.children[1];
+      const chat = body.children[2].children[0];
+      assert.equal(chat.disabled, disabled);
+      assert.equal(chat.title, i18n.translate(lang, key));
+      assert.equal(chat['aria-label'], chat.title);
+      const pills = body.children[1].children.filter(c => c?.className === 'pill');
+      assert.deepEqual(pills.map(p => p.textContent), chatState === 'archived' ? [i18n.translate(lang, 'chatArchived')] : []);
+    }
+    const card = ctx.card({ conversationUrl: null });
+    assert.equal(card.children[1].children[2].children[0].disabled, true);
+    assert.equal(card.children[1].children[2].children[0].title, i18n.translate(lang, 'noChatLink'));
+  }
+});
+
 test('sidepanel: GIF detail titles are translated in English and Turkish', () => {
   assert.equal(i18n.translate('en', 'gifFrames', { frames: 12 }), '12 frames');
   assert.equal(i18n.translate('en', 'gifDetails', { frames: 12, seconds: '1.4' }), '12 frames, 1.4 s per loop');

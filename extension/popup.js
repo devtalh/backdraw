@@ -205,6 +205,7 @@ async function refresh() {
 function setupSettings(prefs) {
   $('language').value = i18n.PREFERENCES.includes(prefs[i18n.LANGUAGE_KEY]) ? prefs[i18n.LANGUAGE_KEY] : 'auto';
   $('theme').value = backdrawSettings.theme();
+  setupCleanup(prefs);
   $('settingsBtn').onclick = () => {
     const open = $('settings').hidden;
     $('settings').hidden = !open;
@@ -218,6 +219,8 @@ function setupSettings(prefs) {
   i18n.watch(() => {
     document.documentElement.lang = i18n.lang();
     i18n.apply();
+    renderCleanupSetting();
+    renderCleanup();
     render();
     if (collectionsLoaded && !openCol) showCollections();
   });
@@ -233,7 +236,7 @@ function setupGallery() {
 
 async function start() {
   await backdrawSettings.ready;
-  const prefs = await chrome.storage.local.get([i18n.LANGUAGE_KEY, ACK_KEY]).catch(() => ({}));
+  const prefs = await chrome.storage.local.get([i18n.LANGUAGE_KEY, ACK_KEY, backdrawSettings.CLEANUP_KEY]).catch(() => ({}));
   acknowledged = !!prefs[ACK_KEY];
   document.documentElement.lang = i18n.lang();
   i18n.apply();
@@ -243,8 +246,202 @@ async function start() {
   windowId = tab ? tab.windowId : null;
   setupGallery();
   await refresh();
-  setInterval(refresh, 1500);
+  if (!popupClosed) refreshTimer = setInterval(refresh, 1500);
 }
+
+// ---------------------------------------------------------------- chat cleanup
+
+const { keptSummary, progressText, finishText, errorText } = backdrawCleanupText;
+let savedCleanupMode = 'keep';
+let cleanupDeletePending = false;
+let cleanupSettingSaving = false;
+let cleanupSettingError = false;
+let cleanupMaxJobs = 100;
+let cleanupView = 'idle';
+let cleanupPreview = null;
+let cleanupStart = null;
+let cleanupProgress = null;
+let cleanupError = null;
+let cleanupStopping = false;
+let cleanupSignature = '';
+let cleanupTimer = null;
+let refreshTimer = null;
+let popupClosed = false;
+
+function renderCleanupSetting() {
+  $('chatCleanup').value = cleanupDeletePending ? 'delete' : savedCleanupMode;
+  $('chatCleanup').disabled = cleanupSettingSaving;
+  $('cleanupHint').textContent = t('cleanupHint', { max: cleanupMaxJobs });
+  const box = $('cleanupSettingConfirm');
+  box.hidden = !cleanupDeletePending && !cleanupSettingError;
+  box.replaceChildren();
+  if (cleanupSettingError) box.append(note(t('cleanupErrUnknown'), 'err'));
+  if (!cleanupDeletePending) return;
+  const yes = button(t('cleanupDeleteAfterJob'), () => saveCleanupMode('delete'), 'btn danger');
+  const no = button(t('cancel'), () => {
+    cleanupDeletePending = false;
+    cleanupSettingError = false;
+    renderCleanupSetting();
+  });
+  yes.disabled = no.disabled = cleanupSettingSaving;
+  box.append(note(t('cleanupDeleteWarning')), actions(yes, no));
+}
+
+async function saveCleanupMode(value) {
+  if (cleanupSettingSaving) return;
+  cleanupSettingSaving = true;
+  cleanupSettingError = false;
+  renderCleanupSetting();
+  try {
+    await backdrawSettings.set(backdrawSettings.CLEANUP_KEY, value);
+    savedCleanupMode = value;
+  } catch {
+    cleanupSettingError = true;
+  }
+  cleanupDeletePending = false;
+  cleanupSettingSaving = false;
+  renderCleanupSetting();
+}
+
+function setupCleanup(prefs) {
+  savedCleanupMode = backdrawSettings.cleanupMode(prefs[backdrawSettings.CLEANUP_KEY]);
+  renderCleanupSetting();
+  $('chatCleanup').onchange = () => {
+    const value = backdrawSettings.cleanupMode($('chatCleanup').value);
+    cleanupDeletePending = value === 'delete';
+    cleanupSettingError = false;
+    if (cleanupDeletePending) renderCleanupSetting();
+    else saveCleanupMode(value);
+  };
+  $('cleanupNow').onclick = previewCleanup;
+  pollCleanup(true);
+}
+
+function renderCleanup() {
+  const signature = JSON.stringify([cleanupView, cleanupPreview, cleanupStart, cleanupProgress, cleanupError, cleanupStopping, i18n.lang()]);
+  if (signature === cleanupSignature) return;
+  cleanupSignature = signature;
+  $('cleanupNow').disabled = ['loading', 'starting', 'tracking'].includes(cleanupView);
+  const box = $('cleanupView');
+  box.hidden = cleanupView === 'idle';
+  box.replaceChildren();
+  if (cleanupView === 'loading' || cleanupView === 'starting') box.append(busyNote(t('loading')));
+  if (cleanupView === 'preview' || cleanupView === 'confirm') {
+    const n = cleanupPreview.eligible.length;
+    box.append(note(t(n ? (n === 1 ? 'cleanupEligible_one' : 'cleanupEligible') : 'cleanupEmpty', { n })));
+    const kept = keptSummary(cleanupPreview.kept, cleanupPreview.keptTotal, t);
+    if (kept) box.append(note(kept));
+    if (n && cleanupView === 'preview') box.append(actions(
+      button(t('cleanupArchiveAll'), () => startCleanup('archive')),
+      button(t('cleanupDeleteAll'), () => { cleanupView = 'confirm'; renderCleanup(); }, 'btn danger')));
+    if (n && cleanupView === 'confirm') box.append(el('div', { className: 'cleanup-confirm' },
+      note(t(n === 1 ? 'cleanupConfirmDelete_one' : 'cleanupConfirmDelete', { n })),
+      actions(button(t(n === 1 ? 'cleanupDeleteCount_one' : 'cleanupDeleteCount', { n }), () => startCleanup('delete', true), 'btn danger'),
+        button(t('cancel'), () => { cleanupView = 'preview'; renderCleanup(); }))));
+  }
+  if (cleanupView === 'empty') box.append(note(t('cleanupEmpty')));
+  if (cleanupView === 'tracking') {
+    box.append(note(progressText(cleanupProgress, t)));
+    const stop = button(t('cleanupStop'), stopCleanup);
+    stop.disabled = cleanupStopping;
+    box.append(actions(stop));
+  }
+  if (cleanupView === 'finished') {
+    box.append(note(finishText(cleanupProgress, t)));
+    const kept = keptSummary(cleanupStart?.kept, cleanupStart?.keptTotal, t, true);
+    if (kept) box.append(note(kept));
+  }
+  if (cleanupError) box.append(note(errorText(cleanupError, t), 'err'));
+}
+
+async function previewCleanup() {
+  if (['loading', 'starting', 'tracking'].includes(cleanupView)) return;
+  cleanupView = 'loading';
+  cleanupError = null;
+  cleanupStart = null;
+  renderCleanup();
+  const r = await ask('cleanup:preview');
+  if (popupClosed) return;
+  if (!r?.ok) {
+    cleanupView = 'error';
+    cleanupError = r?.error || 'unknown';
+  } else {
+    cleanupPreview = r.result;
+    if (Number.isInteger(r.result.maxJobs) && r.result.maxJobs > 0) cleanupMaxJobs = r.result.maxJobs;
+    renderCleanupSetting();
+    cleanupView = 'preview';
+  }
+  renderCleanup();
+}
+
+async function startCleanup(action, confirmed = false) {
+  if (action === 'delete' && (cleanupView !== 'confirm' || !confirmed)) return;
+  if (!['preview', 'confirm'].includes(cleanupView)) return;
+  cleanupView = 'starting';
+  cleanupError = null;
+  renderCleanup();
+  const r = await ask('cleanup:start', action === 'delete' ? { action, confirmed: true } : { action });
+  if (popupClosed) return;
+  if (!r?.ok) {
+    cleanupView = 'error';
+    cleanupError = r?.error || 'unknown';
+  } else if (!r.queued) {
+    cleanupView = 'empty';
+  } else {
+    cleanupStart = r;
+    cleanupProgress = { running: true, action, done: 0, total: r.queued };
+    cleanupView = 'tracking';
+    await pollCleanup();
+  }
+  renderCleanup();
+}
+
+async function stopCleanup() {
+  if (cleanupStopping) return;
+  cleanupStopping = true;
+  renderCleanup();
+  const r = await ask('cleanup:stop');
+  if (!r?.ok) {
+    cleanupError = r?.error || 'unknown';
+    cleanupStopping = false;
+  }
+  renderCleanup();
+}
+
+async function pollCleanup(initial = false) {
+  clearTimeout(cleanupTimer);
+  if (popupClosed) return;
+  const r = await ask('cleanup:status');
+  if (popupClosed) return;
+  // A delayed startup answer must not replace a preview or a confirmation already opened.
+  if (initial && cleanupView !== 'idle') return;
+  if (r?.ok && r.progress?.running) {
+    cleanupProgress = r.progress || cleanupProgress;
+    cleanupView = 'tracking';
+    cleanupError = r.progress?.error || null;
+    if (initial) {
+      $('settings').hidden = false;
+      $('settingsBtn').setAttribute('aria-expanded', 'true');
+    }
+  } else if (cleanupView === 'tracking') {
+    if (r?.ok && r.progress) {
+      cleanupProgress = r.progress;
+      cleanupError = r.progress.error;
+      cleanupView = 'finished';
+      cleanupStopping = false;
+    } else if (!r?.ok) cleanupError = r?.error || 'unknown';
+  }
+  renderCleanup();
+  if (cleanupView === 'tracking') cleanupTimer = setTimeout(pollCleanup, 1000);
+}
+
+function closePopup() {
+  popupClosed = true;
+  clearTimeout(cleanupTimer);
+  clearInterval(refreshTimer);
+}
+window.addEventListener('pagehide', closePopup);
+window.addEventListener('unload', closePopup);
 
 start();
 

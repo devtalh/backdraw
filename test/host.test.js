@@ -300,7 +300,7 @@ test('the host', async t => {
     const list = await call('gallery_list', { offset: 0, limit: 100 });
     assert.equal(list.total, 6); // the banner's two images, the void mage, the landscape and these two
     assert.deepEqual(list.items[0], {
-      jobId: job.id, n: 1, createdAt: done.createdAt, prompt: 'A gallery cat', conversationUrl: CHAT_URL, path: saved,
+      jobId: job.id, n: 1, createdAt: done.createdAt, prompt: 'A gallery cat', conversationUrl: CHAT_URL, chatState: null, path: saved,
       width: 900, height: 600, format: 'PNG', frames: null, durationMs: null, aspect: null, preview: true, missing: false,
     });
     assert.deepEqual(list.items.slice(4).map(x => [x.n, x.aspect, x.prompt]), [[1, '4:1', 'A wide banner'], [2, '4:1', 'A wide banner']]);

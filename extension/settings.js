@@ -3,6 +3,9 @@
 (() => {
   const THEMES = ['auto', 'light', 'dark'];
   const THEME_KEY = 'theme';
+  const CLEANUP_KEY = 'chatCleanup';
+  const CLEANUP_MODES = ['keep', 'archive', 'delete'];
+  const cleanupMode = value => CLEANUP_MODES.includes(value) ? value : 'keep';
   const COPY = 'backdraw.theme'; // chrome.storage answers after the first paint; localStorage doesn't
   const root = document.documentElement;
 
@@ -31,5 +34,5 @@
   const set = (key, value) => chrome.storage.local.set({ [key]: value });
   const theme = () => root.dataset.theme;
 
-  globalThis.backdrawSettings = { THEMES, THEME_KEY, ready, set, theme, applyTheme };
+  globalThis.backdrawSettings = { THEMES, THEME_KEY, CLEANUP_KEY, CLEANUP_MODES, cleanupMode, ready, set, theme, applyTheme };
 })();

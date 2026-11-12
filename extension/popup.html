@@ -29,6 +29,17 @@
         <option value="auto" data-i18n="optAuto">Auto</option><option value="light" data-i18n="themeLight">Light</option><option value="dark" data-i18n="themeDark">Dark</option>
       </select>
     </label>
+    <label class="cleanup-wide"><span data-i18n="cleanupSetting">After a job: ChatGPT chat</span>
+      <select id="chatCleanup" aria-describedby="cleanupHint">
+        <option value="keep" data-i18n="cleanupKeep">Keep</option>
+        <option value="archive" data-i18n="cleanupArchive">Archive</option>
+        <option value="delete" data-i18n="delete">Delete</option>
+      </select>
+    </label>
+    <small id="cleanupHint" class="note cleanup-wide"></small>
+    <div id="cleanupSettingConfirm" class="cleanup-confirm cleanup-wide" hidden></div>
+    <button id="cleanupNow" class="btn cleanup-wide" data-i18n="cleanupNow">Clean up now</button>
+    <div id="cleanupView" class="cleanup-wide" role="status" aria-live="polite" hidden></div>
   </section>
   <section id="wizard" hidden>
     <h2><span data-i18n="setupTitle">Set up Backdraw</span><small id="setupCount"></small></h2>
@@ -58,6 +69,7 @@
   </section>
   <footer><span data-i18n="footerNote">Images are made in a background tab; your active tab does not change.</span><button id="gallery" class="link" hidden data-i18n="openGallery">Open gallery</button></footer>
   <script src="setup.js"></script>
+  <script src="chat-cleanup-ui.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

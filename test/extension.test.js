@@ -560,9 +560,25 @@ test('chat cleanup: a successful chat resets consecutive failures and mark rejec
   assert.equal(w.state().progress.error, null);
   assert.equal(w.state().progress.done, 4);
   assert.equal(w.state().progress.failed, 3);
+  assert.equal(w.state().progress.archived, 1); // The rejected mark is counted only as a failure.
+  assert.equal(w.state().progress.deleted, 0);
   assert.equal(w.state().progress.consecutiveFailures, 0);
   assert.equal(w.calls('chat_cleanup_mark').length, 4);
   assert.doesNotMatch(JSON.stringify([w.posted, w.logs]), /Private cleanup title|https:\/\/chatgpt\.com/i);
+});
+
+test('chat cleanup: mark rejection counts once without a success for archive, delete, already archived or page failure', async () => {
+  for (const options of [{ setting: 'archive' }, { setting: 'delete' }, { setting: 'archive', unarchive: true },
+    { setting: 'archive', page: name => name === 'openChatMenu' ? { ok: false, error: 'menu_trigger_not_found' } : undefined }]) {
+    const w = cleanupWorker({ ...options, host: msg => msg.method === 'chat_cleanup_mark' ? { __error: 'mark rejected' } : undefined });
+    await w.welcome(); await w.done(); await w.finish();
+    const p = w.state().progress;
+    assert.equal(p.failed, 1);
+    assert.equal(p.archived + p.deleted + p.alreadyArchived, 0);
+    assert.equal(p.done, 1);
+    assert.equal(p.consecutiveFailures, options.page ? 1 : 0);
+    assert.equal(p.error, null);
+  }
 });
 
 test('chat cleanup: disconnection preserves pending work for the next welcome', async () => {

@@ -91,6 +91,23 @@ test('i18n: every key the extension uses exists', () => {
   for (const key of used) assert.ok(key in i18n.STRINGS.en, key);
 });
 
+test('cleanup texts: every static key, dynamic reason and count variant exists in both languages', () => {
+  const keys = new Set(['chatDeleted', 'chatArchived', 'openArchivedChat']);
+  for (const key of Object.keys(i18n.STRINGS.en)) if (/^(cleanup|reason_)/.test(key)) keys.add(key);
+  for (const file of ['chat-cleanup-ui.js', 'popup.js']) {
+    for (const [, key] of read(file).matchAll(/['"]((?:cleanup|reason_)[A-Za-z_]+)['"]/g)) {
+      if (key !== 'cleanupView' && key !== 'cleanupNow' && key !== 'cleanupSettingConfirm' && key !== 'cleanupHint') keys.add(key);
+    }
+  }
+  assert.ok(keys.size > 50);
+  for (const key of keys) {
+    assert.ok(i18n.STRINGS.en[key], `en.${key}`);
+    assert.ok(i18n.STRINGS.tr[key], `tr.${key}`);
+    const placeholders = s => [...s.matchAll(/\{(\w+)\}/g)].map(m => m[1]).sort();
+    assert.deepEqual(placeholders(i18n.STRINGS.en[key]), placeholders(i18n.STRINGS.tr[key]), key);
+  }
+});
+
 test('menu titles come from i18n.js (the language override applies); _locales only holds the manifest description', () => {
   for (const key of ['menuAdd', 'menuNew', 'menuOffline']) {
     assert.ok(i18n.STRINGS.en[key] && i18n.STRINGS.tr[key], key);

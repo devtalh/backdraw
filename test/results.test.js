@@ -17,6 +17,24 @@ const spriteJob = sprite => job({ status: 'succeeded', assistantText: 'Do not sh
   images: [{ path: 'frog_walk.gif' }, { path: 'frog.png' }],
   sprite: { motion: 'walk', background: 'transparent', chosen: 0, attempts: [spriteAttempt()], ...sprite } });
 
+test('conversation lines: cleanup states for ordinary and sprite results, with unchanged output otherwise', () => {
+  const id = '6812a3b4-1c2d-8000-9e8f-0123456789ab';
+  for (const base of [job({ status: 'succeeded', conversationUrl: CHAT_URL, images: [{ path: 'a.png' }] }), spriteJob()]) {
+    const original = resultLines(base);
+    const oldLine = `ChatGPT conversation: ${CHAT_URL}`;
+    assert.ok(original.includes(oldLine));
+    assert.deepEqual(resultLines({ ...base, chatStates: {} }), original);
+    assert.deepEqual(resultLines({ ...base, chatStates: { [id]: { state: 'failed' } } }), original);
+    assert.deepEqual(resultLines({ ...base, chatStates: { unrelated: { state: 'deleted' } } }), original);
+    assert.deepEqual(resultLines({ ...base, chatStates: { [id]: { state: 'archived' } } }),
+      original.map(line => line === oldLine ? `ChatGPT conversation (archived): ${CHAT_URL}` : line));
+    const deleted = resultLines({ ...base, chatStates: { [id]: { state: 'deleted' } } });
+    assert.deepEqual(deleted, original.map(line => line === oldLine
+      ? 'ChatGPT conversation: deleted by Backdraw chat cleanup. The images are saved locally and stay in the ChatGPT Library.' : line));
+    assert.ok(!deleted.join('\n').includes(CHAT_URL));
+  }
+});
+
 test('sprite success is short, reports only failing gates, and omits ordinary image diagnostics', () => {
   const lines = resultLines(spriteJob());
   assert.equal(lines[0], 'SUCCESS \u2014 sprite animation "walk" ready (job img_1a2b3c4d).');
