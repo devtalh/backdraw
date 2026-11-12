@@ -213,6 +213,19 @@ ikinci bir sunucu başlatır.
 Açılır pencerede dil (Otomatik / English / Türkçe) ve tema (Otomatik / Açık / Koyu) ayarları da var.
 Bir şey çalışmazsa [`npx backdraw@latest doctor`](#doktor) çalıştır.
 
+### ChatGPT sohbetlerini temizle
+
+Açılır pencerenin ayarlarındaki **İş bitince ChatGPT sohbeti** seçeneği **Bırak** (varsayılan),
+**Arşivle** ve **Sil** değerlerini sunar. **Şimdi temizle**, uygun sohbetleri önizleyip topluca
+arşivlemeyi veya silmeyi sağlar. Silme ayrıca onay ister; temizlik sürerken **Durdur** kullanılabilir.
+Yalnızca Backdraw'ın açtığı ve görselleri kaydedilerek başarıyla biten işlerin sohbetleri uygundur.
+Başarısız, zaman aşımına uğrayan veya ChatGPT'nin soru sorduğu işlerin sohbetleri açık kalır.
+Backdraw yalnızca son 100 iş kaydındaki sohbetleri bilir; daha eski sohbetler bilinmez.
+
+Temizlik ChatGPT'nin **İngilizce arayüzündeki** sohbet menüsünü kullanır ve oturum bilgilerini okumaz.
+Silme geri alınamaz ama görseller ChatGPT Library'de ve bilgisayarında kalır.
+Yerel dosyalara dokunulmaz. Galeri arşivlenen sohbetleri işaretler, silinen sohbetlerin bağlantısını devre dışı bırakır.
+
 ## Kullanım
 
 ### Claude Code'dan
@@ -740,6 +753,7 @@ dosyasına bak (sonra `node cli.js debug off` ile kapat).
 
 Backdraw chatgpt.com web sayfasını yönetir; bu yüzden bir tasarım değişikliği onu bozabilir (örneğin
 mesaj kutusunu artık bulamaz).
+Sohbet menüsündeki metinler değişirse temizlik ilgili sohbetleri açık bırakıp durur.
 
 1. `node cli.js diagnose` (ya da `node cli.js diagnose <sohbet linki>`) çalıştır. Backdraw'ın
    gördüğü sayfa yapısının bir özetini yazar; `--selector CSS` ve `--max N` çıktıyı daraltır,

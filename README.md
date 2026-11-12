@@ -210,6 +210,19 @@ server with the same tools.
 The popup also has a language (Auto / English / Türkçe) and a theme (Auto / Light / Dark) setting.
 If something doesn't work, run [`npx backdraw@latest doctor`](#doctor).
 
+### Clean up ChatGPT chats
+
+In the popup settings, **After a job: ChatGPT chat** offers **Keep** (the default), **Archive**
+and **Delete**. **Clean up now** previews eligible chats and lets you archive or delete them
+together, with a separate confirmation before deletion and a Stop button while cleanup runs.
+Only chats Backdraw opened for successfully completed jobs with saved images are eligible.
+Failed, timed-out jobs and jobs where ChatGPT asked a question stay open. Backdraw only knows
+the chats in its last 100 job records; older chats are not known.
+
+Cleanup uses the chat menu in ChatGPT's **English interface** and reads no session credentials.
+Deletion cannot be undone, but images stay in the ChatGPT Library and on your computer.
+Cleanup never changes local files. The gallery marks archived chats and disables deleted chat links.
+
 ## Use it
 
 ### From Claude Code
@@ -730,6 +743,7 @@ For a detailed log, run `node cli.js debug on` and look at `%USERPROFILE%\.backd
 
 Backdraw drives the chatgpt.com web page, so a redesign can break it (for example, it can no longer
 find the message box).
+If chat menu labels change, cleanup leaves the affected chats open and stops.
 
 1. Run `node cli.js diagnose` (or `node cli.js diagnose <chat link>`). It prints a summary of the
    page structure Backdraw sees; `--selector CSS` and `--max N` narrow it down, `--worker` looks at
