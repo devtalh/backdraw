@@ -28,6 +28,7 @@ and the link to the chat.
 
 - Generate new images, or edit one by attaching it as a reference.
 - Ask for a shape (`16:9`, a `4:1` banner, …) or a transparent background.
+- Make animated GIFs: ask ChatGPT for one, loop a single PNG locally (`animate_image`), or turn a ChatGPT sprite sheet into an aligned transparent GIF (`generate_sprite`, `animate_sheet`).
 - Save reference images from any website with a right-click and reuse them as collections.
 - Browse everything you made in a gallery side panel.
 - Pure Node.js with zero npm dependencies. Everything runs on your computer.
@@ -47,6 +48,8 @@ and the link to the chat.
 - **No API key.** It uses your ChatGPT plan; each image counts toward your normal ChatGPT limits.
 - **References from the web.** Right-click images on any site to collect them, then generate in
   their style.
+- **Sprite animation with checks.** Backdraw cuts and aligns a sprite sheet's poses on your PC,
+  checks frame count, empty frames and character identity, and reports any quality warnings left.
 - **A gallery** of everything you made, in Chrome's side panel.
 - **One command to set up:** `npx backdraw@latest setup`. Loading the extension is the only step
   left to you.
@@ -502,6 +505,8 @@ Ask "Claude, make a frog with a red scarf walk". With one `generate_sprite` call
 a sprite sheet and Backdraw cuts and aligns its poses locally into a looping transparent GIF,
 `atlas.png`, `manifest.json`, individual frame PNGs and a numbered contact preview. The GIF and
 original sheet appear in the gallery. Follow the returned job id with `job_status`.
+
+<p align="center"><img src="branding/demo/sprite-fisherman-reel.gif" alt="A pixel-art fisherman in a straw hat reels in a fishing line, an 8-frame transparent loop made with generate_sprite" width="360"></p>
 
 Choose `walk`, `run`, `idle`, `jump`, `dance`, `wave` or `attack`, with `side` (default) or `front`
 view. The default 8 frames use a 4x2 grid; 16 frames use 4x4. If frame count, empty-frame or character

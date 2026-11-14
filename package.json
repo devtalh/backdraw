@@ -1,7 +1,7 @@
 {
   "name": "backdraw",
   "version": "2.4.0",
-  "description": "Local MCP server, native messaging host and Chrome extension that let Claude generate images with your own signed-in ChatGPT account in a background tab.",
+  "description": "Local MCP server, native messaging host and Chrome extension that let Claude generate images and animated GIFs with your own signed-in ChatGPT account in a background tab.",
   "mcpName": "io.github.devtalh/backdraw",
   "license": "MIT",
   "author": "devtalh",
@@ -23,7 +23,13 @@
     "image-generation",
     "chrome-extension",
     "native-messaging",
-    "windows"
+    "windows",
+    "gif",
+    "animated-gif",
+    "sprite",
+    "sprite-sheet",
+    "animation",
+    "pixel-art"
   ],
   "bin": {
     "backdraw": "bin/backdraw.js"

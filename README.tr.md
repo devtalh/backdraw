@@ -28,6 +28,7 @@ yolu, bir önizleme ve sohbetin bağlantısı döner.
 
 - Yeni görseller üret ya da bir görseli referans olarak ekleyip düzenlet.
 - Bir en-boy oranı (`16:9`, banner için `4:1`, …) ya da şeffaf arka plan iste.
+- Animasyonlu GIF yap: ChatGPT'den iste, tek bir PNG'yi yerelde döngüye sok (`animate_image`) ya da ChatGPT sprite sheet'ini hizalı, şeffaf bir GIF'e çevir (`generate_sprite`, `animate_sheet`).
 - Herhangi bir sitedeki görselleri sağ tıklayarak kaydet, koleksiyon olarak tekrar tekrar kullan.
 - Ürettiğin her şeye galeri yan panelinden göz at.
 - Saf Node.js, sıfır npm bağımlılığı. Her şey senin bilgisayarında çalışır.
@@ -48,6 +49,8 @@ yolu, bir önizleme ve sohbetin bağlantısı döner.
 - **API anahtarı yok.** ChatGPT planını kullanır; her görsel normal ChatGPT limitlerinden düşer.
 - **Web'den referanslar.** Herhangi bir sitedeki görselleri sağ tıklayarak topla, sonra onların
   tarzında üret.
+- **Kontrollü sprite animasyonu.** Backdraw bir sprite sheet'in pozlarını bilgisayarında keser ve
+  hizalar; kare sayısını, boş kareleri ve karakter kimliğini denetler, kalan kalite uyarılarını bildirir.
 - Ürettiğin her şey için Chrome'un yan panelinde bir **galeri**.
 - **Tek komutla kurulum:** `npx backdraw@latest setup`. Sana kalan tek adım eklentiyi yüklemek.
 
@@ -512,6 +515,8 @@ kod kopyalanmadı.
 sprite sheet çizer, Backdraw pozları yerelde kesip hizalayarak döngülü şeffaf GIF, `atlas.png`,
 `manifest.json`, ayrı kare PNG'leri ve numaralı contact önizlemesi çıkarır. GIF ve kaynak sheet
 galeride görünür. Dönen iş kimliğini `job_status` ile izle.
+
+<p align="center"><img src="branding/demo/sprite-fisherman-reel.gif" alt="Hasır şapkalı, piksel sanatı bir balıkçı oltasını sarıyor; generate_sprite ile yapılmış 8 karelik şeffaf döngü" width="360"></p>
 
 `walk`, `run`, `idle`, `jump`, `dance`, `wave` veya `attack`; `side` (varsayılan) ya da `front`
 görüş seçilebilir. Varsayılan 8 kare 4x2, 16 kare 4x4 ızgara kullanır. Kare sayısı, boş kare veya
