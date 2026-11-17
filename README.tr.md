@@ -516,7 +516,7 @@ sprite sheet çizer, Backdraw pozları yerelde kesip hizalayarak döngülü şef
 `manifest.json`, ayrı kare PNG'leri ve numaralı contact önizlemesi çıkarır. GIF ve kaynak sheet
 galeride görünür. Dönen iş kimliğini `job_status` ile izle.
 
-<p align="center"><img src="branding/demo/sprite-fisherman-reel.gif" alt="Hasır şapkalı, piksel sanatı bir balıkçı oltasını sarıyor; generate_sprite ile yapılmış 8 karelik şeffaf döngü" width="360"></p>
+<p align="center"><img src="branding/demo/sprite-fisherman-reel.gif" alt="Hasır şapkalı, piksel sanatı bir balıkçı oltasını sarıyor; ChatGPT'nin çizdiği sprite sheet'ten animate_sheet ile yapılmış 8 karelik şeffaf döngü" width="360"></p>
 
 `walk`, `run`, `idle`, `jump`, `dance`, `wave` veya `attack`; `side` (varsayılan) ya da `front`
 görüş seçilebilir. Varsayılan 8 kare 4x2, 16 kare 4x4 ızgara kullanır. Kare sayısı, boş kare veya

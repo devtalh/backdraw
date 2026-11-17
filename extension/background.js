@@ -195,7 +195,7 @@ function forgetWorker() {
 async function closeTabQuietly(id) {
   try {
     const t = await chrome.tabs.get(id);
-    if (t.active) return; // the user is looking at it: leave it alone
+    if (await tabInUse(t)) return; // the user can see it: leave it alone
     await chrome.tabs.remove(id);
   } catch {}
 }
