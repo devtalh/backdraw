@@ -88,6 +88,17 @@ test('the release workflow publishes with OIDC only: no stored token', () => {
   assert.match(wf, /npm publish/);
   assert.match(wf, /mcp-publisher login github-oidc/);
   assert.match(wf, /MCP_PUBLISHER_VERSION: v\d+\.\d+\.\d+/);
+  // The GitHub Release job: the only job that may write, after both publish jobs, skipped when the
+  // release exists.
+  assert.equal((wf.match(/contents: write/g) || []).length, 1, 'only the GitHub Release job writes');
+  assert.match(wf, /\n {2}github-release:\n {4}needs: \[npm, mcp-registry\]\n/);
+  assert.match(wf, /gh release view "\$tag"/);
+  assert.match(wf, /--json isDraft/);
+  assert.match(wf, /persist-credentials: false/);
+  assert.match(wf, /GH_REPO: \$\{\{ github\.repository \}\}/);
+  assert.match(wf, /gh release create "\$tag"[^\n]*--verify-tag[^\n]*--latest/);
+  assert.match(wf, /node scripts\/release-notes\.js "\$version"/);
+  assert.ok(wf.includes('backdraw-extension-$version.zip'));
 });
 
 test('backdraw mcp answers initialize and lists the tools on stdio', async () => {

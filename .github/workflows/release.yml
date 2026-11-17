@@ -2,6 +2,7 @@
 #   1. test on Windows, and check that the tag matches package.json
 #   2. npm, with trusted publishing (OIDC; provenance is added by npm, no token is stored)
 #   3. the official MCP Registry, with mcp-publisher and GitHub OIDC
+#   4. the GitHub Release: notes from CHANGELOG.md, the package and extension zips
 # Each publish step is skipped when that version is already out, so a re-run is safe.
 name: Release
 
@@ -104,3 +105,46 @@ jobs:
             ./mcp-publisher login github-oidc
             ./mcp-publisher publish
           fi
+
+  github-release:
+    needs: [npm, mcp-registry]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload the zips
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          tag="v$version"
+          draft="$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || true)"
+          if [ "$draft" = "false" ]; then
+            echo "The GitHub Release $tag already exists"
+            exit 0
+          fi
+          if [ "$draft" = "true" ]; then
+            echo "::error::A draft GitHub Release $tag exists (an earlier run stopped halfway); delete it and re-run"
+            exit 1
+          fi
+          out="$RUNNER_TEMP/release"
+          mkdir -p "$out/backdraw-$version"
+          node scripts/release-notes.js "$version" > "$out/notes.md"
+          # backdraw-X.Y.Z.zip: every file npm packs, inside a backdraw-X.Y.Z/ folder
+          npm pack --dry-run --json | node -e "let s = ''; process.stdin.on('data', d => { s += d; }).on('end', () => { process.stdout.write(JSON.parse(s)[0].files.map(f => f.path).join('\n') + '\n'); });" > "$out/files.txt"
+          test -s "$out/files.txt"
+          while IFS= read -r f; do mkdir -p "$out/backdraw-$version/$(dirname "$f")"; cp "$f" "$out/backdraw-$version/$f"; done < "$out/files.txt"
+          (cd "$out" && zip -r -X -q "backdraw-$version.zip" "backdraw-$version")
+          # backdraw-extension-X.Y.Z.zip: the extension folder's contents at the zip root
+          (cd extension && zip -r -X -q "$out/backdraw-extension-$version.zip" .)
+          gh release create "$tag" --verify-tag --latest --title "Backdraw $tag" --notes-file "$out/notes.md" \
+            "$out/backdraw-$version.zip" "$out/backdraw-extension-$version.zip"
