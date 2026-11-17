@@ -76,6 +76,8 @@ function parseChoice(answer, found, dflt = found.filter(f => f.detected).map(f =
 }
 
 // had: on an update, the clients that already have a Backdraw entry (they are the default then).
+// Returns { ids, picked }: picked is true when the user typed an answer (numbers or "none"),
+// false when Enter took the default ones.
 async function chooseClients(found, ask, log, had = null) {
   log('MCP clients on this PC:');
   found.forEach((f, i) => log(`  ${i + 1}. ${f.label.padEnd(20)} ${had && had[f.id] ? 'set up' : f.detected ? 'found' : 'not found'}`));
@@ -83,15 +85,16 @@ async function chooseClients(found, ask, log, had = null) {
   const dflt = found.map((f, i) => (dfltIds.includes(f.id) ? i + 1 : null)).filter(Boolean);
   const what = had ? 'the ones already set up' : 'the found ones';
   for (let tries = 0; tries < 3; tries++) {
-    const ids = parseChoice(await ask(`Add Backdraw to which? Enter = ${what} (${dflt.join(', ') || 'none'}), numbers like 1,3, or "none": `), found, dfltIds);
-    if (ids) return ids;
+    const answer = await ask(`Add Backdraw to which? Enter = ${what} (${dflt.join(', ') || 'none'}), numbers like 1,3, or "none": `);
+    const ids = parseChoice(answer, found, dfltIds);
+    if (ids) return { ids, picked: String(answer || '').trim() !== '' };
     log(`Please answer with numbers from 1 to ${found.length}, or "none".`);
   }
   throw new Error('No valid answer; run setup again, or pass --clients=… or --yes.');
 }
 
-// onlySetUp: on an update without --clients, only the config files that already have an entry.
-// A file whose entry starts npx is kept as it is.
+// onlySetUp: on an update without an explicit choice (no --clients, no answer typed on the
+// terminal), only the config files that already have an entry. A file whose entry starts npx is kept as it is.
 function addToDesktop(c, server, onlySetUp = false) {
   const p = c.platform;
   const entryIn = file => ((readJson(file) || {}).mcpServers || {})[identity.MCP_NAME] || null;
@@ -183,15 +186,18 @@ async function setup(opts = {}, deps = {}) {
   log(paint('bold', `Backdraw ${SELF} setup`));
   log('');
   const found = detectClients(c);
-  // An update (Backdraw is installed already) without --clients touches only the clients that
-  // already start Backdraw; adding a new one takes --clients or picking it on the terminal.
+  // An update (Backdraw is installed already) without an explicit choice (Enter, --yes or no
+  // terminal) touches only the clients that already start Backdraw; --clients or an answer typed
+  // on the terminal is an explicit choice, so a chosen client gets an entry even without one.
   const updating = fs.existsSync(path.join(p.installDir(c.home), 'extension', 'manifest.json'));
   const had = existingEntries(c);
-  const onlySetUp = updating && opts.clients === undefined;
   let chosen;
+  let picked = false;
   if (opts.clients !== undefined) chosen = parseClientList(opts.clients);
   else if (opts.yes || !deps.ask) chosen = updating ? CLIENT_IDS.filter(id => had[id]) : found.filter(f => f.detected).map(f => f.id);
-  else { chosen = await chooseClients(found, deps.ask, log, updating ? had : null); log(''); }
+  else { ({ ids: chosen, picked } = await chooseClients(found, deps.ask, log, updating ? had : null)); log(''); }
+  const explicit = opts.clients !== undefined || picked;
+  const onlySetUp = updating && !explicit;
   // An npx entry keeps starting npx; only a local one is pointed at the new files.
   const keepClaudeCode = chosen.includes('claude-code') && npxOf(had['claude-code']);
 
@@ -212,9 +218,11 @@ async function setup(opts = {}, deps = {}) {
       say(status, labels[id], detail);
     }
   }
-  if (onlySetUp) {
-    for (const f of found.filter(x => x.detected && !chosen.includes(x.id))) {
-      say('info', f.label, `skipped: it has no Backdraw entry (add it with: npx backdraw@latest setup --clients=${f.id})`);
+  if (updating && opts.clients === undefined) {
+    for (const f of found.filter(x => (x.detected || had[x.id]) && !chosen.includes(x.id))) {
+      if (had[f.id]) say('info', f.label, 'not chosen, left as it is');
+      else if (onlySetUp) say('info', f.label, `skipped: it has no Backdraw entry (add it with: npx backdraw@latest setup --clients=${f.id})`);
+      else say('info', f.label, `not chosen (add it with: npx backdraw@latest setup --clients=${f.id})`);
     }
   }
   if (!chosen.length) {
