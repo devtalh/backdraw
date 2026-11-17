@@ -3290,3 +3290,43 @@ test('scheduleWorkerClose: the close timer leaves the tab alone while a draft cl
   assert.deepEqual(removed, [7]);
   assert.equal(vm.runInContext('workerTabId', w.ctx), null);
 });
+
+// closeTabQuietly uses the same rule as clearOwnDraft (tabInUse): a tab the user can see stays open.
+const CLOSE_CASES = [
+  { name: 'inactive tab', active: false, window: { state: 'normal', focused: true }, closes: true },
+  { name: 'active tab in a minimized window', active: true, window: { state: 'minimized', focused: false }, closes: true },
+  { name: 'active tab in a focused visible window', active: true, window: { state: 'normal', focused: true }, closes: false },
+  { name: 'active tab in an unfocused visible window', active: true, window: { state: 'normal', focused: false }, closes: false },
+  { name: 'active tab when the window lookup fails', active: true, windowError: true, closes: false },
+];
+
+function closeWorker(testCase) {
+  const w = loadWorker();
+  const removed = [];
+  const tab = { id: 7, windowId: 1, active: testCase.active };
+  w.ctx.chrome.tabs.get = async id => { assert.equal(id, 7); return tab; };
+  w.ctx.chrome.tabs.remove = async id => { removed.push(id); };
+  w.ctx.chrome.windows.get = async id => {
+    assert.equal(id, 1);
+    if (testCase.windowError) throw new Error('No window with id: 1');
+    return { id: 1, ...testCase.window };
+  };
+  return { ...w, removed, tab };
+}
+
+for (const testCase of CLOSE_CASES) {
+  test(`closeTabQuietly ${testCase.closes ? 'closes' : 'keeps'} an ${testCase.name}`, async () => {
+    const w = closeWorker(testCase);
+    await w.ctx.closeTabQuietly(7);
+    assert.deepEqual(w.removed, testCase.closes ? [7] : []);
+  });
+}
+
+test('closeTabQuietly closes exactly the tabs tabInUse reports as free', async () => {
+  for (const testCase of CLOSE_CASES) {
+    const w = closeWorker(testCase);
+    const inUse = await w.ctx.tabInUse(w.tab);
+    await w.ctx.closeTabQuietly(7);
+    assert.equal(w.removed.length === 1, !inUse, testCase.name);
+  }
+});

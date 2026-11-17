@@ -506,7 +506,7 @@ a sprite sheet and Backdraw cuts and aligns its poses locally into a looping tra
 `atlas.png`, `manifest.json`, individual frame PNGs and a numbered contact preview. The GIF and
 original sheet appear in the gallery. Follow the returned job id with `job_status`.
 
-<p align="center"><img src="branding/demo/sprite-fisherman-reel.gif" alt="A pixel-art fisherman in a straw hat reels in a fishing line, an 8-frame transparent loop made with generate_sprite" width="360"></p>
+<p align="center"><img src="branding/demo/sprite-fisherman-reel.gif" alt="A pixel-art fisherman in a straw hat reels in a fishing line, an 8-frame transparent loop made with animate_sheet from a ChatGPT sprite sheet" width="360"></p>
 
 Choose `walk`, `run`, `idle`, `jump`, `dance`, `wave` or `attack`, with `side` (default) or `front`
 view. The default 8 frames use a 4x2 grid; 16 frames use 4x4. If frame count, empty-frame or character
