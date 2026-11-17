@@ -24,6 +24,7 @@ let workerTabId = null;
 let closeTimer = null;
 let draftCleanup = null; // clearOwnDraft of the last job while it runs; the next job waits for it
 let draftCleanupStop = false; // set by a job that stopped waiting for draftCleanup: the cleanup must leave the tab alone
+let draftCleanupTexts = []; // prompts the last cleanup was meant to clear; a job that stops it takes them over
 let draftCleanupRun = 0; // bumped by every clearOwnDraft, so an older cleanup that is still running stops too
 const recent = [];
 const refParts = new Map(); // jobId -> [{ name, mime, parts[] }] while reference images arrive in chunks
@@ -674,16 +675,24 @@ async function runJob(job) {
   setBadge();
   remember(job.id, 'running');
   try {
+    if (ctx.refs.some(r => !r.complete)) throw fail('ref_transfer', 'A reference image did not arrive completely; please try again.');
     if (draftCleanup) {
-      // Wait for the last job's cleanup, but at most 40 s and not past a cancel.
+      // A job that types writes over the shared draft and cleans it up itself, so it stops the last
+      // job's cleanup right away and only waits for it to let go of the tab. A collect job types
+      // nothing: it lets the cleanup finish. Neither waits past a cancel.
+      const typing = job.mode !== 'collect';
+      if (typing) {
+        draftCleanupStop = true;
+        // The stopped cleanup will not clear its prompts, so this job clears them with its own.
+        ctx.typedTexts.push(...draftCleanupTexts.filter(t => !ctx.typedTexts.includes(t)));
+      }
       const waitedFrom = Date.now();
-      const until = waitedFrom + 40000;
+      const until = waitedFrom + (typing ? DRAFT_WAIT_STOP_MS : DRAFT_WAIT_COLLECT_MS);
       while (draftCleanup && !ctx.cancelled && Date.now() < until) await Promise.race([draftCleanup, sleep(500)]);
       if (draftCleanup) draftCleanupStop = true; // still running: it must not drive the tab any more
       ctx.deadline += Date.now() - waitedFrom;
       check(ctx);
     }
-    if (ctx.refs.some(r => !r.complete)) throw fail('ref_transfer', 'A reference image did not arrive completely; please try again.');
     if (job.mode !== 'collect' && ctx.refs.length) ctx.refs = await prepareReferences(ctx);
     ctx.progress('opening', 'Opening ChatGPT in a background tab');
     ctx.tabId = await openWorker(job.startUrl, ctx);
@@ -785,7 +794,9 @@ async function runJob(job) {
   } finally {
     current = null;
     setBadge();
-    if (ctx.keepTab || !needsDraftCleanup(ctx)) {
+    const skip = draftCleanupSkipReason(ctx);
+    if (skip) {
+      log('info', skip);
       scheduleWorkerClose(ctx.keepTab);
     } else {
       // The result is already posted: clean up in the background, then close the tab.
@@ -943,12 +954,55 @@ async function typePrompt(ctx, text) {
   throw fail('type_failed', "Couldn't write the prompt into ChatGPT's message box.");
 }
 
-const needsDraftCleanup = ctx => !ctx.collect && !ctx.keepTab && ctx.tabId !== null &&
-  (ctx.typedTexts || []).some(t => comparable(t));
+const DRAFT_POLL_MS = 500; // how often the box is read while waiting for ChatGPT to restore its draft
+const DRAFT_EMPTY_MS = 4000; // the box has to stay empty this long before it counts as empty
+const DRAFT_READY_MS = 20000; // a page that is not ready by then ends the cleanup
+const DRAFT_WAIT_COLLECT_MS = 40000; // how long a collect job waits for the last job's cleanup
+const DRAFT_WAIT_STOP_MS = 5000; // how long a typing job waits for the stopped cleanup to let go of the tab
 
-// ChatGPT keeps the unsent text of a new chat as a draft (shared between pages, kept across reloads),
-// so the prompt this job wrote can show up again in the user's message box. After the job, open
-// the start page again and clear the box only when it holds nothing but text this job wrote.
+// Why the message box of this job needs no cleanup, or null when it does.
+function draftCleanupSkipReason(ctx) {
+  if (ctx.keepTab) return 'message box cleanup skipped: the tab stays open for the user';
+  if (ctx.collect || ctx.job.mode === 'collect') return 'message box cleanup not needed: nothing was typed (collect job)';
+  if (ctx.tabId === null) return 'message box cleanup not needed: no tab';
+  if (!(ctx.typedTexts || []).some(t => comparable(t))) return 'message box cleanup not needed: nothing was typed';
+  return null;
+}
+
+// Can the user see the tab? An inactive tab is not in use. An active tab is in use unless its
+// window is minimized (the bridge's own minimized window always has an active tab). Focus does not
+// matter: when the user switches to another app no Chrome window is focused, but the tab stays
+// visible. Unknown counts as in use.
+async function tabInUse(tab) {
+  if (!tab.active) return false;
+  try {
+    const win = await chrome.windows.get(tab.windowId);
+    return win.state !== 'minimized';
+  } catch {
+    return true;
+  }
+}
+
+// The pages whose message box may hold this job's prompt: the start page, then the home page.
+function draftPages(startUrl) {
+  const projectId = (startUrl.match(/\/g\/(g-p-[0-9a-f]+)/i) || [])[1];
+  const pages = [{
+    page: 'start', url: startUrl,
+    onStart: url => isChatUrl(startUrl)
+      ? cleanUrl(url) === cleanUrl(startUrl)
+      : !isChatUrl(url) && (!projectId || url.includes(projectId)),
+  }];
+  if (cleanUrl(startUrl) !== HOME) {
+    pages.push({ page: 'home', url: HOME, onStart: url => { try { return new URL(url).pathname === '/'; } catch { return false; } } });
+  }
+  return pages;
+}
+
+// ChatGPT keeps the unsent text of a new chat as a draft (shared between pages, kept across reloads,
+// sometimes restored seconds after the page shows), so the prompt this job wrote can show up again
+// in the user's message box. After the job, open the start page and the home page, each once by
+// navigating and once more by reloading, and clear the box only when it holds nothing but text this
+// job wrote.
 async function clearOwnDraft(ctx) {
   const run = ++draftCleanupRun;
   draftCleanupStop = false;
@@ -958,83 +1012,115 @@ async function clearOwnDraft(ctx) {
     log('info', 'message box cleanup stopped: another job started');
     return true;
   };
+  const inUse = async () => {
+    const now = await chrome.tabs.get(ctx.tabId).catch(() => null);
+    if (!now) {
+      log('info', 'message box cleanup skipped: the tab is gone');
+      return true;
+    }
+    if (await tabInUse(now)) {
+      log('info', 'message box cleanup skipped: the tab is in use', { reason: 'active-tab' });
+      return true;
+    }
+    return false;
+  };
   try {
-    if (!needsDraftCleanup(ctx)) return;
+    const skip = draftCleanupSkipReason(ctx);
+    if (skip) {
+      log('info', skip);
+      return;
+    }
+    draftCleanupTexts = ctx.typedTexts.slice();
     const typed = ctx.typedTexts.map(comparable).filter(Boolean);
-    const tab = await chrome.tabs.get(ctx.tabId).catch(() => null);
-    if (!tab || tab.active) return; // gone, or the user is looking at it
-    const startUrl = ctx.job.startUrl;
-    if (stopped()) return;
-    await chrome.tabs.update(ctx.tabId, { url: startUrl });
-    await sleep(1500);
-    const projectId = (startUrl.match(/\/g\/(g-p-[0-9a-f]+)/i) || [])[1];
-    const onStart = url => isChatUrl(startUrl)
-      ? cleanUrl(url) === cleanUrl(startUrl)
-      : !isChatUrl(url) && (!projectId || url.includes(projectId));
-    const until = Date.now() + 20000;
-    let readySince = 0;
-    for (;;) {
-      if (stopped()) return;
-      let st = null;
-      try {
-        st = await pageCall(ctx.tabId, 'probe', null);
-      } catch (e) {
-        if (/no tab with id|tab was closed|closed tab/i.test(String((e && e.message) || e))) {
-          log('info', 'message box cleanup stopped: the tab was closed');
-          return;
+    if (await inUse() || stopped()) return; // gone, or the user is looking at it
+    const pages = draftPages(ctx.job.startUrl);
+    log('info', 'message box cleanup started', { pages: pages.length });
+    let cleared = 0;
+    for (const { page, url, onStart } of pages) {
+      for (let pass = 1; pass <= 2; pass++) {
+        const where = { page, pass };
+        if (stopped()) return;
+        if (await inUse() || stopped()) return;
+        if (pass === 1) await chrome.tabs.update(ctx.tabId, { url });
+        else await chrome.tabs.reload(ctx.tabId);
+        await sleep(1500);
+        const until = Date.now() + DRAFT_READY_MS;
+        let readySince = 0;
+        for (;;) {
+          if (stopped()) return;
+          let st = null;
+          try {
+            st = await pageCall(ctx.tabId, 'probe', null);
+          } catch (e) {
+            if (/no tab with id|tab was closed|closed tab/i.test(String((e && e.message) || e))) {
+              log('info', 'message box cleanup stopped: the tab was closed', where);
+              return;
+            }
+          }
+          if (st && (st.challenge || st.login)) {
+            log('info', 'message box cleanup skipped: ChatGPT shows a login or verification page', where);
+            return;
+          }
+          // A navigation or reload starts here, so the old document may answer until the tab has loaded.
+          if (st && st.composer && st.url && onStart(st.url) && await tabLoaded(ctx.tabId)) {
+            if (!readySince) readySince = Date.now();
+            else if (Date.now() - readySince >= 1500) break;
+          } else {
+            readySince = 0;
+          }
+          if (Date.now() > until) {
+            log('warn', 'message box cleanup skipped: the page did not load in time', where);
+            return;
+          }
+          await sleep(1000);
         }
-      }
-      if (st && (st.challenge || st.login)) {
-        log('info', 'message box cleanup skipped: ChatGPT shows a login or verification page');
-        return;
-      }
-      // The reload always starts here, so the old document may answer until the tab has loaded.
-      if (st && st.composer && st.url && onStart(st.url) && await tabLoaded(ctx.tabId)) {
-        if (!readySince) readySince = Date.now();
-        else if (Date.now() - readySince >= 1500) break;
-      } else {
-        readySince = 0;
-      }
-      if (Date.now() > until) {
-        log('warn', 'message box cleanup skipped: the page did not load in time');
-        return;
-      }
-      await sleep(1000);
-    }
-    await sleep(1000); // let ChatGPT restore its draft
-    if (stopped()) return;
-    const got = comparable((await pageCall(ctx.tabId, 'composerState')).text);
-    if (!got) {
-      if (ctx.job.debug) log('debug', 'message box empty after the job');
-      return;
-    }
-    // Short prompts must match exactly: a loose match could take the user's own text for ours.
-    if (!typed.some(want => got === want || (want.length >= 40 && sameText(got, want)))) {
-      log('info', 'message box holds other text after the job; left it unchanged');
-      return;
-    }
-    for (let attempt = 1; ; attempt++) {
-      if (stopped()) return;
-      const now = await chrome.tabs.get(ctx.tabId).catch(() => null);
-      if (!now || now.active) {
-        log('info', 'message box cleanup skipped: the tab is in use');
-        return;
-      }
-      await pageCall(ctx.tabId, 'clearComposer');
-      await sleep(1500); // let ChatGPT save the empty draft
-      if (stopped()) return;
-      const rest = (await pageCall(ctx.tabId, 'composerState')).text;
-      if (!comparable(rest)) {
-        log('info', 'cleared the bridge prompt from the message box after the job');
-        return;
-      }
-      if (attempt >= 2) {
-        log('warn', 'could not clear the bridge prompt from the message box', { left: String(rest || '').length });
-        return;
+        // ChatGPT may restore its draft a few seconds after the page is ready: the box only counts
+        // as empty after it stayed empty for DRAFT_EMPTY_MS.
+        const watchFrom = Date.now();
+        let got = '';
+        for (;;) {
+          if (stopped()) return;
+          got = comparable((await pageCall(ctx.tabId, 'composerState')).text);
+          if (got) break;
+          const now = Date.now();
+          if (now - watchFrom >= DRAFT_EMPTY_MS) break;
+          await sleep(DRAFT_POLL_MS);
+        }
+        if (!got) {
+          log('info', 'message box empty after the job', where);
+          continue;
+        }
+        // Short prompts must match exactly: a loose match could take the user's own text for ours.
+        if (!typed.some(want => got === want || (want.length >= 40 && sameText(got, want)))) {
+          log('info', 'message box holds other text after the job; left it unchanged', where);
+          break; // this page is done; the next one is still checked
+        }
+        let done = false;
+        for (let attempt = 1; ; attempt++) {
+          if (stopped()) return;
+          if (await inUse() || stopped()) return;
+          await pageCall(ctx.tabId, 'clearComposer');
+          await sleep(1500); // let ChatGPT save the empty draft
+          if (stopped()) return;
+          const rest = (await pageCall(ctx.tabId, 'composerState')).text;
+          if (!comparable(rest)) {
+            log('info', 'cleared the bridge prompt from the message box after the job', where);
+            cleared++;
+            done = true;
+            break;
+          }
+          if (attempt >= 2) {
+            log('warn', 'could not clear the bridge prompt from the message box', { left: String(rest || '').length, ...where });
+            break;
+          }
+        }
+        if (!done) break; // this page is done; the next one is still checked
       }
     }
+    log('info', 'message box cleanup finished', { cleared });
   } catch (e) {
-    log('warn', 'message box cleanup after the job failed', String((e && e.message) || e).slice(0, 200));
+    // The error can name the page it failed on: keep URLs (project IDs, chat IDs) out of the log.
+    log('warn', 'message box cleanup after the job failed', String((e && e.message) || e).replace(/https?:\/\/\S+/g, '<url>').slice(0, 200));
   }
 }
 

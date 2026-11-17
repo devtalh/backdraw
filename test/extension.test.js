@@ -1936,16 +1936,19 @@ test('runJob: a new worker tab keeps the project-to-conversation flow', async ()
 const DRAFT_PROJECT = 'https://chatgpt.com/g/g-p-0123456789abcdef/project';
 const DRAFT_CHAT = 'https://chatgpt.com/g/g-p-0123456789abcdef/c/77777777-7777-7777-7777-777777777777';
 const DRAFT_PROMPT = 'Draw a lighthouse at dawn in soft watercolor';
+const DRAFT_HOME = 'https://chatgpt.com/';
 const DRAFT_LOGS = /message box|bridge prompt/;
 
 // Run the real runJob, sendAndWait, typePrompt and clearOwnDraft against a scripted message box.
-// The tab only navigates in the cleanup (openWorker is a stand-in), and on every navigation the
-// box shows what ChatGPT restores: by default the draft of the prompt this job wrote.
+// The tab only navigates in the cleanup (openWorker is a stand-in), and on every navigation or
+// reload the box shows what ChatGPT restores: by default the draft, which is the prompt this job
+// wrote until the box is cleared. restore(draft, state, 'update' | 'reload') can change that.
 function draftWorker(options = {}) {
   const worker = loadWorker();
   const { ctx, posted } = worker;
-  const pages = [], updates = [], closes = [], opens = [];
-  const state = { box: '', url: options.startUrl || DRAFT_PROJECT, now: 0, active: !!options.active };
+  const pages = [], updates = [], reloads = [], closes = [], opens = [];
+  const state = { box: '', url: options.startUrl || DRAFT_PROJECT, now: 0, active: !!options.active, gone: false,
+    window: options.window || { focused: true, state: 'normal' } };
   const restore = options.restore || (text => text);
   let lastTyped = '';
   ctx.URL = URL;
@@ -1966,15 +1969,26 @@ function draftWorker(options = {}) {
   ctx.downloadImages = async () => [{ data: 'image', mime: 'image/png', width: 12, height: 8 }];
   ctx.chrome.tabs.get = async id => {
     assert.equal(id, 7);
-    return { id: 7, url: state.url, active: state.active, status: options.status ? options.status(state) : undefined };
+    if (state.gone) throw new Error('No tab with id: 7');
+    return { id: 7, windowId: 1, url: state.url, active: state.active, status: options.status ? options.status(state) : undefined };
+  };
+  ctx.chrome.windows.get = async id => {
+    assert.equal(id, 1);
+    if (options.windowError) throw new Error('No window with id: 1');
+    return { id: 1, ...state.window };
   };
   ctx.chrome.tabs.update = async (id, changes) => {
     assert.equal(id, 7);
     updates.push({ changes: { ...changes }, resultPosted: posted.some(m => m.type === 'result') });
     if (options.onUpdate) await options.onUpdate(changes);
     state.url = changes.url;
-    state.box = restore(lastTyped);
+    state.box = restore(lastTyped, state, 'update');
     return { id: 7, url: state.url, active: state.active };
+  };
+  ctx.chrome.tabs.reload = async id => {
+    assert.equal(id, 7);
+    reloads.push(state.url);
+    state.box = restore(lastTyped, state, 'reload');
   };
   ctx.pageCall = async (tabId, fn, ...args) => {
     assert.equal(tabId, 7);
@@ -1983,7 +1997,7 @@ function draftWorker(options = {}) {
       const custom = await options.page(fn, args, state);
       if (custom !== undefined) return custom;
     }
-    if (fn === 'clearComposer') { if (!options.sticky) state.box = ''; return { ok: true }; }
+    if (fn === 'clearComposer') { if (!options.sticky) { state.box = ''; lastTyped = ''; } return { ok: true }; }
     if (fn === 'setPrompt') { state.box = args[0]; lastTyped = args[0]; return { ok: true }; }
     if (fn === 'composerState') return { composer: true, text: state.box, send: { disabled: false }, stop: false, dialogs: 0 };
     if (fn === 'probe') return { url: state.url, composer: true, login: false, challenge: null, counts: { users: 0, images: 0 } };
@@ -1997,7 +2011,8 @@ function draftWorker(options = {}) {
   const cleanupPages = fn => pages.filter(p => p.cleanup && p.fn === fn).length;
   const logs = () => posted.filter(m => m.type === 'log');
   const results = () => posted.filter(m => m.type === 'result');
-  return { ...worker, pages, updates, closes, opens, state, run, settle, cleanupPages, logs, results };
+  const info = msg => logs().filter(m => m.level === 'info' && m.msg === msg);
+  return { ...worker, pages, updates, reloads, closes, opens, state, run, settle, cleanupPages, logs, info, results };
 }
 
 // No log line may carry the prompt, not even as its data.
@@ -2012,14 +2027,19 @@ test('runJob: after a new chat job the start page is opened again and the prompt
   assert.equal(w.results()[0].ok, true);
   assert.deepEqual(w.closes, [], 'the tab is not closed before the cleanup is done');
   await w.settle();
-  assert.equal(w.updates.length, 1);
-  assert.deepEqual(w.updates[0].changes, { url: DRAFT_PROJECT }); // only the URL: never active or highlighted
+  // The start page, then the home page; each is reloaded once after it was opened.
+  assert.deepEqual(w.updates.map(u => u.changes), [{ url: DRAFT_PROJECT }, { url: DRAFT_HOME }]); // only the URL: never active or highlighted
   assert.equal(w.updates[0].resultPosted, true, 'the result is posted before the cleanup navigates');
+  assert.deepEqual(w.reloads, [DRAFT_PROJECT, DRAFT_HOME]);
   assert.equal(w.cleanupPages('clearComposer'), 1);
   assert.equal(w.state.box, '');
   assert.deepEqual(w.closes, [false]);
   assert.equal(vm.runInContext('draftCleanup', w.ctx), null);
-  assert.ok(w.logs().some(m => m.level === 'info' && m.msg === 'cleared the bridge prompt from the message box after the job'));
+  assert.deepEqual(plain(w.info('message box cleanup started').map(m => m.data)), [{ pages: 2 }]);
+  assert.deepEqual(plain(w.info('cleared the bridge prompt from the message box after the job').map(m => m.data)), [{ page: 'start', pass: 1 }]);
+  assert.deepEqual(plain(w.info('message box empty after the job').map(m => m.data)),
+    [{ page: 'start', pass: 2 }, { page: 'home', pass: 1 }, { page: 'home', pass: 2 }]);
+  assert.deepEqual(plain(w.info('message box cleanup finished').map(m => m.data)), [{ cleared: 1 }]);
   assertNoPromptInLogs(w);
 });
 
@@ -2027,11 +2047,14 @@ test('runJob: other text in the message box after the job is left unchanged', as
   const w = draftWorker({ restore: () => 'My own unrelated note for later' });
   await w.run();
   await w.settle();
-  assert.equal(w.updates.length, 1);
+  assert.deepEqual(w.updates.map(u => u.changes), [{ url: DRAFT_PROJECT }, { url: DRAFT_HOME }]);
+  assert.deepEqual(w.reloads, [], 'a page with other text is not reloaded');
   assert.equal(w.cleanupPages('clearComposer'), 0);
   assert.equal(w.state.box, 'My own unrelated note for later');
   assert.deepEqual(w.closes, [false]);
-  assert.ok(w.logs().some(m => m.level === 'info' && m.msg === 'message box holds other text after the job; left it unchanged'));
+  assert.deepEqual(plain(w.info('message box holds other text after the job; left it unchanged').map(m => m.data)),
+    [{ page: 'start', pass: 1 }, { page: 'home', pass: 1 }]);
+  assert.deepEqual(plain(w.info('message box cleanup finished').map(m => m.data)), [{ cleared: 0 }]);
   assertNoPromptInLogs(w);
 });
 
@@ -2046,6 +2069,8 @@ test('runJob: a tab kept for the user is not cleaned up', async () => {
   assert.equal(w.updates.length, 0);
   assert.equal(w.cleanupPages('clearComposer'), 0);
   assert.deepEqual(w.closes, [true]);
+  assert.equal(w.info('message box cleanup skipped: the tab stays open for the user').length, 1);
+  assert.equal(w.info('message box cleanup started').length, 0);
 });
 
 test('runJob: a failing cleanup keeps the result, logs one warning and still closes the tab', async () => {
@@ -2053,12 +2078,13 @@ test('runJob: a failing cleanup keeps the result, logs one warning and still clo
   const onUnhandled = e => unhandled.push(e);
   process.on('unhandledRejection', onUnhandled);
   try {
-    for (const failure of ['update', 'composerState']) {
+    const URL_ERROR = `Cannot access contents of url "${DRAFT_PROJECT}"`;
+    for (const failure of ['update', 'composerState', 'url']) {
       let w = null;
       w = draftWorker({
         onUpdate: failure === 'update' ? async () => { throw new Error('No tab editing allowed'); } : undefined,
-        page: failure === 'composerState' ? fn => {
-          if (fn === 'composerState' && w.updates.length) throw new Error('page.composerState: boom');
+        page: failure !== 'update' ? fn => {
+          if (fn === 'composerState' && w.updates.length) throw new Error(failure === 'url' ? URL_ERROR : 'page.composerState: boom');
         } : undefined,
       });
       await w.run();
@@ -2069,6 +2095,14 @@ test('runJob: a failing cleanup keeps the result, logs one warning and still clo
       assert.deepEqual([w.results()[0].ok, w.results()[0].status], [true, 'succeeded'], failure);
       const warnings = w.logs().filter(m => m.level === 'warn' && DRAFT_LOGS.test(m.msg));
       assert.deepEqual(warnings.map(m => m.msg), ['message box cleanup after the job failed'], failure);
+      if (failure === 'url') {
+        // The page URL (with the project ID) never reaches the log.
+        const data = JSON.stringify(warnings[0].data);
+        assert.ok(!data.includes('g-p-'), data);
+        assert.ok(!data.includes('https://'), data);
+        assert.ok(data.includes('Cannot access contents of url'), data);
+        assert.ok(data.includes('<url>'), data);
+      }
       assert.deepEqual(w.closes, [false], failure);
       assertNoPromptInLogs(w);
     }
@@ -2083,10 +2117,14 @@ test('runJob: a draft that will not clear is reported by its length only after t
   const w = draftWorker({ sticky: true });
   await w.run();
   await w.settle();
-  assert.equal(w.cleanupPages('clearComposer'), 2);
-  const warning = w.logs().find(m => m.level === 'warn' && m.msg === 'could not clear the bridge prompt from the message box');
-  assert.ok(warning);
-  assert.deepEqual(plain(warning.data), { left: DRAFT_PROMPT.length });
+  // Two attempts on each page; a page that will not clear is not reloaded, the next page is still checked.
+  assert.equal(w.cleanupPages('clearComposer'), 4);
+  assert.deepEqual(w.reloads, []);
+  const warnings = w.logs().filter(m => m.level === 'warn' && m.msg === 'could not clear the bridge prompt from the message box');
+  assert.deepEqual(plain(warnings.map(m => m.data)), [
+    { left: DRAFT_PROMPT.length, page: 'start', pass: 1 },
+    { left: DRAFT_PROMPT.length, page: 'home', pass: 1 },
+  ]);
   assert.deepEqual(w.closes, [false]);
   assertNoPromptInLogs(w);
 });
@@ -2103,7 +2141,7 @@ test('runJob: failed and cancelled jobs that wrote the prompt clean it up too', 
     assert.equal(w.results()[0].status, { text: 'text_reply', error: 'failed', cancelled: 'cancelled' }[kind]);
     if (kind === 'cancelled') assert.ok(w.pages.some(p => !p.cleanup && p.fn === 'clickStop'));
     await w.settle();
-    assert.deepEqual(w.updates.map(u => u.changes), [{ url: DRAFT_PROJECT }], kind);
+    assert.deepEqual(w.updates.map(u => u.changes), [{ url: DRAFT_PROJECT }, { url: DRAFT_HOME }], kind);
     assert.equal(w.updates[0].resultPosted, true, kind);
     assert.equal(w.cleanupPages('clearComposer'), 1, kind);
     assert.equal(w.state.box, '', kind);
@@ -2118,7 +2156,8 @@ test('runJob: a conversation_url job returns to that chat and clears the prompt 
   await w.run();
   assert.equal(w.results()[0].ok, true);
   await w.settle();
-  assert.deepEqual(w.updates.map(u => u.changes), [{ url: CONVERSATION }]);
+  assert.deepEqual(w.updates.map(u => u.changes), [{ url: CONVERSATION }, { url: DRAFT_HOME }]);
+  assert.deepEqual(w.reloads, [CONVERSATION, DRAFT_HOME]);
   assert.equal(w.cleanupPages('clearComposer'), 1);
   assert.equal(w.state.box, '');
   assert.deepEqual(w.closes, [false]);
@@ -2175,6 +2214,8 @@ test('runJob: no cleanup when no prompt was written', async () => {
   assert.equal(collect.updates.length, 0);
   assert.equal(collect.pages.some(p => p.fn === 'clearComposer'), false);
   assert.deepEqual(collect.closes, [false]);
+  assert.equal(collect.info('message box cleanup not needed: nothing was typed (collect job)').length, 1);
+  assert.equal(collect.info('message box cleanup started').length, 0);
 
   const early = draftWorker({ notReady: true });
   await early.run();
@@ -2182,51 +2223,85 @@ test('runJob: no cleanup when no prompt was written', async () => {
   assert.equal(vm.runInContext('draftCleanup', early.ctx), null);
   assert.equal(early.updates.length, 0);
   assert.deepEqual(early.closes, [false]);
+  assert.equal(early.info('message box cleanup not needed: nothing was typed').length, 1);
+  assert.equal(early.info('message box cleanup started').length, 0);
+
+  // Failed before a tab was opened.
+  const noTab = draftWorker();
+  await noTab.run({ refs: [{ name: 'a.png', mime: 'image/png', data: '', complete: false }] });
+  assert.equal(noTab.results()[0].reason, 'ref_transfer');
+  assert.equal(vm.runInContext('draftCleanup', noTab.ctx), null);
+  assert.equal(noTab.opens.length, 0);
+  assert.equal(noTab.updates.length, 0);
+  assert.deepEqual(noTab.closes, [false]);
+  assert.equal(noTab.info('message box cleanup not needed: no tab').length, 1);
+  assert.equal(noTab.info('message box cleanup started').length, 0);
 });
 
-test('runJob: a job that arrives during the cleanup waits for it instead of driving the tab or failing busy', async () => {
+const ticks = async (n = 20) => { for (let i = 0; i < n; i++) await new Promise(resolve => setImmediate(resolve)); };
+
+test('runJob: a typing job that arrives during the cleanup stops it at once and opens the tab only after it let go', async () => {
   let release;
+  let onHeld;
   const gate = new Promise(resolve => { release = resolve; });
+  const held = new Promise(resolve => { onHeld = resolve; });
   const events = [];
-  let w = null;
-  w = draftWorker({ onUpdate: async () => { events.push('cleanup navigates'); if (w.updates.length === 1) await gate; } });
+  const STOPPED = 'message box cleanup stopped: another job started';
+  let w = null, pagesAtRelease = null, pagesAtOpen = null;
+  w = draftWorker({ onUpdate: async () => { events.push('cleanup navigates'); if (w.updates.length === 1) { onHeld(); await gate; } } });
   const openWorker = w.ctx.openWorker;
-  w.ctx.openWorker = async url => { events.push('open'); return openWorker(url); };
+  w.ctx.openWorker = async url => {
+    if (w.opens.length === 1) pagesAtOpen = w.pages.length;
+    events.push(w.info(STOPPED).length ? 'open after stop' : 'open');
+    return openWorker(url);
+  };
   w.ctx.scheduleWorkerClose = keep => { events.push(`close ${keep}`); w.closes.push(keep); };
   await w.run({ id: 'first' });
+  await held; // the first cleanup is on its first navigation
   assert.ok(vm.runInContext('draftCleanup', w.ctx));
   const second = w.run({ id: 'second' });
-  for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
-  assert.equal(w.opens.length, 1, 'the second job must not open the tab while the cleanup runs');
+  assert.equal(vm.runInContext('draftCleanupStop', w.ctx), true, 'the cleanup is stopped as soon as the typing job arrives');
+  await ticks(3); // well under the 5 s the second job waits at most
+  assert.equal(w.opens.length, 1, 'the second job must not open the tab while the stopped cleanup still holds it');
   assert.equal(w.results().length, 1);
+  pagesAtRelease = w.pages.length;
   release();
   await second;
   await w.settle();
   const results = w.results();
   assert.deepEqual(results.map(r => [r.jobId, r.ok]), [['first', true], ['second', true]]);
   assert.ok(!results.some(r => r.reason === 'busy'));
-  assert.deepEqual(events, ['open', 'cleanup navigates', 'close false', 'open', 'cleanup navigates', 'close false']);
+  // The first cleanup ends after its held navigation; the second job opens the tab only then,
+  // and its own cleanup opens the start page and the home page before the tab is closed.
+  assert.deepEqual(events, ['open', 'cleanup navigates', 'close false',
+    'open after stop', 'cleanup navigates', 'cleanup navigates', 'close false']);
+  assert.equal(pagesAtOpen, pagesAtRelease, 'the stopped cleanup made no page call before the second job opened the tab');
+  assert.equal(w.info(STOPPED).length, 1);
+  assert.equal(w.state.box, '');
   assert.equal(vm.runInContext('draftCleanup', w.ctx), null);
+  assertNoPromptInLogs(w);
 });
 
 // Keeps the first cleanup on its navigation until release() is called; later cleanups run freely.
+// held resolves once the first cleanup waits on that navigation.
 function gatedDraftWorker(options = {}) {
-  let release;
+  let release, onHeld;
   const gate = new Promise(resolve => { release = resolve; });
+  const held = new Promise(resolve => { onHeld = resolve; });
   let w = null;
-  w = draftWorker({ ...options, onUpdate: async () => { if (w.updates.length === 1) await gate; } });
-  return { w, release };
+  w = draftWorker({ ...options, onUpdate: async () => { if (w.updates.length === 1) { onHeld(); await gate; } } });
+  return { w, release, held };
 }
 
-const ticks = async (n = 20) => { for (let i = 0; i < n; i++) await new Promise(resolve => setImmediate(resolve)); };
-
 test('runJob: a job cancelled while it waits for the cleanup ends at once and stops the cleanup', async () => {
-  const { w, release } = gatedDraftWorker();
+  const { w, release, held } = gatedDraftWorker();
   await w.run({ id: 'first' });
+  await held; // the first cleanup is on its first navigation
   const firstCleanup = vm.runInContext('draftCleanup', w.ctx);
   assert.ok(firstCleanup);
   const second = w.run({ id: 'second' });
-  await ticks();
+  await ticks(3); // well under the 5 s the second job waits at most
+  assert.equal(w.opens.length, 1);
   vm.runInContext('current.cancelled = true', w.ctx);
   await second; // returns while the first cleanup is still held on its navigation
   assert.equal(vm.runInContext('draftCleanup', w.ctx), firstCleanup, 'the first cleanup is still running');
@@ -2245,15 +2320,16 @@ test('runJob: a job cancelled while it waits for the cleanup ends at once and st
   assertNoPromptInLogs(w);
 });
 
-test('runJob: a cleanup that takes over 40 seconds no longer holds up the next job and stops driving the tab', async () => {
+test('runJob: a stopped cleanup that does not let go holds up a typing job for 5 seconds at most and drives the tab no more', async () => {
   let seen = null, openedAt = null;
-  const { w, release } = gatedDraftWorker({ reply: jobCtx => {
+  const { w, release, held } = gatedDraftWorker({ reply: jobCtx => {
     if (jobCtx.job.id === 'second') seen = { deadline: jobCtx.deadline, startedAt: jobCtx.startedAt };
     return { kind: 'images', images: [{ src: 'result.png' }], text: 'done', title: 'done' };
   } });
   const openWorker = w.ctx.openWorker;
   w.ctx.openWorker = async url => { if (w.opens.length === 1) openedAt = w.state.now; return openWorker(url); };
   await w.run({ id: 'first' });
+  await held; // the first cleanup is on its first navigation
   const firstCleanup = vm.runInContext('draftCleanup', w.ctx);
   assert.ok(firstCleanup);
   const startedAt = w.state.now;
@@ -2262,13 +2338,14 @@ test('runJob: a cleanup that takes over 40 seconds no longer holds up the next j
   assert.deepEqual(results.map(r => [r.jobId, r.ok]), [['first', true], ['second', true]]);
   assert.ok(!results.some(r => r.reason === 'busy'));
   assert.equal(w.opens.length, 2);
-  assert.ok(openedAt - startedAt >= 40000 && openedAt - startedAt < 41000, `waited ${openedAt - startedAt} ms`);
+  assert.ok(openedAt - startedAt >= 5000 && openedAt - startedAt < 6000, `waited ${openedAt - startedAt} ms`);
   // The time spent waiting is added to the job's own time limit.
   assert.equal(seen.startedAt, startedAt);
   assert.equal(seen.deadline - seen.startedAt, 600000 + (openedAt - startedAt));
   // The second job's own cleanup runs; the first one does nothing more once it is let go.
   await w.settle();
-  assert.equal(w.updates.length, 2, 'both cleanups navigated once');
+  assert.deepEqual(w.updates.map(u => u.changes), [{ url: DRAFT_PROJECT }, { url: DRAFT_PROJECT }, { url: DRAFT_HOME }],
+    'the first cleanup is held on its first navigation, the second one opens the start and home pages');
   assert.equal(w.state.box, '');
   const pages = w.pages.length, updates = w.updates.length;
   release();
@@ -2279,26 +2356,153 @@ test('runJob: a cleanup that takes over 40 seconds no longer holds up the next j
   assertNoPromptInLogs(w);
 });
 
-test('runJob: the time a job waits for a finished cleanup is added to its deadline', async () => {
+test('runJob: the time a job waits for a stopped cleanup is added to its deadline', async () => {
   let seen = null, openedAt = null;
-  const { w, release } = gatedDraftWorker({ reply: jobCtx => {
+  const { w, release, held } = gatedDraftWorker({ reply: jobCtx => {
     if (jobCtx.job.id === 'second') seen = { deadline: jobCtx.deadline, startedAt: jobCtx.startedAt };
     return { kind: 'images', images: [{ src: 'result.png' }], text: 'done', title: 'done' };
   } });
   const openWorker = w.ctx.openWorker;
   w.ctx.openWorker = async url => { if (w.opens.length === 1) openedAt = w.state.now; return openWorker(url); };
   await w.run({ id: 'first' });
+  await held; // the first cleanup is on its first navigation
   const second = w.run({ id: 'second', timeoutSec: 300 });
-  await ticks(10);
+  await ticks(3); // well under the 5 s the second job waits at most
   assert.equal(w.opens.length, 1);
   release();
   await second;
   await w.settle();
   assert.ok(openedAt - seen.startedAt > 0);
+  assert.ok(openedAt - seen.startedAt < 5000, `waited ${openedAt - seen.startedAt} ms`);
+  assert.equal(seen.deadline - seen.startedAt, 300000 + (openedAt - seen.startedAt));
+  assert.equal(vm.runInContext('draftCleanupStop', w.ctx), false, "the second job's own cleanup runs freely");
+  assert.equal(w.updates.length, 3, 'the stopped first cleanup ends after its held navigation, the second one opens the start and home pages');
+  assert.equal(w.info('message box cleanup stopped: another job started').length, 1);
+  assert.equal(w.state.box, '');
+});
+
+test('runJob: a typing job that stops a cleanup takes over its prompt and clears it when it fails after the tab opened', async () => {
+  const { w, release, held } = gatedDraftWorker();
+  const waitUntilReady = w.ctx.waitUntilReady;
+  w.ctx.waitUntilReady = async jobCtx => {
+    if (jobCtx.job.id === 'second') throw Object.assign(new Error('not ready'), { reason: 'page_not_ready' });
+    return waitUntilReady(jobCtx);
+  };
+  await w.run({ id: 'first' });
+  await held; // the first cleanup is on its first navigation
+  const second = w.run({ id: 'second' });
+  await ticks(3);
+  release();
+  await second; // opens the tab, fails before typing anything
+  await w.settle();
+  assert.deepEqual(w.results().map(r => [r.jobId, r.reason || 'ok']), [['first', 'ok'], ['second', 'page_not_ready']]);
+  assert.equal(w.opens.length, 2);
+  assert.ok(w.cleanupPages('clearComposer') >= 1, 'the second job clears the first job prompt');
+  assert.equal(w.info('cleared the bridge prompt from the message box after the job').length >= 1, true);
+  assert.equal(w.state.box, '');
+  assert.equal(vm.runInContext('draftCleanup', w.ctx), null);
+  assertNoPromptInLogs(w);
+});
+
+test('runJob: a job with an incomplete reference image fails without stopping the last cleanup', async () => {
+  const { w, release, held } = gatedDraftWorker();
+  await w.run({ id: 'first' });
+  await held; // the first cleanup is on its first navigation
+  const firstCleanup = vm.runInContext('draftCleanup', w.ctx);
+  assert.ok(firstCleanup);
+  await w.run({ id: 'second', refs: [{ name: 'a.png', mime: 'image/png', data: '', complete: false }] });
+  assert.equal(w.results()[1].reason, 'ref_transfer');
+  assert.equal(vm.runInContext('draftCleanupStop', w.ctx), false, 'the failed job did not stop the cleanup');
+  assert.equal(vm.runInContext('draftCleanup', w.ctx), firstCleanup, 'the first cleanup is still running');
+  assert.equal(w.info('message box cleanup stopped: another job started').length, 0);
+  release();
+  await firstCleanup;
+  assert.equal(w.info('message box cleanup stopped: another job started').length, 0);
+  assert.ok(w.cleanupPages('clearComposer') >= 1, 'the first cleanup ran to the end');
+  assert.equal(w.state.box, '');
+});
+
+test('runJob: a typing job that stops a cleanup and fails before a tab opened leaves the first prompt in the box', async () => {
+  const { w, release, held } = gatedDraftWorker();
+  const openWorker = w.ctx.openWorker;
+  w.ctx.openWorker = async url => {
+    if (w.opens.length === 1) throw Object.assign(new Error('no tab'), { reason: 'page_not_ready' });
+    return openWorker(url);
+  };
+  await w.run({ id: 'first' });
+  await held;
+  const second = w.run({ id: 'second' });
+  await ticks(3);
+  release();
+  await second;
+  await w.settle();
+  assert.equal(w.results()[1].ok, false);
+  assert.equal(w.cleanupPages('clearComposer'), 0, 'no tab, so nothing can be cleared');
+  assert.equal(w.state.box, DRAFT_PROMPT, 'accepted limit: the draft stays when the second job never got a tab');
+});
+
+test('runJob: a collect job waits up to 40 seconds for the last cleanup, then stops it', async () => {
+  let seen = null, openedAt = null;
+  const { w, release, held } = gatedDraftWorker({ reply: jobCtx => {
+    if (jobCtx.job.id === 'second') seen = { deadline: jobCtx.deadline, startedAt: jobCtx.startedAt };
+    return { kind: 'images', images: [{ src: 'result.png' }], text: 'done', title: 'done' };
+  } });
+  const openWorker = w.ctx.openWorker;
+  w.ctx.openWorker = async url => { if (w.opens.length === 1) openedAt = w.state.now; return openWorker(url); };
+  await w.run({ id: 'first' });
+  await held; // the first cleanup is on its first navigation
+  const firstCleanup = vm.runInContext('draftCleanup', w.ctx);
+  assert.ok(firstCleanup);
+  const startedAt = w.state.now;
+  const second = w.run({ id: 'second', mode: 'collect', startUrl: DRAFT_CHAT, timeoutSec: 600 });
+  await ticks(3);
+  assert.equal(vm.runInContext('draftCleanupStop', w.ctx), false, 'a collect job lets the cleanup run');
+  await second; // finishes although the first cleanup never does
+  const results = w.results();
+  assert.deepEqual(results.map(r => [r.jobId, r.ok]), [['first', true], ['second', true]]);
+  assert.equal(w.opens.length, 2);
+  assert.ok(openedAt - startedAt >= 40000 && openedAt - startedAt < 41000, `waited ${openedAt - startedAt} ms`);
+  assert.equal(seen.startedAt, startedAt);
+  assert.equal(seen.deadline - seen.startedAt, 600000 + (openedAt - startedAt));
+  assert.equal(vm.runInContext('draftCleanupStop', w.ctx), true, 'after 40 seconds the cleanup must not drive the tab any more');
+  const pages = w.pages.length, updates = w.updates.length;
+  release();
+  await firstCleanup;
+  assert.equal(w.pages.length, pages, 'the first cleanup made no page call after it was stopped');
+  assert.equal(w.updates.length, updates);
+  assert.equal(w.info('message box cleanup stopped: another job started').length, 1);
+  assert.equal(vm.runInContext('draftCleanup', w.ctx), null);
+  assertNoPromptInLogs(w);
+});
+
+test('runJob: a collect job waits for a cleanup that ends in time and does not stop it', async () => {
+  let seen = null, openedAt = null, w = null, released = false;
+  const gated = gatedDraftWorker({
+    // Once let go, the first cleanup finds the tab closed and ends by itself.
+    page: fn => { if (fn === 'probe' && released) throw new Error('No tab with id: 7'); },
+    reply: jobCtx => {
+      if (jobCtx.job.id === 'second') seen = { deadline: jobCtx.deadline, startedAt: jobCtx.startedAt };
+      return { kind: 'images', images: [{ src: 'result.png' }], text: 'done', title: 'done' };
+    } });
+  w = gated.w;
+  const openWorker = w.ctx.openWorker;
+  w.ctx.openWorker = async url => { if (w.opens.length === 1) openedAt = w.state.now; return openWorker(url); };
+  await w.run({ id: 'first' });
+  await gated.held; // the first cleanup is on its first navigation
+  const second = w.run({ id: 'second', mode: 'collect', startUrl: DRAFT_CHAT, timeoutSec: 300 });
+  await ticks(3);
+  assert.equal(w.opens.length, 1);
+  released = true;
+  gated.release();
+  await second;
+  assert.deepEqual(w.results().map(r => [r.jobId, r.ok]), [['first', true], ['second', true]]);
+  assert.ok(openedAt - seen.startedAt > 0 && openedAt - seen.startedAt < 40000, `waited ${openedAt - seen.startedAt} ms`);
   assert.equal(seen.deadline - seen.startedAt, 300000 + (openedAt - seen.startedAt));
   assert.equal(vm.runInContext('draftCleanupStop', w.ctx), false);
-  assert.equal(w.updates.length, 2);
-  assert.equal(w.state.box, '');
+  assert.equal(w.info('message box cleanup stopped: another job started').length, 0);
+  assert.equal(w.info('message box cleanup stopped: the tab was closed').length, 1);
+  assert.deepEqual(w.closes, [false, false]);
+  assert.equal(vm.runInContext('draftCleanup', w.ctx), null);
 });
 
 test('runJob: the cleanup does not read the box while the start page is still loading', async () => {
@@ -2372,7 +2576,7 @@ test('runJob: a short prompt is cleared only when the box holds exactly that tex
   assert.equal(near.state.box, 'A cat dog');
   assert.ok(near.logs().some(m => m.level === 'info' && m.msg === 'message box holds other text after the job; left it unchanged'));
 
-  const same = draftWorker({ restore: () => 'A cat!' });
+  const same = draftWorker({ restore: draft => (draft ? 'A cat!' : '') });
   await same.run({ text: 'A cat' });
   await same.settle();
   assert.equal(same.cleanupPages('clearComposer'), 1);
@@ -2387,7 +2591,8 @@ test('runJob: the cleanup leaves the box alone when the user switches to the tab
   assert.equal(w.updates.length, 1);
   assert.equal(w.cleanupPages('clearComposer'), 0);
   assert.equal(w.state.box, DRAFT_PROMPT);
-  assert.ok(w.logs().some(m => m.level === 'info' && m.msg === 'message box cleanup skipped: the tab is in use'));
+  assert.deepEqual(plain(w.info('message box cleanup skipped: the tab is in use').map(m => m.data)), [{ reason: 'active-tab' }]);
+  assert.equal(w.info('message box cleanup finished').length, 0);
   assert.deepEqual(w.closes, [false]);
 });
 
@@ -2413,6 +2618,185 @@ test('runJob: a worker tab the user is looking at is never navigated by the clea
   assert.equal(w.updates.length, 0);
   assert.equal(w.cleanupPages('clearComposer'), 0);
   assert.deepEqual(w.closes, [false]);
+  assert.deepEqual(plain(w.info('message box cleanup skipped: the tab is in use').map(m => m.data)), [{ reason: 'active-tab' }]);
+  assert.equal(w.info('message box cleanup started').length, 0);
+});
+
+test('runJob: the active tab of a minimized window is cleaned up; a visible window, focused or not, or an unknown one is in use', async () => {
+  for (const window of [{ focused: false, state: 'minimized' }, { focused: true, state: 'minimized' }]) {
+    const label = JSON.stringify(window);
+    const w = draftWorker({ active: true, window });
+    await w.run();
+    await w.settle();
+    assert.equal(w.updates.length, 2, label);
+    assert.equal(w.cleanupPages('clearComposer'), 1, label);
+    assert.equal(w.state.box, '', label);
+    assert.equal(w.info('message box cleanup skipped: the tab is in use').length, 0, label);
+    assert.deepEqual(plain(w.info('message box cleanup finished').map(m => m.data)), [{ cleared: 1 }], label);
+  }
+  // The user may be in another app with the tab still on screen: no Chrome window is focused then.
+  for (const options of [{ window: { focused: true, state: 'normal' } }, { window: { focused: false, state: 'normal' } }, { windowError: true }]) {
+    const label = JSON.stringify(options);
+    const w = draftWorker({ active: true, ...options });
+    await w.run();
+    await w.settle();
+    assert.equal(w.updates.length, 0, label);
+    assert.equal(w.cleanupPages('clearComposer'), 0, label);
+    assert.deepEqual(plain(w.info('message box cleanup skipped: the tab is in use').map(m => m.data)), [{ reason: 'active-tab' }], label);
+    assert.deepEqual(w.closes, [false], label);
+  }
+});
+
+test('runJob: a worker tab that is gone after the job is not cleaned up', async () => {
+  let w = null;
+  w = draftWorker({ reply: () => {
+    w.state.gone = true;
+    return { kind: 'images', images: [{ src: 'result.png' }], text: 'done', title: 'done' };
+  } });
+  await w.run();
+  await w.settle();
+  assert.equal(w.results()[0].ok, true);
+  assert.equal(w.updates.length, 0);
+  assert.equal(w.cleanupPages('clearComposer'), 0);
+  assert.equal(w.info('message box cleanup skipped: the tab is gone').length, 1);
+  assert.equal(w.info('message box cleanup started').length, 0);
+  assert.deepEqual(w.closes, [false]);
+});
+
+test('runJob: a draft that ChatGPT restores two seconds after the start page is ready is still cleared', async () => {
+  let w = null, firstRead = null;
+  w = draftWorker({ page: (fn, args, state) => {
+    if (fn !== 'composerState' || !w.updates.length || w.reloads.length) return undefined;
+    if (firstRead === null) firstRead = state.now;
+    if (state.now - firstRead < 2000) return { composer: true, text: '', send: { disabled: false }, stop: false, dialogs: 0 };
+    return undefined;
+  } });
+  await w.run();
+  await w.settle();
+  assert.ok(firstRead !== null);
+  assert.equal(w.cleanupPages('clearComposer'), 1);
+  assert.equal(w.state.box, '');
+  assert.deepEqual(plain(w.info('cleared the bridge prompt from the message box after the job').map(m => m.data)), [{ page: 'start', pass: 1 }]);
+  assert.deepEqual(plain(w.info('message box empty after the job').map(m => m.data)),
+    [{ page: 'start', pass: 2 }, { page: 'home', pass: 1 }, { page: 'home', pass: 2 }]);
+  assertNoPromptInLogs(w);
+});
+
+test('runJob: a draft that ChatGPT restores after the four-second watch counts as empty for that pass', async () => {
+  let w = null, firstRead = null;
+  const clears = [];
+  w = draftWorker({ page: (fn, args, state) => {
+    if (fn === 'clearComposer' && w.updates.length) clears.push({ updates: w.updates.length, reloads: w.reloads.length });
+    if (fn !== 'composerState' || !w.updates.length || w.reloads.length) return undefined;
+    // Start page, first pass: the draft only shows up 4.5 s after the first read.
+    if (firstRead === null) firstRead = state.now;
+    if (state.now - firstRead < 4500) return { composer: true, text: '', send: { disabled: false }, stop: false, dialogs: 0 };
+    return undefined;
+  } });
+  await w.run();
+  await w.settle();
+  assert.ok(firstRead !== null);
+  assert.deepEqual(clears, [{ updates: 1, reloads: 1 }], 'nothing is cleared on the first pass; the reload of the start page clears it');
+  assert.equal(w.cleanupPages('clearComposer'), 1);
+  assert.equal(w.state.box, '');
+  assert.deepEqual(plain(w.info('message box empty after the job').map(m => m.data)),
+    [{ page: 'start', pass: 1 }, { page: 'home', pass: 1 }, { page: 'home', pass: 2 }]);
+  assert.deepEqual(plain(w.info('cleared the bridge prompt from the message box after the job').map(m => m.data)), [{ page: 'start', pass: 2 }]);
+  assertNoPromptInLogs(w);
+});
+
+test('runJob: the default cleanup (cleared on the first pass, three empty passes) takes under 40 seconds', async () => {
+  const w = draftWorker();
+  let finishedAt = null;
+  const push = w.posted.push.bind(w.posted);
+  w.posted.push = m => {
+    if (m.type === 'log' && m.msg === 'message box cleanup finished') finishedAt = w.state.now;
+    return push(m);
+  };
+  await w.run();
+  const cleanupFrom = w.state.now; // the cleanup starts once the result is posted
+  await w.settle();
+  assert.deepEqual(plain(w.info('cleared the bridge prompt from the message box after the job').map(m => m.data)), [{ page: 'start', pass: 1 }]);
+  assert.deepEqual(plain(w.info('message box empty after the job').map(m => m.data)),
+    [{ page: 'start', pass: 2 }, { page: 'home', pass: 1 }, { page: 'home', pass: 2 }]);
+  assert.ok(finishedAt !== null);
+  assert.ok(finishedAt - cleanupFrom > 0 && finishedAt - cleanupFrom < 40000, `the cleanup took ${finishedAt - cleanupFrom} ms`);
+});
+
+test('runJob: a draft only on the home page is cleared there', async () => {
+  const w = draftWorker({ restore: (draft, state) => (state.url === DRAFT_HOME ? draft : '') });
+  await w.run();
+  await w.settle();
+  assert.deepEqual(w.updates.map(u => u.changes), [{ url: DRAFT_PROJECT }, { url: DRAFT_HOME }]);
+  assert.deepEqual(w.reloads, [DRAFT_PROJECT, DRAFT_HOME]);
+  assert.equal(w.cleanupPages('clearComposer'), 1);
+  assert.equal(w.state.box, '');
+  assert.deepEqual(plain(w.info('message box empty after the job').map(m => m.data)),
+    [{ page: 'start', pass: 1 }, { page: 'start', pass: 2 }, { page: 'home', pass: 2 }]);
+  assert.deepEqual(plain(w.info('cleared the bridge prompt from the message box after the job').map(m => m.data)), [{ page: 'home', pass: 1 }]);
+  assert.deepEqual(plain(w.info('message box cleanup finished').map(m => m.data)), [{ cleared: 1 }]);
+  assertNoPromptInLogs(w);
+});
+
+test('runJob: a draft that only comes back after a reload is cleared on the second pass', async () => {
+  const w = draftWorker({ restore: (draft, state, how) => (how === 'reload' && state.url === DRAFT_PROJECT ? draft : '') });
+  await w.run();
+  await w.settle();
+  assert.equal(w.cleanupPages('clearComposer'), 1);
+  assert.equal(w.state.box, '');
+  assert.deepEqual(plain(w.info('message box empty after the job').map(m => m.data)),
+    [{ page: 'start', pass: 1 }, { page: 'home', pass: 1 }, { page: 'home', pass: 2 }]);
+  assert.deepEqual(plain(w.info('cleared the bridge prompt from the message box after the job').map(m => m.data)), [{ page: 'start', pass: 2 }]);
+  assertNoPromptInLogs(w);
+});
+
+test('runJob: a box that stays empty is watched for four seconds on every page and pass and never cleared', async () => {
+  let w = null;
+  const reads = [];
+  w = draftWorker({
+    restore: () => '',
+    page: (fn, args, state) => { if (fn === 'composerState' && w.updates.length) reads.push(state.now); },
+  });
+  await w.run();
+  await w.settle();
+  assert.equal(w.cleanupPages('clearComposer'), 0);
+  assert.deepEqual(plain(w.info('message box empty after the job').map(m => m.data)),
+    [{ page: 'start', pass: 1 }, { page: 'start', pass: 2 }, { page: 'home', pass: 1 }, { page: 'home', pass: 2 }]);
+  assert.deepEqual(plain(w.info('message box cleanup finished').map(m => m.data)), [{ cleared: 0 }]);
+  // Every pass reads the box every 500 ms from 0 to 4000 ms before it counts as empty.
+  assert.equal(reads.length, 4 * 9);
+  for (let pass = 0; pass < 4; pass++) {
+    const group = reads.slice(pass * 9, pass * 9 + 9);
+    assert.equal(group[8] - group[0], 4000, 'pass ' + (pass + 1));
+  }
+});
+
+test('runJob: a job that started on the home page checks only that page', async () => {
+  const w = draftWorker({ startUrl: DRAFT_HOME });
+  await w.run();
+  await w.settle();
+  assert.deepEqual(w.updates.map(u => u.changes), [{ url: DRAFT_HOME }]);
+  assert.deepEqual(w.reloads, [DRAFT_HOME]);
+  assert.equal(w.cleanupPages('clearComposer'), 1);
+  assert.equal(w.state.box, '');
+  assert.deepEqual(plain(w.info('message box cleanup started').map(m => m.data)), [{ pages: 1 }]);
+  assert.deepEqual(plain(w.info('message box empty after the job').map(m => m.data)), [{ page: 'start', pass: 2 }]);
+  assert.deepEqual(plain(w.info('message box cleanup finished').map(m => m.data)), [{ cleared: 1 }]);
+});
+
+test('runJob: other text on the start page is left alone and the home page is still cleaned up', async () => {
+  const NOTE = 'My own unrelated note for later';
+  const w = draftWorker({ restore: (draft, state) => (state.url === DRAFT_PROJECT ? NOTE : draft) });
+  await w.run();
+  await w.settle();
+  assert.deepEqual(w.updates.map(u => u.changes), [{ url: DRAFT_PROJECT }, { url: DRAFT_HOME }]);
+  assert.deepEqual(w.reloads, [DRAFT_HOME], 'the start page is not reloaded after other text was found');
+  assert.equal(w.cleanupPages('clearComposer'), 1);
+  assert.equal(w.state.box, '');
+  assert.deepEqual(plain(w.info('message box holds other text after the job; left it unchanged').map(m => m.data)), [{ page: 'start', pass: 1 }]);
+  assert.deepEqual(plain(w.info('cleared the bridge prompt from the message box after the job').map(m => m.data)), [{ page: 'home', pass: 1 }]);
+  assert.deepEqual(plain(w.info('message box cleanup finished').map(m => m.data)), [{ cleared: 1 }]);
+  assertNoPromptInLogs(w);
 });
 
 const TRANSPARENT_PIXELS = new Uint8ClampedArray(4 * 4 * 4);
