@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.1] - 2026-11-17
+
+### Fixed
+
+- After a job, the bridge clears its own prompt from ChatGPT's message box. ChatGPT keeps the
+  unsent text of a new chat as a draft that is shared between pages and survives reloads, so the
+  prompt stayed there. The cleanup checks the job's start page and the ChatGPT home page, clears
+  only text the job wrote, and logs every exit. It skips a tab you are looking at. (#24)
+- The bridge's own minimized window now closes after a job. When no Chrome window was open, its
+  only tab was always active and was never closed. (#25)
+
+### Docs
+
+- The README shows the animated GIF and sprite features up front, with an example sprite GIF made
+  with `animate_sheet` from a ChatGPT sprite sheet. The npm description and keywords mention
+  animated GIFs and sprites. (#23, #25)
+
 ## [2.4.0] - 2026-11-12
 
 ### Added
