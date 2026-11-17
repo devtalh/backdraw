@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.2] - 2026-11-17
+
+### Fixed
+
+- On an update, clients picked by number on the terminal now count as chosen. A picked Claude
+  desktop app gets its Backdraw entry instead of "no Claude desktop config was found" (if Claude
+  is running, setup leaves its config alone and tells you to quit it and run setup again).
+  Clients you did not pick say "not chosen, left as it is" when they already have a Backdraw
+  entry, or show how to add them, instead of "it has no Backdraw entry". Enter and `--yes` still
+  update only the clients that are already set up. (#28)
+
+### Changed
+
+- A version tag now also creates the GitHub Release, with the notes from the CHANGELOG section
+  and the package and extension zips attached. (#27)
+
 ## [2.4.1] - 2026-11-17
 
 ### Fixed
