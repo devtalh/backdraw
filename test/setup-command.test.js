@@ -264,6 +264,100 @@ test('update on a terminal: Enter keeps the ones already set up; picking a numbe
   assert.equal(mcpClients.npxSpec(mcpClients.readEntry(mcpClients.byId('cursor'), env).entry), 'backdraw@latest');
 });
 
+// An update where Claude Code, Cursor and VS Code have a local entry, the Claude desktop app has a
+// config file without one, and Codex is found without one.
+async function mixedUpdate(opts) {
+  const s = await installed(opts);
+  const env = { home: s.home, appData: s.appData, which: () => null };
+  const local = { type: 'stdio', command: 'node', args: ['C:\\old\\mcp-server.js'], env: {} };
+  write(path.join(s.home, '.claude.json'), { mcpServers: { backdraw: local } });
+  write(mcpClients.byId('cursor').file(env), { mcpServers: { backdraw: { command: 'node', args: ['C:\\old\\mcp-server.js'] } } });
+  write(mcpClients.byId('vscode').file(env), { servers: { backdraw: { type: 'stdio', command: 'node', args: ['C:\\old\\mcp-server.js'] } } });
+  write(s.desktopFile, { mcpServers: { other: { command: 'x' } } });
+  fs.mkdirSync(path.join(s.home, '.codex'));
+  const files = [path.join(s.home, '.claude.json'), mcpClients.byId('cursor').file(env), mcpClients.byId('vscode').file(env), s.desktopFile];
+  const snapshot = () => files.map(f => fs.readFileSync(f));
+  const answer = a => ({ ...s.deps, ask: async () => a });
+  return { ...s, env, files, snapshot, answer, server: path.join(s.home, '.backdraw', 'mcp-server.js') };
+}
+
+test('update on a terminal: a client picked by number gets an entry even without one; the others are not chosen', async () => {
+  const s = await mixedUpdate({ connectAfter: 1 });
+  const [cursorBefore, vscodeBefore] = s.snapshot().slice(1, 3);
+  const { chosen } = await setup({}, s.answer('1, 2'));
+  assert.deepEqual(chosen, ['claude-code', 'claude-desktop']);
+  assert.deepEqual(s.claudeAdds, ['backdraw']);
+  const desktop = JSON.parse(fs.readFileSync(s.desktopFile, 'utf8')).mcpServers;
+  assert.deepEqual(Object.keys(desktop), ['other', 'backdraw']);
+  assert.equal(desktop.backdraw.args[0], s.server);
+  const [, cursorAfter, vscodeAfter] = s.snapshot();
+  assert.ok(cursorAfter.equals(cursorBefore), 'Cursor is not changed');
+  assert.ok(vscodeAfter.equals(vscodeBefore), 'VS Code is not changed');
+  assert.ok(!fs.existsSync(mcpClients.byId('codex').file(s.env)));
+  const text = s.text();
+  assert.match(text, /✓ Claude Code {10}updated \(user scope\)/);
+  assert.match(text, /✓ Claude desktop app {3}added \(/);
+  assert.doesNotMatch(text, /no Claude desktop config was found/);
+  assert.match(text, /· Cursor {15}not chosen, left as it is\n/);
+  assert.match(text, /· VS Code {14}not chosen, left as it is\n/);
+  assert.match(text, /· Codex {16}not chosen \(add it with: npx backdraw@latest setup --clients=codex\)/);
+  assert.doesNotMatch(text, /skipped: it has no Backdraw entry/);
+  assert.doesNotMatch(text, /MCP clients {10}none/);
+});
+
+test('update on a terminal: picking the desktop app while Claude runs leaves its config alone and says so', async () => {
+  const s = await mixedUpdate({ connectAfter: 1, desktopRunning: true });
+  const desktopBefore = fs.readFileSync(s.desktopFile);
+  const { chosen } = await setup({}, s.answer('2'));
+  assert.deepEqual(chosen, ['claude-desktop']);
+  assert.ok(fs.readFileSync(s.desktopFile).equals(desktopBefore));
+  const text = s.text();
+  assert.match(text, /⚠ Claude desktop app {3}Claude is running, so its config was left alone\. Quit Claude completely .* npx backdraw@latest setup --clients=claude-desktop/);
+  assert.doesNotMatch(text, /no Claude desktop config was found/);
+  assert.match(text, /· Claude Code {10}not chosen, left as it is\n/);
+});
+
+test('update on a terminal: Enter still only updates the clients that have an entry', async () => {
+  const s = await mixedUpdate({ connectAfter: 1 });
+  const desktopBefore = fs.readFileSync(s.desktopFile);
+  const { chosen } = await setup({}, s.answer(''));
+  assert.deepEqual(chosen, ['claude-code', 'cursor', 'vscode']);
+  assert.ok(fs.readFileSync(s.desktopFile).equals(desktopBefore));
+  assert.equal(JSON.parse(fs.readFileSync(s.desktopFile, 'utf8')).mcpServers.backdraw, undefined);
+  assert.equal(mcpClients.readEntry(mcpClients.byId('cursor'), s.env).entry.args[0], s.server);
+  const text = s.text();
+  assert.match(text, /· Claude desktop app {3}skipped: it has no Backdraw entry \(add it with: npx backdraw@latest setup --clients=claude-desktop\)/);
+  assert.match(text, /· Codex {16}skipped: it has no Backdraw entry \(add it with: npx backdraw@latest setup --clients=codex\)/);
+  assert.doesNotMatch(text, /not chosen/);
+});
+
+test('update with --clients: the named client gets an entry and nothing else is listed', async () => {
+  const s = await mixedUpdate({ connectAfter: 1 });
+  const { chosen } = await setup({ clients: 'claude-desktop' }, s.deps);
+  assert.deepEqual(chosen, ['claude-desktop']);
+  assert.equal(JSON.parse(fs.readFileSync(s.desktopFile, 'utf8')).mcpServers.backdraw.args[0], s.server);
+  const text = s.text();
+  assert.match(text, /✓ Claude desktop app {3}added \(/);
+  assert.doesNotMatch(text, /not chosen/);
+  assert.doesNotMatch(text, /skipped/);
+});
+
+test('update on a terminal: "none" changes no client and lists the set-up ones as not chosen', async () => {
+  const s = await mixedUpdate({ connectAfter: 1 });
+  const before = s.snapshot();
+  const { chosen } = await setup({}, s.answer('none'));
+  assert.deepEqual(chosen, []);
+  assert.deepEqual(s.claudeAdds, []);
+  s.snapshot().forEach((after, i) => assert.ok(after.equals(before[i]), `${s.files[i]} is not changed`));
+  const text = s.text();
+  assert.match(text, /· Claude Code {10}not chosen, left as it is\n/);
+  assert.match(text, /· Cursor {15}not chosen, left as it is\n/);
+  assert.match(text, /· VS Code {14}not chosen, left as it is\n/);
+  assert.match(text, /· Claude desktop app {3}not chosen \(add it with: npx backdraw@latest setup --clients=claude-desktop\)/);
+  assert.doesNotMatch(text, /skipped/);
+  assert.match(text, /⚠ MCP clients {10}none chosen; add one later with: npx backdraw@latest setup --clients=claude-code/);
+});
+
 test('update with no client entries: nothing is added, and setup says so', async () => {
   const s = await installed({ connectAfter: 1 });
   fs.mkdirSync(path.join(s.home, '.cursor'));
